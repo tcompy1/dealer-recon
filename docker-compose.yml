@@ -28,6 +28,8 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app/backend
+      - ./scripts:/app/scripts
+      - ./sample-data:/app/sample-data
       - ./storage/uploads:/app/storage/uploads
     depends_on:
       db:
