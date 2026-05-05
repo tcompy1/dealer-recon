@@ -109,6 +109,33 @@ describeIfDatabase("reconciliation persistence", () => {
       expect(runDetailResponse.body.match_groups).toHaveLength(1);
       expect(runDetailResponse.body.match_groups[0].transactions).toHaveLength(2);
       expect(runDetailResponse.body.exceptions).toHaveLength(2);
+      expect(runDetailResponse.body.exceptions[0]).toMatchObject({
+        status: "unresolved",
+        note: "",
+      });
+
+      const exceptionId = runDetailResponse.body.exceptions[0].exception_id as number;
+      const reviewUpdateResponse = await request(app)
+        .patch(`/reconciliation-runs/${runId}/exceptions/${exceptionId}`)
+        .send({ status: "ignored", note: "Accepted timing difference." });
+      expect(reviewUpdateResponse.status).toBe(200);
+      expect(reviewUpdateResponse.body).toMatchObject({
+        exception_id: exceptionId,
+        status: "ignored",
+        note: "Accepted timing difference.",
+      });
+
+      const statusFilterResponse = await request(app)
+        .get(`/reconciliation-runs/${runId}`)
+        .query({ status: "ignored" });
+      expect(statusFilterResponse.status).toBe(200);
+      expect(statusFilterResponse.body.exceptions).toEqual([
+        expect.objectContaining({
+          exception_id: exceptionId,
+          status: "ignored",
+          note: "Accepted timing difference.",
+        }),
+      ]);
 
       const runResult = await pool.query<{
         matched_count: number;
@@ -147,10 +174,20 @@ describeIfDatabase("reconciliation persistence", () => {
         "reconciliation_run_id",
         runId,
       );
+      const exceptionReviewResult = await pool.query<{ status: string; note: string }>(
+        `SELECT status, note
+         FROM reconciliation_exceptions
+         WHERE id = $1`,
+        [exceptionId],
+      );
 
       expect(matchGroupCount).toBe(1);
       expect(Number(matchGroupTransactionCount.rows[0].count)).toBe(2);
       expect(exceptionCount).toBe(2);
+      expect(exceptionReviewResult.rows[0]).toEqual({
+        status: "ignored",
+        note: "Accepted timing difference.",
+      });
     } finally {
       stderr.mockRestore();
       await pool.end();

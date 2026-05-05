@@ -1,8 +1,12 @@
 import type {
   NewSourceFile,
   NewTransaction,
+  ReconciliationExceptionReviewUpdate,
+  ReconciliationExceptionStatus,
   PersistReconciliationRunInput,
+  ReconciliationExceptionType,
   ReconciliationRunDetail,
+  ReconciliationRunDetailFilters,
   ReconciliationRunListItem,
   ReconciliationRun,
   SourceFile,
@@ -37,7 +41,15 @@ export interface TransactionRepository {
   listBySourceFile(sourceFileId: number): Promise<Transaction[]>;
   createReconciliationRun(input: PersistReconciliationRunInput): Promise<ReconciliationRun>;
   listReconciliationRuns(): Promise<ReconciliationRunListItem[]>;
-  getReconciliationRunDetail(reconciliationRunId: number): Promise<ReconciliationRunDetail | null>;
+  getReconciliationRunDetail(
+    reconciliationRunId: number,
+    filters?: ReconciliationRunDetailFilters,
+  ): Promise<ReconciliationRunDetail | null>;
+  updateReconciliationExceptionReview(
+    reconciliationRunId: number,
+    exceptionId: number,
+    update: ReconciliationExceptionReviewUpdate,
+  ): Promise<ReconciliationRunDetail["exceptions"][number] | null>;
   clear?(): Promise<void>;
 }
 
@@ -65,6 +77,8 @@ export class MemoryTransactionRepository implements TransactionRepository {
     transaction_id: number;
     source_type: SourceType;
     reason: string;
+    status: ReconciliationExceptionStatus;
+    note: string;
     created_at: string;
   }> = [];
   private nextSourceFileId = 1;
@@ -175,6 +189,8 @@ export class MemoryTransactionRepository implements TransactionRepository {
         transaction_id: exception.transaction.id,
         source_type: exception.source_type,
         reason: exception.description,
+        status: "unresolved",
+        note: "",
         created_at: createdAt,
       });
     }
@@ -192,6 +208,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
 
   async getReconciliationRunDetail(
     reconciliationRunId: number,
+    filters: ReconciliationRunDetailFilters = {},
   ): Promise<ReconciliationRunDetail | null> {
     const run = this.reconciliationRuns.find(
       (reconciliationRun) => reconciliationRun.id === reconciliationRunId,
@@ -235,15 +252,8 @@ export class MemoryTransactionRepository implements TransactionRepository {
     const exceptions = this.reconciliationExceptions
       .filter((exception) => exception.reconciliation_run_id === run.id)
       .sort((left, right) => left.id - right.id)
-      .map((exception) => ({
-        exception_id: exception.id,
-        source_type: exception.source_type,
-        reason: exception.reason,
-        created_at: exception.created_at,
-        transaction: toTransactionSummary(
-          this.transactions.find((transaction) => transaction.id === exception.transaction_id)!,
-        ),
-      }));
+      .map((exception) => this.toRunDetailException(exception))
+      .filter((exception) => matchesExceptionFilters(exception, filters));
 
     return {
       ...listItem,
@@ -252,6 +262,29 @@ export class MemoryTransactionRepository implements TransactionRepository {
       match_groups: matchGroups,
       exceptions,
     };
+  }
+
+  async updateReconciliationExceptionReview(
+    reconciliationRunId: number,
+    exceptionId: number,
+    update: ReconciliationExceptionReviewUpdate,
+  ): Promise<ReconciliationRunDetail["exceptions"][number] | null> {
+    const exception = this.reconciliationExceptions.find(
+      (candidate) =>
+        candidate.reconciliation_run_id === reconciliationRunId && candidate.id === exceptionId,
+    );
+    if (!exception) {
+      return null;
+    }
+
+    if (update.status !== undefined) {
+      exception.status = update.status;
+    }
+    if (update.note !== undefined) {
+      exception.note = update.note;
+    }
+
+    return this.toRunDetailException(exception);
   }
 
   async clear(): Promise<void> {
@@ -292,6 +325,29 @@ export class MemoryTransactionRepository implements TransactionRepository {
       created_at: run.created_at,
     };
   }
+
+  private toRunDetailException(exception: {
+    id: number;
+    source_type: SourceType;
+    reason: string;
+    status: ReconciliationExceptionStatus;
+    note: string;
+    created_at: string;
+    transaction_id: number;
+  }): ReconciliationRunDetail["exceptions"][number] {
+    return {
+      exception_id: exception.id,
+      exception_type: exceptionTypeFromReason(exception.reason),
+      status: exception.status,
+      note: exception.note,
+      source_type: exception.source_type,
+      reason: exception.reason,
+      created_at: exception.created_at,
+      transaction: toTransactionSummary(
+        this.transactions.find((transaction) => transaction.id === exception.transaction_id)!,
+      ),
+    };
+  }
 }
 
 function toSourceFileSummary(sourceFile: SourceFile): SourceFileSummary {
@@ -323,4 +379,56 @@ function toTransactionSummary(transaction: Transaction): TransactionSummary {
 
 function sideOrder(side: string): number {
   return side === "left" ? 0 : 1;
+}
+
+function exceptionTypeFromReason(reason: string): ReconciliationExceptionType {
+  const normalized = reason.toLowerCase();
+  if (normalized.includes("duplicate")) {
+    return "duplicate_transaction";
+  }
+  if (normalized.includes("no matching boa")) {
+    return "missing_in_boa";
+  }
+  return "missing_in_dealertrack";
+}
+
+function matchesExceptionFilters(
+  exception: ReconciliationRunDetail["exceptions"][number],
+  filters: ReconciliationRunDetailFilters,
+): boolean {
+  if (
+    filters.exceptionSourceType !== undefined &&
+    exception.source_type !== filters.exceptionSourceType
+  ) {
+    return false;
+  }
+  if (filters.exceptionType !== undefined && exception.exception_type !== filters.exceptionType) {
+    return false;
+  }
+  if (filters.exceptionStatus !== undefined && exception.status !== filters.exceptionStatus) {
+    return false;
+  }
+  if (filters.search !== undefined) {
+    const search = filters.search.toLowerCase();
+    const transaction = exception.transaction;
+    const searchable = [
+      exception.reason,
+      exception.exception_type,
+      exception.status,
+      exception.note,
+      exception.source_type,
+      transaction.reference_number,
+      transaction.description,
+      transaction.account,
+      transaction.stock_number,
+      transaction.vin,
+      transaction.amount,
+      String(transaction.amount_cents),
+    ]
+      .filter((value): value is string => typeof value === "string")
+      .join(" ")
+      .toLowerCase();
+    return searchable.includes(search);
+  }
+  return true;
 }

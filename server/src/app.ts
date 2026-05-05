@@ -4,7 +4,15 @@ import cors from "cors";
 import express from "express";
 import multer, { MulterError } from "multer";
 
-import { isSourceType, type ReconciliationRequest } from "./domain/types.js";
+import {
+  isReconciliationExceptionStatus,
+  isReconciliationExceptionType,
+  isSourceType,
+  type ReconciliationRequest,
+  type ReconciliationExceptionReviewUpdate,
+  type ReconciliationRunDetail,
+  type ReconciliationRunDetailFilters,
+} from "./domain/types.js";
 import {
   DuplicateSourceFileError,
   type TransactionRepository,
@@ -188,7 +196,13 @@ export function createApp(repository: TransactionRepository, corsOrigins: string
         return;
       }
 
-      const detail = await repository.getReconciliationRunDetail(reconciliationRunId);
+      const filters = parseReconciliationRunDetailFilters(request.query);
+      if (filters === false) {
+        response.status(422).json({ detail: "Invalid reconciliation run filter." });
+        return;
+      }
+
+      const detail = await repository.getReconciliationRunDetail(reconciliationRunId, filters);
       if (!detail) {
         response.status(404).json({ detail: "Reconciliation run was not found." });
         return;
@@ -199,6 +213,73 @@ export function createApp(repository: TransactionRepository, corsOrigins: string
       next(error);
     }
   });
+
+  app.get("/reconciliation-runs/:id/exceptions.csv", async (request, response, next) => {
+    try {
+      const reconciliationRunId = parsePositiveInteger(request.params.id);
+      if (reconciliationRunId === null) {
+        response.status(404).json({ detail: "Reconciliation run was not found." });
+        return;
+      }
+
+      const filters = parseReconciliationRunDetailFilters(request.query);
+      if (filters === false) {
+        response.status(422).json({ detail: "Invalid reconciliation run filter." });
+        return;
+      }
+
+      const detail = await repository.getReconciliationRunDetail(reconciliationRunId, filters);
+      if (!detail) {
+        response.status(404).json({ detail: "Reconciliation run was not found." });
+        return;
+      }
+
+      response
+        .status(200)
+        .type("text/csv")
+        .setHeader(
+          "Content-Disposition",
+          `attachment; filename="reconciliation-run-${reconciliationRunId}-exceptions.csv"`,
+        )
+        .send(toExceptionsCsv(detail));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch(
+    "/reconciliation-runs/:id/exceptions/:exception_id",
+    async (request, response, next) => {
+      try {
+        const reconciliationRunId = parsePositiveInteger(request.params.id);
+        const exceptionId = parsePositiveInteger(request.params.exception_id);
+        if (reconciliationRunId === null || exceptionId === null) {
+          response.status(404).json({ detail: "Reconciliation exception was not found." });
+          return;
+        }
+
+        const update = parseExceptionReviewUpdate(request.body);
+        if (update === false) {
+          response.status(422).json({ detail: "Invalid exception review update." });
+          return;
+        }
+
+        const exception = await repository.updateReconciliationExceptionReview(
+          reconciliationRunId,
+          exceptionId,
+          update,
+        );
+        if (!exception) {
+          response.status(404).json({ detail: "Reconciliation exception was not found." });
+          return;
+        }
+
+        response.json(exception);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
 
   app.use(
     (
@@ -250,6 +331,147 @@ function parseSourceTypeQuery(value: unknown) {
     return value;
   }
   return false;
+}
+
+function parseReconciliationRunDetailFilters(
+  query: express.Request["query"],
+): ReconciliationRunDetailFilters | false {
+  const exceptionSourceType = parseSourceTypeQuery(query.source_type);
+  if (exceptionSourceType === false) {
+    return false;
+  }
+
+  const exceptionType = parseExceptionTypeQuery(query.exception_type);
+  if (exceptionType === false) {
+    return false;
+  }
+
+  const search = parseSearchQuery(query.search);
+  if (search === false) {
+    return false;
+  }
+
+  const exceptionStatus = parseExceptionStatusQuery(query.status);
+  if (exceptionStatus === false) {
+    return false;
+  }
+
+  return {
+    ...(exceptionSourceType ? { exceptionSourceType } : {}),
+    ...(exceptionType ? { exceptionType } : {}),
+    ...(exceptionStatus ? { exceptionStatus } : {}),
+    ...(search ? { search } : {}),
+  };
+}
+
+function parseExceptionTypeQuery(value: unknown) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (isReconciliationExceptionType(value)) {
+    return value;
+  }
+  return false;
+}
+
+function parseSearchQuery(value: unknown): string | undefined | false {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    return false;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseExceptionStatusQuery(value: unknown) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (isReconciliationExceptionStatus(value)) {
+    return value;
+  }
+  return false;
+}
+
+function parseExceptionReviewUpdate(value: unknown): ReconciliationExceptionReviewUpdate | false {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const body = value as { status?: unknown; note?: unknown };
+  const hasStatus = Object.hasOwn(body, "status");
+  const hasNote = Object.hasOwn(body, "note");
+  if (!hasStatus && !hasNote) {
+    return false;
+  }
+  if (hasStatus && !isReconciliationExceptionStatus(body.status)) {
+    return false;
+  }
+  if (hasNote && typeof body.note !== "string") {
+    return false;
+  }
+  return {
+    ...(hasStatus && isReconciliationExceptionStatus(body.status) ? { status: body.status } : {}),
+    ...(hasNote && typeof body.note === "string" ? { note: body.note.trim() } : {}),
+  };
+}
+
+function toExceptionsCsv(detail: ReconciliationRunDetail): string {
+  const headers = [
+    "reconciliation_run_id",
+    "exception_id",
+    "exception_type",
+    "status",
+    "note",
+    "source_type",
+    "transaction_id",
+    "transaction_date",
+    "post_date",
+    "amount",
+    "amount_cents",
+    "reference_number",
+    "stock_number",
+    "vin",
+    "description",
+    "reason",
+    "created_at",
+  ];
+  const rows = detail.exceptions.map((exception) => {
+    const transaction = exception.transaction;
+    return [
+      detail.reconciliation_run_id,
+      exception.exception_id,
+      exception.exception_type,
+      exception.status,
+      exception.note,
+      exception.source_type,
+      transaction.id,
+      transaction.transaction_date,
+      transaction.post_date,
+      transaction.amount,
+      transaction.amount_cents,
+      transaction.reference_number,
+      transaction.stock_number,
+      transaction.vin,
+      transaction.description,
+      exception.reason,
+      exception.created_at,
+    ];
+  });
+
+  return [headers, ...rows].map((row) => row.map(toCsvCell).join(",")).join("\n") + "\n";
+}
+
+function toCsvCell(value: string | number | null): string {
+  if (value === null) {
+    return "";
+  }
+  const text = String(value);
+  if (/[",\n\r]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
 }
 
 function createFileHash(buffer: Buffer): string {

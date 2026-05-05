@@ -5,7 +5,11 @@ import type {
   NewSourceFile,
   NewTransaction,
   PersistReconciliationRunInput,
+  ReconciliationExceptionReviewUpdate,
+  ReconciliationExceptionStatus,
+  ReconciliationExceptionType,
   ReconciliationRunDetail,
+  ReconciliationRunDetailFilters,
   ReconciliationRunListItem,
   ReconciliationRun,
   SourceFile,
@@ -80,6 +84,8 @@ type ReconciliationExceptionRow = TransactionRow & {
   exception_id: number;
   exception_source_type: SourceType;
   reason: string;
+  status: ReconciliationExceptionStatus;
+  note: string;
   exception_created_at: Date | string;
 };
 
@@ -243,6 +249,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
 
   async getReconciliationRunDetail(
     reconciliationRunId: number,
+    filters: ReconciliationRunDetailFilters = {},
   ): Promise<ReconciliationRunDetail | null> {
     const runResult = await this.pool.query<
       ReconciliationRunListRow & {
@@ -313,6 +320,8 @@ export class PostgresTransactionRepository implements TransactionRepository {
         re.id AS exception_id,
         re.source_type AS exception_source_type,
         re.reason,
+        re.status,
+        re.note,
         re.created_at AS exception_created_at,
         t.*
       FROM reconciliation_exceptions re
@@ -360,11 +369,64 @@ export class PostgresTransactionRepository implements TransactionRepository {
       })),
       exceptions: exceptionRows.rows.map((row) => ({
         exception_id: row.exception_id,
+        exception_type: exceptionTypeFromReason(row.reason),
+        status: row.status,
+        note: row.note,
         source_type: row.exception_source_type,
         reason: row.reason,
         created_at: toDateTimeString(row.exception_created_at),
         transaction: toTransactionSummary(toTransaction(row)),
-      })),
+      })).filter((exception) => matchesExceptionFilters(exception, filters)),
+    };
+  }
+
+  async updateReconciliationExceptionReview(
+    reconciliationRunId: number,
+    exceptionId: number,
+    update: ReconciliationExceptionReviewUpdate,
+  ): Promise<ReconciliationRunDetail["exceptions"][number] | null> {
+    const current = await this.pool.query<{ id: number }>(
+      `SELECT id
+       FROM reconciliation_exceptions
+       WHERE reconciliation_run_id = $1
+         AND id = $2`,
+      [reconciliationRunId, exceptionId],
+    );
+    if (!current.rows[0]) {
+      return null;
+    }
+
+    const result = await this.pool.query<ReconciliationExceptionRow>(
+      `UPDATE reconciliation_exceptions
+       SET
+         status = COALESCE($3, status),
+         note = COALESCE($4, note)
+       FROM transactions t
+       WHERE reconciliation_exceptions.reconciliation_run_id = $1
+         AND reconciliation_exceptions.id = $2
+         AND t.id = reconciliation_exceptions.transaction_id
+       RETURNING
+         reconciliation_exceptions.id AS exception_id,
+         reconciliation_exceptions.source_type AS exception_source_type,
+         reconciliation_exceptions.reason,
+         reconciliation_exceptions.status,
+         reconciliation_exceptions.note,
+         reconciliation_exceptions.created_at AS exception_created_at,
+         t.*`,
+      [reconciliationRunId, exceptionId, update.status ?? null, update.note ?? null],
+    );
+
+    const row = result.rows[0];
+
+    return {
+      exception_id: row.exception_id,
+      exception_type: exceptionTypeFromReason(row.reason),
+      status: row.status,
+      note: row.note,
+      source_type: row.exception_source_type,
+      reason: row.reason,
+      created_at: toDateTimeString(row.exception_created_at),
+      transaction: toTransactionSummary(toTransaction(row)),
     };
   }
 }
@@ -578,4 +640,56 @@ function isDuplicateSourceFileError(error: unknown): boolean {
     "constraint" in error &&
     error.constraint === "ux_source_files_source_type_file_hash"
   );
+}
+
+function exceptionTypeFromReason(reason: string): ReconciliationExceptionType {
+  const normalized = reason.toLowerCase();
+  if (normalized.includes("duplicate")) {
+    return "duplicate_transaction";
+  }
+  if (normalized.includes("no matching boa")) {
+    return "missing_in_boa";
+  }
+  return "missing_in_dealertrack";
+}
+
+function matchesExceptionFilters(
+  exception: ReconciliationRunDetail["exceptions"][number],
+  filters: ReconciliationRunDetailFilters,
+): boolean {
+  if (
+    filters.exceptionSourceType !== undefined &&
+    exception.source_type !== filters.exceptionSourceType
+  ) {
+    return false;
+  }
+  if (filters.exceptionType !== undefined && exception.exception_type !== filters.exceptionType) {
+    return false;
+  }
+  if (filters.exceptionStatus !== undefined && exception.status !== filters.exceptionStatus) {
+    return false;
+  }
+  if (filters.search !== undefined) {
+    const search = filters.search.toLowerCase();
+    const transaction = exception.transaction;
+    const searchable = [
+      exception.reason,
+      exception.exception_type,
+      exception.status,
+      exception.note,
+      exception.source_type,
+      transaction.reference_number,
+      transaction.description,
+      transaction.account,
+      transaction.stock_number,
+      transaction.vin,
+      transaction.amount,
+      String(transaction.amount_cents),
+    ]
+      .filter((value): value is string => typeof value === "string")
+      .join(" ")
+      .toLowerCase();
+    return searchable.includes(search);
+  }
+  return true;
 }

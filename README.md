@@ -102,6 +102,8 @@ GET /health
 GET /source-files
 GET /reconciliation-runs
 GET /reconciliation-runs/:id
+GET /reconciliation-runs/:id/exceptions.csv
+PATCH /reconciliation-runs/:id/exceptions/:exception_id
 POST /upload
 POST /reconcile
 ```
@@ -194,6 +196,40 @@ match reasons, confidence scores, display `amount` strings, and `amount_cents`.
 `GET /reconciliation-runs` lists prior runs with BOA and Dealertrack filenames, counts, status, and
 creation time. `GET /reconciliation-runs/:id` returns the run summary, source file metadata, match
 groups with linked transactions, and exceptions with transaction details.
+
+`GET /reconciliation-runs/:id` accepts optional exception filters:
+
+```text
+GET /reconciliation-runs/10?source_type=boa
+GET /reconciliation-runs/10?exception_type=missing_in_dealertrack
+GET /reconciliation-runs/10?status=unresolved
+GET /reconciliation-runs/10?search=M30202
+```
+
+Supported `exception_type` values are `missing_in_boa`, `missing_in_dealertrack`, and
+`duplicate_transaction`. Supported exception review statuses are `unresolved`, `ignored`, and
+`resolved`. Filters apply to the `exceptions` array while the run summary counts remain the
+persisted run totals.
+
+`GET /reconciliation-runs/:id/exceptions.csv` exports the filtered exceptions as CSV. It accepts the
+same `source_type`, `exception_type`, `status`, and `search` query parameters and returns one row per
+exception with run ID, exception metadata, review status, note, transaction identifiers, dates,
+amount, stock number, VIN, description, reason, and creation time.
+
+Exceptions start as `unresolved`. Reviewers can mark an exception `resolved` when follow-up is
+complete, or `ignored` when the exception is accepted as non-actionable. Review notes are stored with
+the exception and returned in run detail and CSV exports.
+
+```json
+{
+  "status": "resolved",
+  "note": "Cleared by warranty credit."
+}
+```
+
+```text
+PATCH /reconciliation-runs/10/exceptions/42
+```
 
 ## Sample Data
 

@@ -127,6 +127,30 @@ export type ReconciliationRunListItem = {
   created_at: string;
 };
 
+export const reconciliationExceptionTypes = [
+  "duplicate_transaction",
+  "missing_in_boa",
+  "missing_in_dealertrack",
+] as const;
+
+export type ReconciliationExceptionType = (typeof reconciliationExceptionTypes)[number];
+
+export type ReconciliationRunDetailFilters = {
+  exceptionSourceType?: SourceType;
+  exceptionType?: ReconciliationExceptionType;
+  exceptionStatus?: ReconciliationExceptionStatus;
+  search?: string;
+};
+
+export const reconciliationExceptionStatuses = ["unresolved", "ignored", "resolved"] as const;
+
+export type ReconciliationExceptionStatus = (typeof reconciliationExceptionStatuses)[number];
+
+export type ReconciliationExceptionReviewUpdate = {
+  status?: ReconciliationExceptionStatus;
+  note?: string;
+};
+
 export type ReconciliationRunDetail = ReconciliationRunListItem & {
   boa_source_file: SourceFileSummary;
   dealertrack_source_file: SourceFileSummary;
@@ -144,6 +168,9 @@ export type ReconciliationRunDetail = ReconciliationRunListItem & {
   }>;
   exceptions: Array<{
     exception_id: number;
+    exception_type: ReconciliationExceptionType;
+    status: ReconciliationExceptionStatus;
+    note: string;
     source_type: SourceType;
     reason: string;
     created_at: string;
@@ -153,4 +180,22 @@ export type ReconciliationRunDetail = ReconciliationRunListItem & {
 
 export function isSourceType(value: unknown): value is SourceType {
   return typeof value === "string" && sourceTypes.includes(value as SourceType);
+}
+
+export function isReconciliationExceptionType(
+  value: unknown,
+): value is ReconciliationExceptionType {
+  return (
+    typeof value === "string" &&
+    reconciliationExceptionTypes.includes(value as ReconciliationExceptionType)
+  );
+}
+
+export function isReconciliationExceptionStatus(
+  value: unknown,
+): value is ReconciliationExceptionStatus {
+  return (
+    typeof value === "string" &&
+    reconciliationExceptionStatuses.includes(value as ReconciliationExceptionStatus)
+  );
 }

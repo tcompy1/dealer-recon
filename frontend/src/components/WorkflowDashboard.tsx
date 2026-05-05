@@ -1,13 +1,17 @@
 import { type ChangeEvent, useEffect, useMemo, useState } from "react";
 
 import {
+  getReconciliationExceptionsCsvUrl,
   getReconciliationRun,
   listReconciliationRuns,
   reconcileSourceFiles,
+  updateReconciliationExceptionReview,
 } from "../api/reconciliation";
 import { listSourceFiles, uploadSourceFile } from "../api/uploads";
 import type {
   ReconciledTransaction,
+  ReconciliationExceptionReviewUpdate,
+  ReconciliationRunFilters,
   ReconciliationRunDetail,
   ReconciliationRunListItem,
 } from "../types/reconciliation";
@@ -37,6 +41,8 @@ export function WorkflowDashboard() {
   const [activeRun, setActiveRun] = useState<ReconciliationRunDetail | null>(null);
   const [isReconciling, setIsReconciling] = useState(false);
   const [historyLoadingId, setHistoryLoadingId] = useState<number | null>(null);
+  const [exceptionFilters, setExceptionFilters] = useState<ReconciliationRunFilters>({});
+  const [reviewUpdatingId, setReviewUpdatingId] = useState<number | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
 
   const canReconcile = Boolean(boaUpload.upload?.source_file_id && dealertrackUpload.upload?.source_file_id);
@@ -89,7 +95,7 @@ export function WorkflowDashboard() {
         boaSourceFileId: boaUpload.upload.source_file_id,
         dealertrackSourceFileId: dealertrackUpload.upload.source_file_id,
       });
-      const detail = await getReconciliationRun(result.reconciliation_run_id);
+      const detail = await getReconciliationRun(result.reconciliation_run_id, exceptionFilters);
       setActiveRun(detail);
       setReconciliationRuns(await listReconciliationRuns());
     } catch (error) {
@@ -104,11 +110,49 @@ export function WorkflowDashboard() {
     setWorkflowError(null);
 
     try {
-      setActiveRun(await getReconciliationRun(reconciliationRunId));
+      setActiveRun(await getReconciliationRun(reconciliationRunId, exceptionFilters));
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Run detail could not be loaded.");
     } finally {
       setHistoryLoadingId(null);
+    }
+  }
+
+  async function handleFilterChange(filters: ReconciliationRunFilters) {
+    setExceptionFilters(filters);
+    if (!activeRun) {
+      return;
+    }
+
+    setWorkflowError(null);
+    try {
+      setActiveRun(await getReconciliationRun(activeRun.reconciliation_run_id, filters));
+    } catch (error) {
+      setWorkflowError(error instanceof Error ? error.message : "Run detail could not be loaded.");
+    }
+  }
+
+  async function handleExceptionReviewUpdate(
+    exceptionId: number,
+    update: ReconciliationExceptionReviewUpdate,
+  ) {
+    if (!activeRun) {
+      return;
+    }
+
+    setReviewUpdatingId(exceptionId);
+    setWorkflowError(null);
+    try {
+      await updateReconciliationExceptionReview({
+        reconciliationRunId: activeRun.reconciliation_run_id,
+        exceptionId,
+        update,
+      });
+      setActiveRun(await getReconciliationRun(activeRun.reconciliation_run_id, exceptionFilters));
+    } catch (error) {
+      setWorkflowError(error instanceof Error ? error.message : "Exception review could not be saved.");
+    } finally {
+      setReviewUpdatingId(null);
     }
   }
 
@@ -163,7 +207,16 @@ export function WorkflowDashboard() {
 
       {workflowError ? <ErrorBanner message={workflowError} /> : null}
 
-      <ResultsSection run={activeRun} isReconciling={isReconciling} />
+      <ResultsSection
+        filters={exceptionFilters}
+        run={activeRun}
+        isReconciling={isReconciling}
+        onFiltersChange={(filters) => void handleFilterChange(filters)}
+        onReviewUpdate={(exceptionId, update) =>
+          void handleExceptionReviewUpdate(exceptionId, update)
+        }
+        reviewUpdatingId={reviewUpdatingId}
+      />
 
       <HistorySection
         activeRunId={activeRun?.reconciliation_run_id ?? null}
@@ -318,11 +371,19 @@ function RecentUploads({ sourceFiles }: { sourceFiles: SourceFileSummary[] }) {
 }
 
 function ResultsSection({
+  filters,
   run,
   isReconciling,
+  onFiltersChange,
+  onReviewUpdate,
+  reviewUpdatingId,
 }: {
+  filters: ReconciliationRunFilters;
   run: ReconciliationRunDetail | null;
   isReconciling: boolean;
+  onFiltersChange: (filters: ReconciliationRunFilters) => void;
+  onReviewUpdate: (exceptionId: number, update: ReconciliationExceptionReviewUpdate) => void;
+  reviewUpdatingId: number | null;
 }) {
   if (!run && !isReconciling) {
     return null;
@@ -355,7 +416,13 @@ function ResultsSection({
           </div>
 
           <MatchGroupsTable run={run} />
-          <ExceptionsTable run={run} />
+          <ExceptionsTable
+            filters={filters}
+            run={run}
+            onFiltersChange={onFiltersChange}
+            onReviewUpdate={onReviewUpdate}
+            reviewUpdatingId={reviewUpdatingId}
+          />
         </>
       ) : null}
     </section>
@@ -422,45 +489,182 @@ function MatchGroupsTable({ run }: { run: ReconciliationRunDetail }) {
   );
 }
 
-function ExceptionsTable({ run }: { run: ReconciliationRunDetail }) {
+function ExceptionsTable({
+  filters,
+  run,
+  onFiltersChange,
+  onReviewUpdate,
+  reviewUpdatingId,
+}: {
+  filters: ReconciliationRunFilters;
+  run: ReconciliationRunDetail;
+  onFiltersChange: (filters: ReconciliationRunFilters) => void;
+  onReviewUpdate: (
+    exceptionId: number,
+    update: ReconciliationExceptionReviewUpdate,
+  ) => void;
+  reviewUpdatingId: number | null;
+}) {
+  const exportUrl = getReconciliationExceptionsCsvUrl(run.reconciliation_run_id, filters);
+
   return (
     <div className="grid gap-2">
-      <h3 className="text-base font-semibold text-slate-950">Exceptions</h3>
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-slate-950">Exceptions</h3>
+          <p className="mt-1 text-sm text-slate-600">
+            Showing {run.exceptions.length} of {run.exception_count}
+          </p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-[150px_180px_150px_minmax(180px,1fr)_auto]">
+          <label className="grid gap-1 text-sm font-medium text-slate-700">
+            Source
+            <select
+              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+              value={filters.sourceType ?? ""}
+              onChange={(event) =>
+                onFiltersChange({ ...filters, sourceType: event.target.value as never })
+              }
+            >
+              <option value="">All sources</option>
+              <option value="boa">BOA</option>
+              <option value="dealertrack">Dealertrack</option>
+            </select>
+          </label>
+          <label className="grid gap-1 text-sm font-medium text-slate-700">
+            Type
+            <select
+              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+              value={filters.exceptionType ?? ""}
+              onChange={(event) =>
+                onFiltersChange({ ...filters, exceptionType: event.target.value as never })
+              }
+            >
+              <option value="">All types</option>
+              <option value="missing_in_dealertrack">Missing in Dealertrack</option>
+              <option value="missing_in_boa">Missing in BOA</option>
+              <option value="duplicate_transaction">Duplicate</option>
+            </select>
+          </label>
+          <label className="grid gap-1 text-sm font-medium text-slate-700">
+            Search
+            <input
+              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+              placeholder="Stock, VIN, reason"
+              type="search"
+              value={filters.search ?? ""}
+              onChange={(event) => onFiltersChange({ ...filters, search: event.target.value })}
+            />
+          </label>
+          <label className="grid gap-1 text-sm font-medium text-slate-700">
+            Status
+            <select
+              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+              value={filters.status ?? ""}
+              onChange={(event) =>
+                onFiltersChange({ ...filters, status: event.target.value as never })
+              }
+            >
+              <option value="">All statuses</option>
+              <option value="unresolved">Unresolved</option>
+              <option value="resolved">Resolved</option>
+              <option value="ignored">Ignored</option>
+            </select>
+          </label>
+          <a
+            className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+            download
+            href={exportUrl}
+          >
+            Export CSV
+          </a>
+        </div>
+      </div>
       <div className="overflow-x-auto rounded-md border border-slate-200">
         <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
               <th className="px-3 py-2 font-semibold">Type</th>
+              <th className="px-3 py-2 font-semibold">Status</th>
               <th className="px-3 py-2 font-semibold">Source</th>
               <th className="px-3 py-2 font-semibold">Stock</th>
               <th className="px-3 py-2 font-semibold">VIN</th>
               <th className="px-3 py-2 font-semibold">Amount</th>
               <th className="px-3 py-2 font-semibold">Reason</th>
+              <th className="px-3 py-2 font-semibold">Note</th>
+              <th className="px-3 py-2 font-semibold">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 bg-white">
             {run.exceptions.length === 0 ? (
               <tr>
-                <td className="px-3 py-3 text-slate-600" colSpan={6}>
+                <td className="px-3 py-3 text-slate-600" colSpan={9}>
                   No exceptions.
                 </td>
               </tr>
             ) : (
               run.exceptions.map((exception) => (
                 <tr
-                  className={
-                    isDuplicateException(exception.reason) ? "bg-amber-50 text-amber-950" : ""
-                  }
+                  className={exceptionRowClassName(exception.status, exception.reason)}
                   key={exception.exception_id}
                 >
-                  <td className="px-3 py-2 font-medium">
-                    {isDuplicateException(exception.reason) ? "Duplicate" : "Exception"}
+                  <td className="px-3 py-2 font-medium">{formatReason(exception.exception_type)}</td>
+                  <td className="px-3 py-2">
+                    <span className={statusBadgeClassName(exception.status)}>
+                      {formatReason(exception.status)}
+                    </span>
                   </td>
                   <td className="px-3 py-2">{exception.source_type.toUpperCase()}</td>
                   <td className="px-3 py-2">{exception.transaction.stock_number ?? "n/a"}</td>
                   <td className="px-3 py-2">{exception.transaction.vin ?? "n/a"}</td>
                   <td className="px-3 py-2">{formatAmount(exception.transaction)}</td>
                   <td className="px-3 py-2">{exception.reason}</td>
+                  <td className="min-w-56 px-3 py-2">
+                    <input
+                      className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
+                      defaultValue={exception.note}
+                      disabled={reviewUpdatingId === exception.exception_id}
+                      placeholder="Add review note"
+                      type="text"
+                      onBlur={(event) => {
+                        if (event.currentTarget.value !== exception.note) {
+                          onReviewUpdate(exception.exception_id, {
+                            note: event.currentTarget.value,
+                          });
+                        }
+                      }}
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        className="inline-flex h-8 items-center justify-center rounded-md border border-emerald-300 bg-white px-3 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:text-slate-400"
+                        disabled={
+                          exception.status === "resolved" ||
+                          reviewUpdatingId === exception.exception_id
+                        }
+                        type="button"
+                        onClick={() =>
+                          onReviewUpdate(exception.exception_id, { status: "resolved" })
+                        }
+                      >
+                        Resolve
+                      </button>
+                      <button
+                        className="inline-flex h-8 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+                        disabled={
+                          exception.status === "ignored" ||
+                          reviewUpdatingId === exception.exception_id
+                        }
+                        type="button"
+                        onClick={() =>
+                          onReviewUpdate(exception.exception_id, { status: "ignored" })
+                        }
+                      >
+                        Ignore
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))
             )}
@@ -576,6 +780,27 @@ function formatDateTime(value: string) {
     dateStyle: "short",
     timeStyle: "short",
   });
+}
+
+function exceptionRowClassName(status: string, reason: string) {
+  if (status === "resolved") {
+    return "bg-emerald-50 text-emerald-950";
+  }
+  if (status === "ignored") {
+    return "bg-slate-50 text-slate-500";
+  }
+  return isDuplicateException(reason) ? "bg-amber-50 text-amber-950" : "";
+}
+
+function statusBadgeClassName(status: string) {
+  const base = "inline-flex rounded-md px-2 py-1 text-xs font-semibold";
+  if (status === "resolved") {
+    return `${base} bg-emerald-100 text-emerald-900`;
+  }
+  if (status === "ignored") {
+    return `${base} bg-slate-200 text-slate-600`;
+  }
+  return `${base} bg-amber-100 text-amber-900`;
 }
 
 function isDuplicateException(reason: string) {

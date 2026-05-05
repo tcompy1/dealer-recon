@@ -256,6 +256,9 @@ describe("app", () => {
     expect(response.body.exceptions[0]).toEqual(
       expect.objectContaining({
         exception_id: expect.any(Number),
+        exception_type: expect.any(String),
+        status: "unresolved",
+        note: "",
         reason: expect.any(String),
         transaction: expect.objectContaining({
           id: expect.any(Number),
@@ -271,6 +274,133 @@ describe("app", () => {
     const response = await request(app).get("/reconciliation-runs/999999");
 
     expect(response.status).toBe(404);
+  });
+
+  test("GET /reconciliation-runs/:id filters exceptions", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+
+    const response = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}`)
+      .query({
+        source_type: "boa",
+        exception_type: "missing_in_dealertrack",
+        search: "M30202",
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.exception_count).toBe(2);
+    expect(response.body.exceptions).toEqual([
+      expect.objectContaining({
+        exception_type: "missing_in_dealertrack",
+        source_type: "boa",
+        transaction: expect.objectContaining({
+          stock_number: "M30202",
+        }),
+      }),
+    ]);
+  });
+
+  test("PATCH /reconciliation-runs/:id/exceptions/:exception_id updates exception review state", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+    const detailResponse = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
+    );
+    const exceptionId = detailResponse.body.exceptions[0].exception_id as number;
+
+    const updateResponse = await request(app)
+      .patch(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions/${exceptionId}`)
+      .send({ status: "resolved", note: "Cleared by warranty credit." });
+
+    expect(updateResponse.status).toBe(200);
+    expect(updateResponse.body).toMatchObject({
+      exception_id: exceptionId,
+      status: "resolved",
+      note: "Cleared by warranty credit.",
+    });
+
+    const refreshedResponse = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
+    );
+    expect(refreshedResponse.body.exceptions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          exception_id: exceptionId,
+          status: "resolved",
+          note: "Cleared by warranty credit.",
+        }),
+      ]),
+    );
+  });
+
+  test("GET /reconciliation-runs/:id filters exceptions by review status", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+    const detailResponse = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
+    );
+    const [resolvedException, unresolvedException] = detailResponse.body.exceptions as Array<{
+      exception_id: number;
+    }>;
+
+    await request(app)
+      .patch(
+        `/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions/${resolvedException.exception_id}`,
+      )
+      .send({ status: "resolved" })
+      .expect(200);
+
+    const response = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}`)
+      .query({ status: "unresolved" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.exceptions).toEqual([
+      expect.objectContaining({
+        exception_id: unresolvedException.exception_id,
+        status: "unresolved",
+      }),
+    ]);
+  });
+
+  test("GET /reconciliation-runs/:id/exceptions.csv exports filtered exceptions", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+
+    const response = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions.csv`)
+      .query({ exception_type: "missing_in_boa" });
+
+    expect(response.status).toBe(200);
+    expect(response.header["content-type"]).toContain("text/csv");
+    expect(response.header["content-disposition"]).toContain(
+      `reconciliation-run-${reconciliation.reconciliation_run_id}-exceptions.csv`,
+    );
+    expect(response.text.split("\n")[0]).toBe(
+      [
+        "reconciliation_run_id",
+        "exception_id",
+        "exception_type",
+        "status",
+        "note",
+        "source_type",
+        "transaction_id",
+        "transaction_date",
+        "post_date",
+        "amount",
+        "amount_cents",
+        "reference_number",
+        "stock_number",
+        "vin",
+        "description",
+        "reason",
+        "created_at",
+      ].join(","),
+    );
+    expect(response.text).toContain("missing_in_boa,unresolved,,dealertrack");
+    expect(response.text).toContain("M30303");
+    expect(response.text).not.toContain("M30202");
   });
 
   test("POST /reconcile only compares selected source files", async () => {

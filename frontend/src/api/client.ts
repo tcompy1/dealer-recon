@@ -26,6 +26,22 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, "API request failed"));
+  }
+
+  return response.json() as Promise<T>;
+}
+
 export async function getErrorMessage(response: Response, fallback: string): Promise<string> {
   try {
     const body = (await response.json()) as { detail?: unknown };

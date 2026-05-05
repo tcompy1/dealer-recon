@@ -76,9 +76,17 @@ export async function migrate(databaseUrl = loadConfig().databaseUrl): Promise<v
         transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
         source_type VARCHAR(20) NOT NULL,
         reason TEXT NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'unresolved',
+        note TEXT NOT NULL DEFAULT '',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
+    await client.query(
+      "ALTER TABLE reconciliation_exceptions ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'unresolved'",
+    );
+    await client.query(
+      "ALTER TABLE reconciliation_exceptions ADD COLUMN IF NOT EXISTS note TEXT NOT NULL DEFAULT ''",
+    );
     await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS source_file_id INTEGER NULL");
     await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS amount_cents BIGINT NULL");
     await client.query(`
@@ -189,6 +197,11 @@ export async function migrate(databaseUrl = loadConfig().databaseUrl): Promise<v
       "transactions_amount_cents_nonzero",
       "ALTER TABLE transactions ADD CONSTRAINT transactions_amount_cents_nonzero CHECK (amount_cents <> 0)",
     );
+    await addConstraint(
+      client,
+      "reconciliation_exceptions_status_check",
+      "ALTER TABLE reconciliation_exceptions ADD CONSTRAINT reconciliation_exceptions_status_check CHECK (status IN ('unresolved', 'ignored', 'resolved'))",
+    );
     await client.query(
       "CREATE INDEX IF NOT EXISTS ix_source_files_source_type ON source_files (source_type)",
     );
@@ -221,6 +234,9 @@ export async function migrate(databaseUrl = loadConfig().databaseUrl): Promise<v
     );
     await client.query(
       "CREATE INDEX IF NOT EXISTS ix_reconciliation_exceptions_transaction_id ON reconciliation_exceptions (transaction_id)",
+    );
+    await client.query(
+      "CREATE INDEX IF NOT EXISTS ix_reconciliation_exceptions_status ON reconciliation_exceptions (status)",
     );
     await client.query(
       "CREATE INDEX IF NOT EXISTS ix_transactions_source_type ON transactions (source_type)",

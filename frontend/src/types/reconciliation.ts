@@ -78,6 +78,9 @@ export type ReconciliationRunDetailMatchGroup = {
 
 export type ReconciliationRunDetailException = {
   exception_id: number;
+  exception_type: ReconciliationException["exception_type"];
+  status: ReconciliationExceptionStatus;
+  note: string;
   source_type: SourceType;
   reason: string;
   created_at: string;
@@ -89,4 +92,18 @@ export type ReconciliationRunDetail = ReconciliationRunListItem & {
   dealertrack_source_file: SourceFileSummary;
   match_groups: ReconciliationRunDetailMatchGroup[];
   exceptions: ReconciliationRunDetailException[];
+};
+
+export type ReconciliationRunFilters = {
+  sourceType?: SourceType | "";
+  exceptionType?: ReconciliationException["exception_type"] | "";
+  status?: ReconciliationExceptionStatus | "";
+  search?: string;
+};
+
+export type ReconciliationExceptionStatus = "unresolved" | "ignored" | "resolved";
+
+export type ReconciliationExceptionReviewUpdate = {
+  status?: ReconciliationExceptionStatus;
+  note?: string;
 };

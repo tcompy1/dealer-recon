@@ -73,6 +73,14 @@ describeIfDatabase("migrate", () => {
          WHERE conname = 'transactions_source_file_id_fkey'`,
       );
       expect(fkResult.rows[0].confdeltype).toBe("c");
+      const exceptionColumnResult = await pool.query<{ column_name: string }>(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'reconciliation_exceptions'
+           AND column_name IN ('status', 'note')`,
+      );
+      expect(exceptionColumnResult.rows).toHaveLength(2);
     } finally {
       await pool.end();
     }
