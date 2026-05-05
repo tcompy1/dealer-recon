@@ -26,6 +26,7 @@ import {
 
 type SourceFileRow = {
   id: number;
+  dealership_id: number;
   source_type: SourceType;
   original_filename: string;
   stored_filename: string | null;
@@ -37,6 +38,7 @@ type SourceFileRow = {
 
 type TransactionRow = {
   id: number;
+  dealership_id: number;
   source_file_id: number | null;
   source_type: SourceType;
   transaction_date: Date | string | null;
@@ -52,6 +54,7 @@ type TransactionRow = {
 
 type ReconciliationRunRow = {
   id: number;
+  dealership_id: number;
   boa_source_file_id: number;
   dealertrack_source_file_id: number;
   matched_count: number;
@@ -93,15 +96,17 @@ export class PostgresTransactionRepository implements TransactionRepository {
   constructor(private readonly pool: pg.Pool) {}
 
   async createSourceFileWithTransactions(
+    dealershipId: number,
     sourceFileInput: NewSourceFile,
     transactions: NewTransaction[],
   ): Promise<SourceFileImport> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const sourceFile = await insertSourceFile(client, sourceFileInput);
+      const sourceFile = await insertSourceFile(client, dealershipId, sourceFileInput);
       const scopedTransactions = transactions.map((transaction) => ({
         ...transaction,
+        dealership_id: dealershipId,
         source_file_id: sourceFile.id,
       }));
       const inserted = await insertTransactions(client, scopedTransactions);
@@ -140,39 +145,44 @@ export class PostgresTransactionRepository implements TransactionRepository {
     return result.rows[0] ? toSourceFile(result.rows[0]) : null;
   }
 
-  async getSourceFileByHash(sourceType: SourceType, fileHash: string): Promise<SourceFile | null> {
+  async getSourceFileByHash(
+    dealershipId: number,
+    sourceType: SourceType,
+    fileHash: string,
+  ): Promise<SourceFile | null> {
     const result = await this.pool.query<SourceFileRow>(
-      "SELECT * FROM source_files WHERE source_type = $1 AND file_hash = $2",
-      [sourceType, fileHash],
+      "SELECT * FROM source_files WHERE dealership_id = $1 AND source_type = $2 AND file_hash = $3",
+      [dealershipId, sourceType, fileHash],
     );
     return result.rows[0] ? toSourceFile(result.rows[0]) : null;
   }
 
-  async listSourceFiles(sourceType?: SourceType): Promise<SourceFileSummary[]> {
+  async listSourceFiles(dealershipId: number, sourceType?: SourceType): Promise<SourceFileSummary[]> {
     const result =
       sourceType === undefined
         ? await this.pool.query<SourceFileRow>(
-            "SELECT * FROM source_files ORDER BY created_at DESC, id DESC",
+            "SELECT * FROM source_files WHERE dealership_id = $1 ORDER BY created_at DESC, id DESC",
+            [dealershipId],
           )
         : await this.pool.query<SourceFileRow>(
-            "SELECT * FROM source_files WHERE source_type = $1 ORDER BY created_at DESC, id DESC",
-            [sourceType],
+            "SELECT * FROM source_files WHERE dealership_id = $1 AND source_type = $2 ORDER BY created_at DESC, id DESC",
+            [dealershipId, sourceType],
           );
     return result.rows.map((row) => toSourceFileSummary(toSourceFile(row)));
   }
 
-  async listBySource(sourceType: SourceType): Promise<Transaction[]> {
+  async listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]> {
     const result = await this.pool.query<TransactionRow>(
-      "SELECT * FROM transactions WHERE source_type = $1 ORDER BY id",
-      [sourceType],
+      "SELECT * FROM transactions WHERE dealership_id = $1 AND source_type = $2 ORDER BY id",
+      [dealershipId, sourceType],
     );
     return result.rows.map(toTransaction);
   }
 
-  async listBySourceFile(sourceFileId: number): Promise<Transaction[]> {
+  async listBySourceFile(dealershipId: number, sourceFileId: number): Promise<Transaction[]> {
     const result = await this.pool.query<TransactionRow>(
-      "SELECT * FROM transactions WHERE source_file_id = $1 ORDER BY id",
-      [sourceFileId],
+      "SELECT * FROM transactions WHERE dealership_id = $1 AND source_file_id = $2 ORDER BY id",
+      [dealershipId, sourceFileId],
     );
     return result.rows.map(toTransaction);
   }
@@ -214,12 +224,19 @@ export class PostgresTransactionRepository implements TransactionRepository {
       for (const exception of input.result.exceptions) {
         await client.query(
           `INSERT INTO reconciliation_exceptions (
+            dealership_id,
             reconciliation_run_id,
             transaction_id,
             source_type,
             reason
-          ) VALUES ($1, $2, $3, $4)`,
-          [run.id, exception.transaction.id, exception.source_type, exception.description],
+          ) VALUES ($1, $2, $3, $4, $5)`,
+          [
+            input.dealership_id,
+            run.id,
+            exception.transaction.id,
+            exception.source_type,
+            exception.description,
+          ],
         );
       }
 
@@ -233,7 +250,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
     }
   }
 
-  async listReconciliationRuns(): Promise<ReconciliationRunListItem[]> {
+  async listReconciliationRuns(dealershipId: number): Promise<ReconciliationRunListItem[]> {
     const result = await this.pool.query<ReconciliationRunListRow>(
       `SELECT
         rr.*,
@@ -242,12 +259,23 @@ export class PostgresTransactionRepository implements TransactionRepository {
       FROM reconciliation_runs rr
       JOIN source_files boa ON boa.id = rr.boa_source_file_id
       JOIN source_files dealertrack ON dealertrack.id = rr.dealertrack_source_file_id
+      WHERE rr.dealership_id = $1
       ORDER BY rr.created_at DESC, rr.id DESC`,
+      [dealershipId],
     );
     return result.rows.map(toReconciliationRunListItem);
   }
 
+  async getReconciliationRunDealershipId(reconciliationRunId: number): Promise<number | null> {
+    const result = await this.pool.query<{ dealership_id: number }>(
+      "SELECT dealership_id FROM reconciliation_runs WHERE id = $1",
+      [reconciliationRunId],
+    );
+    return result.rows[0]?.dealership_id ?? null;
+  }
+
   async getReconciliationRunDetail(
+    dealershipId: number,
     reconciliationRunId: number,
     filters: ReconciliationRunDetailFilters = {},
   ): Promise<ReconciliationRunDetail | null> {
@@ -286,8 +314,9 @@ export class PostgresTransactionRepository implements TransactionRepository {
       FROM reconciliation_runs rr
       JOIN source_files boa ON boa.id = rr.boa_source_file_id
       JOIN source_files dealertrack ON dealertrack.id = rr.dealertrack_source_file_id
-      WHERE rr.id = $1`,
-      [reconciliationRunId],
+      WHERE rr.id = $1
+        AND rr.dealership_id = $2`,
+      [reconciliationRunId, dealershipId],
     );
 
     const runRow = runResult.rows[0];
@@ -312,12 +341,14 @@ export class PostgresTransactionRepository implements TransactionRepository {
       JOIN transactions t ON t.id = mgt.transaction_id
       JOIN reconciliation_match_groups mg ON mg.id = mgt.match_group_id
       WHERE mg.reconciliation_run_id = $1
+        AND t.dealership_id = $2
       ORDER BY mgt.match_group_id, CASE WHEN mgt.side = 'left' THEN 0 ELSE 1 END, t.id`,
-      [reconciliationRunId],
+      [reconciliationRunId, dealershipId],
     );
     const exceptionRows = await this.pool.query<ReconciliationExceptionRow>(
       `SELECT
         re.id AS exception_id,
+        re.dealership_id,
         re.source_type AS exception_source_type,
         re.reason,
         re.status,
@@ -327,14 +358,16 @@ export class PostgresTransactionRepository implements TransactionRepository {
       FROM reconciliation_exceptions re
       JOIN transactions t ON t.id = re.transaction_id
       WHERE re.reconciliation_run_id = $1
+        AND re.dealership_id = $2
       ORDER BY re.id`,
-      [reconciliationRunId],
+      [reconciliationRunId, dealershipId],
     );
 
     return {
       ...toReconciliationRunListItem(runRow),
       boa_source_file: toSourceFileSummary({
         id: runRow.boa_source_file_id,
+        dealership_id: runRow.dealership_id,
         source_type: runRow.boa_source_type,
         original_filename: runRow.boa_original_filename,
         stored_filename: runRow.boa_stored_filename,
@@ -345,6 +378,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
       }),
       dealertrack_source_file: toSourceFileSummary({
         id: runRow.dealertrack_source_file_id,
+        dealership_id: runRow.dealership_id,
         source_type: runRow.dealertrack_source_type,
         original_filename: runRow.dealertrack_original_filename,
         stored_filename: runRow.dealertrack_stored_filename,
@@ -369,6 +403,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
       })),
       exceptions: exceptionRows.rows.map((row) => ({
         exception_id: row.exception_id,
+        dealership_id: row.dealership_id,
         exception_type: exceptionTypeFromReason(row.reason),
         status: row.status,
         note: row.note,
@@ -381,6 +416,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
   }
 
   async updateReconciliationExceptionReview(
+    dealershipId: number,
     reconciliationRunId: number,
     exceptionId: number,
     update: ReconciliationExceptionReviewUpdate,
@@ -389,8 +425,9 @@ export class PostgresTransactionRepository implements TransactionRepository {
       `SELECT id
        FROM reconciliation_exceptions
        WHERE reconciliation_run_id = $1
-         AND id = $2`,
-      [reconciliationRunId, exceptionId],
+         AND id = $2
+         AND dealership_id = $3`,
+      [reconciliationRunId, exceptionId, dealershipId],
     );
     if (!current.rows[0]) {
       return null;
@@ -404,6 +441,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
        FROM transactions t
        WHERE reconciliation_exceptions.reconciliation_run_id = $1
          AND reconciliation_exceptions.id = $2
+         AND reconciliation_exceptions.dealership_id = $5
          AND t.id = reconciliation_exceptions.transaction_id
        RETURNING
          reconciliation_exceptions.id AS exception_id,
@@ -413,13 +451,14 @@ export class PostgresTransactionRepository implements TransactionRepository {
          reconciliation_exceptions.note,
          reconciliation_exceptions.created_at AS exception_created_at,
          t.*`,
-      [reconciliationRunId, exceptionId, update.status ?? null, update.note ?? null],
+      [reconciliationRunId, exceptionId, update.status ?? null, update.note ?? null, dealershipId],
     );
 
     const row = result.rows[0];
 
     return {
       exception_id: row.exception_id,
+      dealership_id: row.dealership_id,
       exception_type: exceptionTypeFromReason(row.reason),
       status: row.status,
       note: row.note,
@@ -429,6 +468,20 @@ export class PostgresTransactionRepository implements TransactionRepository {
       transaction: toTransactionSummary(toTransaction(row)),
     };
   }
+
+  async getReconciliationExceptionDealershipId(
+    reconciliationRunId: number,
+    exceptionId: number,
+  ): Promise<number | null> {
+    const result = await this.pool.query<{ dealership_id: number }>(
+      `SELECT dealership_id
+       FROM reconciliation_exceptions
+       WHERE reconciliation_run_id = $1
+         AND id = $2`,
+      [reconciliationRunId, exceptionId],
+    );
+    return result.rows[0]?.dealership_id ?? null;
+  }
 }
 
 export function createPool(databaseUrl: string): pg.Pool {
@@ -437,19 +490,22 @@ export function createPool(databaseUrl: string): pg.Pool {
 
 async function insertSourceFile(
   client: pg.PoolClient,
+  dealershipId: number,
   sourceFile: NewSourceFile,
 ): Promise<SourceFile> {
   const result = await client.query<SourceFileRow>(
     `INSERT INTO source_files (
+      dealership_id,
       source_type,
       original_filename,
       stored_filename,
       file_hash,
       row_count,
       validation_error_count
-    ) VALUES ($1, $2, $3, $4, $5, $6)
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
     RETURNING *`,
     [
+      dealershipId,
       sourceFile.source_type,
       sourceFile.original_filename,
       sourceFile.stored_filename,
@@ -470,6 +526,7 @@ async function insertTransactions(
   for (const transaction of transactions) {
     const result = await client.query<TransactionRow>(
       `INSERT INTO transactions (
+        dealership_id,
         source_file_id,
         source_type,
         transaction_date,
@@ -481,9 +538,10 @@ async function insertTransactions(
         stock_number,
         vin,
         raw_data
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING *`,
       [
+        (transaction as NewTransaction & { dealership_id?: number }).dealership_id ?? 1,
         transaction.source_file_id,
         transaction.source_type,
         transaction.transaction_date,
@@ -508,16 +566,18 @@ async function insertReconciliationRun(
   input: PersistReconciliationRunInput,
 ): Promise<ReconciliationRun> {
   const result = await client.query<ReconciliationRunRow>(
-    `INSERT INTO reconciliation_runs (
+      `INSERT INTO reconciliation_runs (
+      dealership_id,
       boa_source_file_id,
       dealertrack_source_file_id,
       matched_count,
       exception_count,
       duplicate_count,
       status
-    ) VALUES ($1, $2, $3, $4, $5, $6)
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
     RETURNING *`,
     [
+      input.dealership_id,
       input.boa_source_file_id,
       input.dealertrack_source_file_id,
       input.result.matched_count,
@@ -532,6 +592,7 @@ async function insertReconciliationRun(
 function toSourceFile(row: SourceFileRow): SourceFile {
   return {
     id: row.id,
+    dealership_id: row.dealership_id,
     source_type: row.source_type,
     original_filename: row.original_filename,
     stored_filename: row.stored_filename,
@@ -545,6 +606,7 @@ function toSourceFile(row: SourceFileRow): SourceFile {
 function toSourceFileSummary(sourceFile: SourceFile): SourceFileSummary {
   return {
     source_file_id: sourceFile.id,
+    dealership_id: sourceFile.dealership_id,
     source_type: sourceFile.source_type,
     filename: sourceFile.original_filename,
     row_count: sourceFile.row_count,
@@ -556,6 +618,7 @@ function toSourceFileSummary(sourceFile: SourceFile): SourceFileSummary {
 function toReconciliationRun(row: ReconciliationRunRow): ReconciliationRun {
   return {
     id: row.id,
+    dealership_id: row.dealership_id,
     boa_source_file_id: row.boa_source_file_id,
     dealertrack_source_file_id: row.dealertrack_source_file_id,
     matched_count: Number(row.matched_count),
@@ -569,6 +632,7 @@ function toReconciliationRun(row: ReconciliationRunRow): ReconciliationRun {
 function toReconciliationRunListItem(row: ReconciliationRunListRow): ReconciliationRunListItem {
   return {
     reconciliation_run_id: row.id,
+    dealership_id: row.dealership_id,
     boa_source_file_id: row.boa_source_file_id,
     dealertrack_source_file_id: row.dealertrack_source_file_id,
     boa_filename: row.boa_filename,
@@ -584,6 +648,7 @@ function toReconciliationRunListItem(row: ReconciliationRunListRow): Reconciliat
 function toTransaction(row: TransactionRow): Transaction {
   return {
     id: row.id,
+    dealership_id: row.dealership_id,
     source_file_id: row.source_file_id,
     source_type: row.source_type,
     transaction_date: toDateString(row.transaction_date),
@@ -601,6 +666,7 @@ function toTransaction(row: TransactionRow): Transaction {
 function toTransactionSummary(transaction: Transaction): TransactionSummary {
   return {
     id: transaction.id,
+    dealership_id: transaction.dealership_id,
     source_type: transaction.source_type,
     transaction_date: transaction.transaction_date,
     post_date: transaction.post_date,
@@ -638,7 +704,8 @@ function isDuplicateSourceFileError(error: unknown): boolean {
     "code" in error &&
     error.code === "23505" &&
     "constraint" in error &&
-    error.constraint === "ux_source_files_source_type_file_hash"
+    (error.constraint === "ux_source_files_source_type_file_hash" ||
+      error.constraint === "ux_source_files_dealership_source_type_file_hash")
   );
 }
 

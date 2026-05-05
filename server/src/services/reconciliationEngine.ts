@@ -14,6 +14,7 @@ export const STOCK_AMOUNT_REASON = "stock_number_amount";
 export const AMOUNT_CONTEXT_REASON = "amount_reference_context";
 
 type ReconciliationScope = {
+  dealershipId?: number;
   leftSourceFileId?: number;
   rightSourceFileId?: number;
 };
@@ -30,14 +31,15 @@ export async function reconcileTransactions(
   rightSourceType: SourceType = "dealertrack",
   scope: ReconciliationScope = {},
 ): Promise<ReconciliationResponse> {
+  const dealershipId = scope.dealershipId ?? 1;
   const leftTransactions =
     scope.leftSourceFileId === undefined
-      ? await repository.listBySource(leftSourceType)
-      : await repository.listBySourceFile(scope.leftSourceFileId);
+      ? await repository.listBySource(dealershipId, leftSourceType)
+      : await repository.listBySourceFile(dealershipId, scope.leftSourceFileId);
   const rightTransactions =
     scope.rightSourceFileId === undefined
-      ? await repository.listBySource(rightSourceType)
-      : await repository.listBySourceFile(scope.rightSourceFileId);
+      ? await repository.listBySource(dealershipId, rightSourceType)
+      : await repository.listBySourceFile(dealershipId, scope.rightSourceFileId);
 
   const matchedRightIds = new Set<number>();
   const duplicateRightIds = new Set<number>();
@@ -214,6 +216,7 @@ function buildException(
 function toSummary(transaction: Transaction): TransactionSummary {
   return {
     id: transaction.id,
+    dealership_id: transaction.dealership_id,
     source_type: transaction.source_type,
     transaction_date: transaction.transaction_date,
     post_date: transaction.post_date,

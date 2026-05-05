@@ -95,6 +95,25 @@ Run the backend with Docker:
 docker compose up backend db
 ```
 
+## Tenancy Model
+
+The backend has basic dealership scoping but does not have authentication yet. For now, every API
+request runs in temporary single-dealership mode using `DEFAULT_DEALERSHIP_ID` from the backend
+environment. Docker defaults this to dealership `1`.
+
+All uploaded source files, normalized transactions, reconciliation runs, and reconciliation
+exceptions are stored with `dealership_id`. Reads are filtered to the configured dealership, writes
+attach the configured dealership, and cross-dealership source file, run, or exception IDs are
+rejected with `403`.
+
+The migration creates `dealerships` and `users` tables and backfills existing prototype data to the
+default dealership. The `users` table is only schema groundwork right now; user authentication and
+request-level user selection are not implemented.
+
+```text
+DEFAULT_DEALERSHIP_ID=1
+```
+
 The TypeScript backend runs a lightweight PostgreSQL migration on startup and exposes:
 
 ```text
@@ -349,11 +368,13 @@ POSTGRES_PASSWORD=dealer_recon
 DATABASE_URL=postgresql://dealer_recon:dealer_recon@db:5432/dealer_recon
 BACKEND_CORS_ORIGINS=http://localhost:5173
 UPLOAD_STORAGE_PATH=/app/storage/uploads
+DEFAULT_DEALERSHIP_ID=1
 VITE_API_BASE_URL=http://localhost:8000
 ```
 
 ## MVP Build Order
 
-1. Build deeper filtering for the exception dashboard.
-2. Add account-level close support views.
-3. Add exportable exception and month-end reports.
+1. Add account-level close support views.
+2. Add exportable month-end reports.
+3. Add basic user/dealership scoping.
+4. Add production migration tooling and deployment hardening.

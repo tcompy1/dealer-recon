@@ -48,7 +48,11 @@ const upload = multer({
   },
 });
 
-export function createApp(repository: TransactionRepository, corsOrigins: string[] = []) {
+export function createApp(
+  repository: TransactionRepository,
+  corsOrigins: string[] = [],
+  dealershipId = 1,
+) {
   const app = express();
 
   app.use(express.json());
@@ -71,7 +75,7 @@ export function createApp(repository: TransactionRepository, corsOrigins: string
         return;
       }
 
-      response.json(await repository.listSourceFiles(sourceType));
+      response.json(await repository.listSourceFiles(dealershipId, sourceType));
     } catch (error) {
       next(error);
     }
@@ -90,7 +94,11 @@ export function createApp(repository: TransactionRepository, corsOrigins: string
       }
 
       const fileHash = createFileHash(request.file.buffer);
-      const duplicateSourceFile = await repository.getSourceFileByHash(sourceType, fileHash);
+      const duplicateSourceFile = await repository.getSourceFileByHash(
+        dealershipId,
+        sourceType,
+        fileHash,
+      );
       if (duplicateSourceFile) {
         response.status(409).json({
           detail: "Duplicate upload detected for this source type and file contents.",
@@ -102,6 +110,7 @@ export function createApp(repository: TransactionRepository, corsOrigins: string
 
       const result = normalizeTransactionsFromCsv(request.file.buffer, sourceType);
       const importResult = await repository.createSourceFileWithTransactions(
+        dealershipId,
         {
           source_type: sourceType,
           original_filename: request.file.originalname || "upload.csv",
@@ -149,6 +158,13 @@ export function createApp(repository: TransactionRepository, corsOrigins: string
         response.status(404).json({ detail: "Source file was not found." });
         return;
       }
+      if (
+        boaSourceFile.dealership_id !== dealershipId ||
+        dealertrackSourceFile.dealership_id !== dealershipId
+      ) {
+        response.status(403).json({ detail: "Source file belongs to another dealership." });
+        return;
+      }
 
       if (
         boaSourceFile.source_type !== "boa" ||
@@ -162,10 +178,12 @@ export function createApp(repository: TransactionRepository, corsOrigins: string
       }
 
       const result = await reconcileTransactions(repository, "boa", "dealertrack", {
+        dealershipId,
         leftSourceFileId: boaSourceFileId,
         rightSourceFileId: dealertrackSourceFileId,
       });
       const run = await repository.createReconciliationRun({
+        dealership_id: dealershipId,
         boa_source_file_id: boaSourceFileId,
         dealertrack_source_file_id: dealertrackSourceFileId,
         result,
@@ -182,7 +200,7 @@ export function createApp(repository: TransactionRepository, corsOrigins: string
 
   app.get("/reconciliation-runs", async (_request, response, next) => {
     try {
-      response.json(await repository.listReconciliationRuns());
+      response.json(await repository.listReconciliationRuns(dealershipId));
     } catch (error) {
       next(error);
     }
@@ -202,8 +220,18 @@ export function createApp(repository: TransactionRepository, corsOrigins: string
         return;
       }
 
-      const detail = await repository.getReconciliationRunDetail(reconciliationRunId, filters);
+      const detail = await repository.getReconciliationRunDetail(
+        dealershipId,
+        reconciliationRunId,
+        filters,
+      );
       if (!detail) {
+        const ownerDealershipId =
+          await repository.getReconciliationRunDealershipId(reconciliationRunId);
+        if (ownerDealershipId !== null && ownerDealershipId !== dealershipId) {
+          response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
+          return;
+        }
         response.status(404).json({ detail: "Reconciliation run was not found." });
         return;
       }
@@ -228,8 +256,18 @@ export function createApp(repository: TransactionRepository, corsOrigins: string
         return;
       }
 
-      const detail = await repository.getReconciliationRunDetail(reconciliationRunId, filters);
+      const detail = await repository.getReconciliationRunDetail(
+        dealershipId,
+        reconciliationRunId,
+        filters,
+      );
       if (!detail) {
+        const ownerDealershipId =
+          await repository.getReconciliationRunDealershipId(reconciliationRunId);
+        if (ownerDealershipId !== null && ownerDealershipId !== dealershipId) {
+          response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
+          return;
+        }
         response.status(404).json({ detail: "Reconciliation run was not found." });
         return;
       }
@@ -265,11 +303,22 @@ export function createApp(repository: TransactionRepository, corsOrigins: string
         }
 
         const exception = await repository.updateReconciliationExceptionReview(
+          dealershipId,
           reconciliationRunId,
           exceptionId,
           update,
         );
         if (!exception) {
+          const owner = await repository.getReconciliationExceptionDealershipId(
+            reconciliationRunId,
+            exceptionId,
+          );
+          if (owner !== null && owner !== dealershipId) {
+            response
+              .status(403)
+              .json({ detail: "Reconciliation exception belongs to another dealership." });
+            return;
+          }
           response.status(404).json({ detail: "Reconciliation exception was not found." });
           return;
         }

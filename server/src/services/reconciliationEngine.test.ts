@@ -107,8 +107,8 @@ describe("reconcileTransactions", () => {
   test("puts every transaction in exactly one reconciliation bucket", async () => {
     const repository = await loadFloorplanSamples();
     const transactions = [
-      ...(await repository.listBySource("boa")),
-      ...(await repository.listBySource("dealertrack")),
+      ...(await repository.listBySource(1, "boa")),
+      ...(await repository.listBySource(1, "dealertrack")),
     ];
     const result = await reconcileTransactions(repository);
     const bucketCounts = new Map<number, number>();

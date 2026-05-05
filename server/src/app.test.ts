@@ -87,6 +87,44 @@ describe("app", () => {
     });
   });
 
+  test("uploads are scoped by dealership and attach dealership_id", async () => {
+    const repository = new MemoryTransactionRepository();
+    const firstDealershipApp = createApp(repository, [], 1);
+    const secondDealershipApp = createApp(repository, [], 2);
+    const csv = [
+      "transaction_date,post_date,amount,reference_number,description,account,stock_number,vin",
+      "2026-04-30,2026-05-01,100.00,DEP-1001,Daily deposit,1000,STK123,1HGCM82633A004352",
+    ].join("\n");
+
+    const firstUpload = await uploadCsv(firstDealershipApp, "bank", csv, "bank.csv");
+    const secondUpload = await uploadCsv(secondDealershipApp, "bank", csv, "bank.csv");
+
+    await expect(repository.getSourceFile(firstUpload.source_file_id)).resolves.toMatchObject({
+      dealership_id: 1,
+    });
+    await expect(repository.getSourceFile(secondUpload.source_file_id)).resolves.toMatchObject({
+      dealership_id: 2,
+    });
+
+    const firstList = await request(firstDealershipApp).get("/source-files");
+    const secondList = await request(secondDealershipApp).get("/source-files");
+
+    expect(firstList.status).toBe(200);
+    expect(firstList.body).toEqual([
+      expect.objectContaining({
+        source_file_id: firstUpload.source_file_id,
+        dealership_id: 1,
+      }),
+    ]);
+    expect(secondList.status).toBe(200);
+    expect(secondList.body).toEqual([
+      expect.objectContaining({
+        source_file_id: secondUpload.source_file_id,
+        dealership_id: 2,
+      }),
+    ]);
+  });
+
   test("POST /upload rejects non-CSV files", async () => {
     const app = createApp(new MemoryTransactionRepository());
 
@@ -436,6 +474,56 @@ describe("app", () => {
       exception_count: 0,
       duplicate_count: 0,
     });
+  });
+
+  test("POST /reconcile rejects cross-dealership source files", async () => {
+    const repository = new MemoryTransactionRepository();
+    const firstDealershipApp = createApp(repository, [], 1);
+    const secondDealershipApp = createApp(repository, [], 2);
+    const boaUpload = await uploadCsv(
+      firstDealershipApp,
+      "boa",
+      boaUploadCsv("M11111", "1HGCM82633A004352", "$100.00", "111111"),
+      "boa-one.csv",
+    );
+    const dealertrackUpload = await uploadCsv(
+      secondDealershipApp,
+      "dealertrack",
+      dealertrackUploadCsv("M11111", "-100"),
+      "dealertrack-one.csv",
+    );
+
+    const response = await request(firstDealershipApp).post("/reconcile").send({
+      boa_source_file_id: boaUpload.source_file_id,
+      dealertrack_source_file_id: dealertrackUpload.source_file_id,
+    });
+
+    expect(response.status).toBe(403);
+  });
+
+  test("reconciliation reads reject cross-dealership runs and exceptions", async () => {
+    const repository = new MemoryTransactionRepository();
+    const firstDealershipApp = createApp(repository, [], 1);
+    const secondDealershipApp = createApp(repository, [], 2);
+    const reconciliation = await createReconciliation(firstDealershipApp);
+    const detail = await request(firstDealershipApp).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
+    );
+    const exceptionId = detail.body.exceptions[0].exception_id as number;
+
+    const runResponse = await request(secondDealershipApp).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
+    );
+    const exportResponse = await request(secondDealershipApp).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions.csv`,
+    );
+    const patchResponse = await request(secondDealershipApp)
+      .patch(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions/${exceptionId}`)
+      .send({ status: "ignored" });
+
+    expect(runResponse.status).toBe(403);
+    expect(exportResponse.status).toBe(403);
+    expect(patchResponse.status).toBe(403);
   });
 
   test("POST /reconcile repeated uploads do not pollute later reconciliation", async () => {

@@ -4,6 +4,7 @@ export type AppConfig = {
   port: number;
   databaseUrl: string;
   corsOrigins: string[];
+  defaultDealershipId: number;
 };
 
 export function loadConfig(): AppConfig {
@@ -19,6 +20,7 @@ export function loadConfig(): AppConfig {
       .split(",")
       .map((origin) => origin.trim())
       .filter(Boolean),
+    defaultDealershipId: Number(process.env.DEFAULT_DEALERSHIP_ID ?? 1),
   };
 }
 

@@ -1,12 +1,43 @@
 import { loadConfig } from "../config.js";
 import { createPool } from "../repositories/postgresTransactionRepository.js";
 
-export async function migrate(databaseUrl = loadConfig().databaseUrl): Promise<void> {
+export async function migrate(
+  databaseUrl = loadConfig().databaseUrl,
+  defaultDealershipId = Number(process.env.DEFAULT_DEALERSHIP_ID ?? 1),
+): Promise<void> {
   const pool = createPool(databaseUrl);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock(762733001)");
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS dealerships (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      INSERT INTO dealerships (id, name)
+      VALUES (1, 'Default Dealership')
+      ON CONFLICT (id) DO NOTHING
+    `);
+    await client.query(
+      `
+      INSERT INTO dealerships (id, name)
+      VALUES ($1, 'Configured Dealership')
+      ON CONFLICT (id) DO NOTHING
+    `,
+      [defaultDealershipId],
+    );
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email TEXT NOT NULL,
+        dealership_id INTEGER NOT NULL REFERENCES dealerships(id) ON DELETE RESTRICT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
     await client.query(`
       CREATE TABLE IF NOT EXISTS source_files (
         id SERIAL PRIMARY KEY,
@@ -36,6 +67,7 @@ export async function migrate(databaseUrl = loadConfig().databaseUrl): Promise<v
       )
     `);
     await client.query("ALTER TABLE source_files ADD COLUMN IF NOT EXISTS file_hash TEXT NULL");
+    await client.query("ALTER TABLE source_files ADD COLUMN IF NOT EXISTS dealership_id INTEGER NULL");
     await client.query(`
       CREATE TABLE IF NOT EXISTS reconciliation_runs (
         id SERIAL PRIMARY KEY,
@@ -89,6 +121,11 @@ export async function migrate(databaseUrl = loadConfig().databaseUrl): Promise<v
     );
     await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS source_file_id INTEGER NULL");
     await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS amount_cents BIGINT NULL");
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS dealership_id INTEGER NULL");
+    await client.query("ALTER TABLE reconciliation_runs ADD COLUMN IF NOT EXISTS dealership_id INTEGER NULL");
+    await client.query(
+      "ALTER TABLE reconciliation_exceptions ADD COLUMN IF NOT EXISTS dealership_id INTEGER NULL",
+    );
     await client.query(`
       DO $$
       BEGIN
@@ -110,6 +147,11 @@ export async function migrate(databaseUrl = loadConfig().databaseUrl): Promise<v
       UPDATE source_files
       SET file_hash = 'legacy-source-file-' || id::text
       WHERE file_hash IS NULL OR file_hash = ''
+    `);
+    await client.query(`
+      UPDATE source_files
+      SET dealership_id = 1
+      WHERE dealership_id IS NULL
     `);
     await client.query(`
       INSERT INTO source_files (
@@ -146,6 +188,42 @@ export async function migrate(databaseUrl = loadConfig().databaseUrl): Promise<v
         AND source_files.file_hash = 'legacy-' || transactions.source_type || '-unscoped-transactions'
     `);
     await client.query(`
+      UPDATE transactions
+      SET dealership_id = source_files.dealership_id
+      FROM source_files
+      WHERE transactions.source_file_id = source_files.id
+        AND transactions.dealership_id IS NULL
+    `);
+    await client.query(`
+      UPDATE transactions
+      SET dealership_id = 1
+      WHERE dealership_id IS NULL
+    `);
+    await client.query(`
+      UPDATE reconciliation_runs
+      SET dealership_id = source_files.dealership_id
+      FROM source_files
+      WHERE reconciliation_runs.boa_source_file_id = source_files.id
+        AND reconciliation_runs.dealership_id IS NULL
+    `);
+    await client.query(`
+      UPDATE reconciliation_runs
+      SET dealership_id = 1
+      WHERE dealership_id IS NULL
+    `);
+    await client.query(`
+      UPDATE reconciliation_exceptions
+      SET dealership_id = reconciliation_runs.dealership_id
+      FROM reconciliation_runs
+      WHERE reconciliation_exceptions.reconciliation_run_id = reconciliation_runs.id
+        AND reconciliation_exceptions.dealership_id IS NULL
+    `);
+    await client.query(`
+      UPDATE reconciliation_exceptions
+      SET dealership_id = 1
+      WHERE dealership_id IS NULL
+    `);
+    await client.query(`
       DO $$
       BEGIN
         IF NOT EXISTS (
@@ -164,9 +242,35 @@ export async function migrate(databaseUrl = loadConfig().databaseUrl): Promise<v
     `);
     await client.query("ALTER TABLE transactions ALTER COLUMN transaction_date DROP NOT NULL");
     await client.query("ALTER TABLE source_files ALTER COLUMN file_hash SET NOT NULL");
+    await client.query("ALTER TABLE source_files ALTER COLUMN dealership_id SET NOT NULL");
     await client.query("ALTER TABLE transactions ALTER COLUMN source_file_id SET NOT NULL");
+    await client.query("ALTER TABLE transactions ALTER COLUMN dealership_id SET NOT NULL");
     await client.query("ALTER TABLE transactions ALTER COLUMN source_type SET NOT NULL");
     await client.query("ALTER TABLE transactions ALTER COLUMN amount_cents SET NOT NULL");
+    await client.query("ALTER TABLE reconciliation_runs ALTER COLUMN dealership_id SET NOT NULL");
+    await client.query(
+      "ALTER TABLE reconciliation_exceptions ALTER COLUMN dealership_id SET NOT NULL",
+    );
+    await addConstraint(
+      client,
+      "source_files_dealership_id_fkey",
+      "ALTER TABLE source_files ADD CONSTRAINT source_files_dealership_id_fkey FOREIGN KEY (dealership_id) REFERENCES dealerships(id) ON DELETE RESTRICT",
+    );
+    await addConstraint(
+      client,
+      "transactions_dealership_id_fkey",
+      "ALTER TABLE transactions ADD CONSTRAINT transactions_dealership_id_fkey FOREIGN KEY (dealership_id) REFERENCES dealerships(id) ON DELETE RESTRICT",
+    );
+    await addConstraint(
+      client,
+      "reconciliation_runs_dealership_id_fkey",
+      "ALTER TABLE reconciliation_runs ADD CONSTRAINT reconciliation_runs_dealership_id_fkey FOREIGN KEY (dealership_id) REFERENCES dealerships(id) ON DELETE RESTRICT",
+    );
+    await addConstraint(
+      client,
+      "reconciliation_exceptions_dealership_id_fkey",
+      "ALTER TABLE reconciliation_exceptions ADD CONSTRAINT reconciliation_exceptions_dealership_id_fkey FOREIGN KEY (dealership_id) REFERENCES dealerships(id) ON DELETE RESTRICT",
+    );
     await addConstraint(
       client,
       "source_files_file_hash_not_empty",
@@ -206,13 +310,23 @@ export async function migrate(databaseUrl = loadConfig().databaseUrl): Promise<v
       "CREATE INDEX IF NOT EXISTS ix_source_files_source_type ON source_files (source_type)",
     );
     await client.query(
-      "CREATE UNIQUE INDEX IF NOT EXISTS ux_source_files_source_type_file_hash ON source_files (source_type, file_hash)",
+      "CREATE INDEX IF NOT EXISTS ix_source_files_dealership_id ON source_files (dealership_id)",
+    );
+    await client.query("DROP INDEX IF EXISTS ux_source_files_source_type_file_hash");
+    await client.query(
+      "CREATE UNIQUE INDEX IF NOT EXISTS ux_source_files_dealership_source_type_file_hash ON source_files (dealership_id, source_type, file_hash)",
     );
     await client.query(
       "CREATE INDEX IF NOT EXISTS ix_source_files_created_at ON source_files (created_at)",
     );
     await client.query(
       "CREATE INDEX IF NOT EXISTS ix_transactions_source_file_id ON transactions (source_file_id)",
+    );
+    await client.query(
+      "CREATE INDEX IF NOT EXISTS ix_transactions_dealership_id ON transactions (dealership_id)",
+    );
+    await client.query(
+      "CREATE INDEX IF NOT EXISTS ix_reconciliation_runs_dealership_id ON reconciliation_runs (dealership_id)",
     );
     await client.query(
       "CREATE INDEX IF NOT EXISTS ix_reconciliation_runs_boa_source_file_id ON reconciliation_runs (boa_source_file_id)",
@@ -231,6 +345,9 @@ export async function migrate(databaseUrl = loadConfig().databaseUrl): Promise<v
     );
     await client.query(
       "CREATE INDEX IF NOT EXISTS ix_reconciliation_exceptions_run_id ON reconciliation_exceptions (reconciliation_run_id)",
+    );
+    await client.query(
+      "CREATE INDEX IF NOT EXISTS ix_reconciliation_exceptions_dealership_id ON reconciliation_exceptions (dealership_id)",
     );
     await client.query(
       "CREATE INDEX IF NOT EXISTS ix_reconciliation_exceptions_transaction_id ON reconciliation_exceptions (transaction_id)",

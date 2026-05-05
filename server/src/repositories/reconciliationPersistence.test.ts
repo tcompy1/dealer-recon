@@ -210,6 +210,7 @@ describeIfDatabase("reconciliation persistence", () => {
 
       try {
         const boaImport = await repository.createSourceFileWithTransactions(
+          1,
           {
             source_type: "boa",
             original_filename: "boa-rollback.csv",
@@ -235,6 +236,7 @@ describeIfDatabase("reconciliation persistence", () => {
           ],
         );
         const dealertrackImport = await repository.createSourceFileWithTransactions(
+          1,
           {
             source_type: "dealertrack",
             original_filename: "dealertrack-rollback.csv",
@@ -284,6 +286,7 @@ describeIfDatabase("reconciliation persistence", () => {
 
         await expect(
           repository.createReconciliationRun({
+            dealership_id: 1,
             boa_source_file_id: boaImport.sourceFile.id,
             dealertrack_source_file_id: dealertrackImport.sourceFile.id,
             result: failedResult,
@@ -335,6 +338,7 @@ async function countRows(
 
 function toSummary(transaction: {
   id: number;
+  dealership_id: number;
   source_type: TransactionSummary["source_type"];
   transaction_date: string | null;
   post_date: string | null;
@@ -347,6 +351,7 @@ function toSummary(transaction: {
 }): TransactionSummary {
   return {
     id: transaction.id,
+    dealership_id: transaction.dealership_id,
     source_type: transaction.source_type,
     transaction_date: transaction.transaction_date,
     post_date: transaction.post_date,

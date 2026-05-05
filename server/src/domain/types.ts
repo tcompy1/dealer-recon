@@ -10,6 +10,7 @@ export type ValidationError = {
 
 export type Transaction = {
   id: number;
+  dealership_id: number;
   source_file_id: number | null;
   source_type: SourceType;
   transaction_date: string | null;
@@ -23,10 +24,11 @@ export type Transaction = {
   raw_data: Record<string, unknown>;
 };
 
-export type NewTransaction = Omit<Transaction, "id">;
+export type NewTransaction = Omit<Transaction, "id" | "dealership_id">;
 
 export type SourceFile = {
   id: number;
+  dealership_id: number;
   source_type: SourceType;
   original_filename: string;
   stored_filename: string | null;
@@ -36,10 +38,11 @@ export type SourceFile = {
   created_at: string;
 };
 
-export type NewSourceFile = Omit<SourceFile, "id" | "created_at">;
+export type NewSourceFile = Omit<SourceFile, "id" | "dealership_id" | "created_at">;
 
 export type SourceFileSummary = {
   source_file_id: number;
+  dealership_id: number;
   source_type: SourceType;
   filename: string;
   row_count: number;
@@ -62,6 +65,7 @@ export type ReconciliationRequest = {
 
 export type TransactionSummary = {
   id: number;
+  dealership_id: number;
   source_type: SourceType;
   transaction_date: string | null;
   post_date: string | null;
@@ -98,6 +102,7 @@ export type ReconciliationResponse = {
 
 export type ReconciliationRun = {
   id: number;
+  dealership_id: number;
   boa_source_file_id: number;
   dealertrack_source_file_id: number;
   matched_count: number;
@@ -108,6 +113,7 @@ export type ReconciliationRun = {
 };
 
 export type PersistReconciliationRunInput = {
+  dealership_id: number;
   boa_source_file_id: number;
   dealertrack_source_file_id: number;
   result: ReconciliationResponse;
@@ -116,6 +122,7 @@ export type PersistReconciliationRunInput = {
 
 export type ReconciliationRunListItem = {
   reconciliation_run_id: number;
+  dealership_id: number;
   boa_source_file_id: number;
   dealertrack_source_file_id: number;
   boa_filename: string;
@@ -168,6 +175,7 @@ export type ReconciliationRunDetail = ReconciliationRunListItem & {
   }>;
   exceptions: Array<{
     exception_id: number;
+    dealership_id: number;
     exception_type: ReconciliationExceptionType;
     status: ReconciliationExceptionStatus;
     note: string;

@@ -12,7 +12,7 @@ async function main() {
 
   const pool = createPool(config.databaseUrl);
   const repository = new PostgresTransactionRepository(pool);
-  const app = createApp(repository, config.corsOrigins);
+  const app = createApp(repository, config.corsOrigins, config.defaultDealershipId);
 
   app.listen(config.port, "0.0.0.0", () => {
     console.log(`${config.appName} ${config.appVersion} listening on ${config.port}`);

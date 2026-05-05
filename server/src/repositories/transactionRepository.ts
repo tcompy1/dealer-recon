@@ -30,22 +30,34 @@ export class DuplicateSourceFileError extends Error {
 
 export interface TransactionRepository {
   createSourceFileWithTransactions(
+    dealershipId: number,
     sourceFile: NewSourceFile,
     transactions: NewTransaction[],
   ): Promise<SourceFileImport>;
   insertMany(transactions: NewTransaction[]): Promise<Transaction[]>;
   getSourceFile(sourceFileId: number): Promise<SourceFile | null>;
-  getSourceFileByHash(sourceType: SourceType, fileHash: string): Promise<SourceFile | null>;
-  listSourceFiles(sourceType?: SourceType): Promise<SourceFileSummary[]>;
-  listBySource(sourceType: SourceType): Promise<Transaction[]>;
-  listBySourceFile(sourceFileId: number): Promise<Transaction[]>;
+  getSourceFileByHash(
+    dealershipId: number,
+    sourceType: SourceType,
+    fileHash: string,
+  ): Promise<SourceFile | null>;
+  listSourceFiles(dealershipId: number, sourceType?: SourceType): Promise<SourceFileSummary[]>;
+  listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]>;
+  listBySourceFile(dealershipId: number, sourceFileId: number): Promise<Transaction[]>;
   createReconciliationRun(input: PersistReconciliationRunInput): Promise<ReconciliationRun>;
-  listReconciliationRuns(): Promise<ReconciliationRunListItem[]>;
+  listReconciliationRuns(dealershipId: number): Promise<ReconciliationRunListItem[]>;
+  getReconciliationRunDealershipId(reconciliationRunId: number): Promise<number | null>;
   getReconciliationRunDetail(
+    dealershipId: number,
     reconciliationRunId: number,
     filters?: ReconciliationRunDetailFilters,
   ): Promise<ReconciliationRunDetail | null>;
+  getReconciliationExceptionDealershipId(
+    reconciliationRunId: number,
+    exceptionId: number,
+  ): Promise<number | null>;
   updateReconciliationExceptionReview(
+    dealershipId: number,
     reconciliationRunId: number,
     exceptionId: number,
     update: ReconciliationExceptionReviewUpdate,
@@ -73,6 +85,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
   }> = [];
   private reconciliationExceptions: Array<{
     id: number;
+    dealership_id: number;
     reconciliation_run_id: number;
     transaction_id: number;
     source_type: SourceType;
@@ -88,18 +101,21 @@ export class MemoryTransactionRepository implements TransactionRepository {
   private nextReconciliationExceptionId = 1;
 
   async createSourceFileWithTransactions(
+    dealershipId: number,
     sourceFileInput: NewSourceFile,
     transactions: NewTransaction[],
   ): Promise<SourceFileImport> {
     const sourceFile: SourceFile = {
       ...sourceFileInput,
       id: this.nextSourceFileId++,
+      dealership_id: dealershipId,
       created_at: new Date().toISOString(),
     };
     this.sourceFiles.push(sourceFile);
 
     const scopedTransactions = transactions.map((transaction) => ({
       ...transaction,
+      dealership_id: dealershipId,
       source_file_id: sourceFile.id,
     }));
     const inserted = await this.insertMany(scopedTransactions);
@@ -110,6 +126,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
   async insertMany(transactions: NewTransaction[]): Promise<Transaction[]> {
     const inserted = transactions.map((transaction) => ({
       ...transaction,
+      dealership_id: (transaction as NewTransaction & { dealership_id?: number }).dealership_id ?? 1,
       id: this.nextId++,
     }));
     this.transactions.push(...inserted);
@@ -120,30 +137,47 @@ export class MemoryTransactionRepository implements TransactionRepository {
     return this.sourceFiles.find((sourceFile) => sourceFile.id === sourceFileId) ?? null;
   }
 
-  async getSourceFileByHash(sourceType: SourceType, fileHash: string): Promise<SourceFile | null> {
+  async getSourceFileByHash(
+    dealershipId: number,
+    sourceType: SourceType,
+    fileHash: string,
+  ): Promise<SourceFile | null> {
     return (
       this.sourceFiles.find(
-        (sourceFile) => sourceFile.source_type === sourceType && sourceFile.file_hash === fileHash,
+        (sourceFile) =>
+          sourceFile.dealership_id === dealershipId &&
+          sourceFile.source_type === sourceType &&
+          sourceFile.file_hash === fileHash,
       ) ?? null
     );
   }
 
-  async listSourceFiles(sourceType?: SourceType): Promise<SourceFileSummary[]> {
+  async listSourceFiles(dealershipId: number, sourceType?: SourceType): Promise<SourceFileSummary[]> {
     return this.sourceFiles
-      .filter((sourceFile) => sourceType === undefined || sourceFile.source_type === sourceType)
+      .filter(
+        (sourceFile) =>
+          sourceFile.dealership_id === dealershipId &&
+          (sourceType === undefined || sourceFile.source_type === sourceType),
+      )
       .sort((left, right) => right.id - left.id)
       .map(toSourceFileSummary);
   }
 
-  async listBySource(sourceType: SourceType): Promise<Transaction[]> {
+  async listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]> {
     return this.transactions
-      .filter((transaction) => transaction.source_type === sourceType)
+      .filter(
+        (transaction) =>
+          transaction.dealership_id === dealershipId && transaction.source_type === sourceType,
+      )
       .sort((left, right) => left.id - right.id);
   }
 
-  async listBySourceFile(sourceFileId: number): Promise<Transaction[]> {
+  async listBySourceFile(dealershipId: number, sourceFileId: number): Promise<Transaction[]> {
     return this.transactions
-      .filter((transaction) => transaction.source_file_id === sourceFileId)
+      .filter(
+        (transaction) =>
+          transaction.dealership_id === dealershipId && transaction.source_file_id === sourceFileId,
+      )
       .sort((left, right) => left.id - right.id);
   }
 
@@ -151,6 +185,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     const createdAt = new Date().toISOString();
     const run: ReconciliationRun = {
       id: this.nextReconciliationRunId++,
+      dealership_id: input.dealership_id,
       boa_source_file_id: input.boa_source_file_id,
       dealertrack_source_file_id: input.dealertrack_source_file_id,
       matched_count: input.result.matched_count,
@@ -185,6 +220,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     for (const exception of input.result.exceptions) {
       this.reconciliationExceptions.push({
         id: this.nextReconciliationExceptionId++,
+        dealership_id: input.dealership_id,
         reconciliation_run_id: run.id,
         transaction_id: exception.transaction.id,
         source_type: exception.source_type,
@@ -198,20 +234,30 @@ export class MemoryTransactionRepository implements TransactionRepository {
     return run;
   }
 
-  async listReconciliationRuns(): Promise<ReconciliationRunListItem[]> {
+  async listReconciliationRuns(dealershipId: number): Promise<ReconciliationRunListItem[]> {
     return this.reconciliationRuns
+      .filter((run) => run.dealership_id === dealershipId)
       .slice()
       .sort((left, right) => right.id - left.id)
       .map((run) => this.toReconciliationRunListItem(run))
       .filter((run): run is ReconciliationRunListItem => run !== null);
   }
 
+  async getReconciliationRunDealershipId(reconciliationRunId: number): Promise<number | null> {
+    return (
+      this.reconciliationRuns.find((run) => run.id === reconciliationRunId)?.dealership_id ?? null
+    );
+  }
+
   async getReconciliationRunDetail(
+    dealershipId: number,
     reconciliationRunId: number,
     filters: ReconciliationRunDetailFilters = {},
   ): Promise<ReconciliationRunDetail | null> {
     const run = this.reconciliationRuns.find(
-      (reconciliationRun) => reconciliationRun.id === reconciliationRunId,
+      (reconciliationRun) =>
+        reconciliationRun.id === reconciliationRunId &&
+        reconciliationRun.dealership_id === dealershipId,
     );
     if (!run) {
       return null;
@@ -265,13 +311,16 @@ export class MemoryTransactionRepository implements TransactionRepository {
   }
 
   async updateReconciliationExceptionReview(
+    dealershipId: number,
     reconciliationRunId: number,
     exceptionId: number,
     update: ReconciliationExceptionReviewUpdate,
   ): Promise<ReconciliationRunDetail["exceptions"][number] | null> {
     const exception = this.reconciliationExceptions.find(
       (candidate) =>
-        candidate.reconciliation_run_id === reconciliationRunId && candidate.id === exceptionId,
+        candidate.dealership_id === dealershipId &&
+        candidate.reconciliation_run_id === reconciliationRunId &&
+        candidate.id === exceptionId,
     );
     if (!exception) {
       return null;
@@ -285,6 +334,18 @@ export class MemoryTransactionRepository implements TransactionRepository {
     }
 
     return this.toRunDetailException(exception);
+  }
+
+  async getReconciliationExceptionDealershipId(
+    reconciliationRunId: number,
+    exceptionId: number,
+  ): Promise<number | null> {
+    return (
+      this.reconciliationExceptions.find(
+        (exception) =>
+          exception.reconciliation_run_id === reconciliationRunId && exception.id === exceptionId,
+      )?.dealership_id ?? null
+    );
   }
 
   async clear(): Promise<void> {
@@ -314,6 +375,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
 
     return {
       reconciliation_run_id: run.id,
+      dealership_id: run.dealership_id,
       boa_source_file_id: run.boa_source_file_id,
       dealertrack_source_file_id: run.dealertrack_source_file_id,
       boa_filename: boaSourceFile.original_filename,
@@ -328,6 +390,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
 
   private toRunDetailException(exception: {
     id: number;
+    dealership_id: number;
     source_type: SourceType;
     reason: string;
     status: ReconciliationExceptionStatus;
@@ -337,6 +400,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
   }): ReconciliationRunDetail["exceptions"][number] {
     return {
       exception_id: exception.id,
+      dealership_id: exception.dealership_id,
       exception_type: exceptionTypeFromReason(exception.reason),
       status: exception.status,
       note: exception.note,
@@ -353,6 +417,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
 function toSourceFileSummary(sourceFile: SourceFile): SourceFileSummary {
   return {
     source_file_id: sourceFile.id,
+    dealership_id: sourceFile.dealership_id,
     source_type: sourceFile.source_type,
     filename: sourceFile.original_filename,
     row_count: sourceFile.row_count,
@@ -364,6 +429,7 @@ function toSourceFileSummary(sourceFile: SourceFile): SourceFileSummary {
 function toTransactionSummary(transaction: Transaction): TransactionSummary {
   return {
     id: transaction.id,
+    dealership_id: transaction.dealership_id,
     source_type: transaction.source_type,
     transaction_date: transaction.transaction_date,
     post_date: transaction.post_date,

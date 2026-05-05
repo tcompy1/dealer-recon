@@ -24,8 +24,10 @@ describeIfDatabase("migrate", () => {
           transactions: string;
           reconciliation_runs: string;
           reconciliation_match_groups: string;
-          reconciliation_match_group_transactions: string;
-          reconciliation_exceptions: string;
+        reconciliation_match_group_transactions: string;
+        reconciliation_exceptions: string;
+        dealerships: string;
+        users: string;
         }>(
           `SELECT
             to_regclass('public.source_files')::text AS source_files,
@@ -33,7 +35,9 @@ describeIfDatabase("migrate", () => {
             to_regclass('public.reconciliation_runs')::text AS reconciliation_runs,
             to_regclass('public.reconciliation_match_groups')::text AS reconciliation_match_groups,
             to_regclass('public.reconciliation_match_group_transactions')::text AS reconciliation_match_group_transactions,
-            to_regclass('public.reconciliation_exceptions')::text AS reconciliation_exceptions`,
+            to_regclass('public.reconciliation_exceptions')::text AS reconciliation_exceptions,
+            to_regclass('public.dealerships')::text AS dealerships,
+            to_regclass('public.users')::text AS users`,
         );
         expect(tableResult.rows[0]).toEqual({
           source_files: "source_files",
@@ -42,6 +46,8 @@ describeIfDatabase("migrate", () => {
           reconciliation_match_groups: "reconciliation_match_groups",
           reconciliation_match_group_transactions: "reconciliation_match_group_transactions",
           reconciliation_exceptions: "reconciliation_exceptions",
+          dealerships: "dealerships",
+          users: "users",
         });
 
         const columnResult = await pool.query<{ column_name: string }>(
@@ -69,12 +75,37 @@ describeIfDatabase("migrate", () => {
         );
         expect(Number(legacyAmountColumnResult.rows[0].count)).toBe(0);
 
-        const fkResult = await pool.query<{ confdeltype: string }>(
-          `SELECT confdeltype
-           FROM pg_constraint
-           WHERE conname = 'transactions_source_file_id_fkey'`,
-        );
-        expect(fkResult.rows[0].confdeltype).toBe("c");
+      const fkResult = await pool.query<{ confdeltype: string }>(
+        `SELECT confdeltype
+         FROM pg_constraint
+         WHERE conname = 'transactions_source_file_id_fkey'`,
+      );
+      expect(fkResult.rows[0].confdeltype).toBe("c");
+      const dealershipColumnResult = await pool.query<{ table_name: string }>(
+        `SELECT table_name
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND column_name = 'dealership_id'
+           AND table_name IN (
+             'source_files',
+             'transactions',
+             'reconciliation_runs',
+             'reconciliation_exceptions',
+             'users'
+           )`,
+      );
+      expect(dealershipColumnResult.rows).toHaveLength(5);
+      const dealershipFkResult = await pool.query<{ conname: string }>(
+        `SELECT conname
+         FROM pg_constraint
+         WHERE conname IN (
+           'source_files_dealership_id_fkey',
+           'transactions_dealership_id_fkey',
+           'reconciliation_runs_dealership_id_fkey',
+           'reconciliation_exceptions_dealership_id_fkey'
+         )`,
+      );
+      expect(dealershipFkResult.rows).toHaveLength(4);
         const exceptionColumnResult = await pool.query<{ column_name: string }>(
           `SELECT column_name
            FROM information_schema.columns
@@ -101,13 +132,14 @@ describeIfDatabase("migrate", () => {
       try {
         const sourceFileResult = await pool.query<{ id: number }>(
           `INSERT INTO source_files (
+            dealership_id,
             source_type,
             original_filename,
             stored_filename,
             file_hash,
             row_count,
             validation_error_count
-          ) VALUES ('boa', 'constraint-test.csv', NULL, $1, 1, 0)
+          ) VALUES (1, 'boa', 'constraint-test.csv', NULL, $1, 1, 0)
           RETURNING id`,
           [`constraint-test-${Date.now()}`],
         );
@@ -117,6 +149,7 @@ describeIfDatabase("migrate", () => {
           pool.query(
             `INSERT INTO transactions (
               source_file_id,
+              dealership_id,
               source_type,
               transaction_date,
               post_date,
@@ -127,7 +160,7 @@ describeIfDatabase("migrate", () => {
               stock_number,
               vin,
               raw_data
-            ) VALUES ($1, 'boa', '2026-04-30', NULL, 0, NULL, NULL, NULL, 'M10001', NULL, '{}'::jsonb)`,
+            ) VALUES ($1, 1, 'boa', '2026-04-30', NULL, 0, NULL, NULL, NULL, 'M10001', NULL, '{}'::jsonb)`,
             [sourceFileId],
           ),
         ).rejects.toThrow();
@@ -135,6 +168,7 @@ describeIfDatabase("migrate", () => {
         const transactionResult = await pool.query<{ id: number }>(
           `INSERT INTO transactions (
             source_file_id,
+            dealership_id,
             source_type,
             transaction_date,
             post_date,
@@ -145,7 +179,7 @@ describeIfDatabase("migrate", () => {
             stock_number,
             vin,
             raw_data
-          ) VALUES ($1, 'boa', '2026-04-30', NULL, 10000, NULL, NULL, NULL, 'M10001', NULL, '{}'::jsonb)
+          ) VALUES ($1, 1, 'boa', '2026-04-30', NULL, 10000, NULL, NULL, NULL, 'M10001', NULL, '{}'::jsonb)
           RETURNING id`,
           [sourceFileId],
         );
