@@ -243,6 +243,39 @@ sample-data/dealertrack_floorplan_sample.csv
 These samples include a VIN match, stock-number matches where Dealertrack has no VIN, BOA-only and
 Dealertrack-only exceptions, and a duplicate Dealertrack entry.
 
+## Manual Smoke Test
+
+Use this path from a clean checkout to prove the upload, reconciliation, review, history, and export
+loop works end to end. No Playwright setup is required.
+
+Start the stack:
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+Open http://localhost:5173 and use the workflow dashboard:
+
+1. Upload `sample-data/boa_floorplan_sample.csv` as the BOA file.
+2. Upload `sample-data/dealertrack_floorplan_sample.csv` as the Dealertrack file.
+3. Click `Run reconciliation`.
+4. Confirm the result summary shows `Matched: 3`, `Exceptions: 3`, and `Duplicates: 1`.
+5. In the exceptions table, mark one exception resolved or ignored and add a note.
+6. Use the status/source/type/search filters to confirm exceptions reload from the API.
+7. Click `Export CSV` and confirm the downloaded file contains the currently filtered exceptions.
+8. In History, reopen the run and confirm the same result counts and review state are still present.
+
+Expected sample outcome:
+
+```text
+BOA transactions: 4
+Dealertrack transactions: 5
+Matched groups: 3
+Exceptions: 3
+Duplicates: 1
+```
+
 ## Local Discovery File Reconciliation
 
 Real discovery exports should stay outside this repo. Do not commit client files.
