@@ -21,14 +21,14 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://dealer_recon:dealer_recon@db:5432/dealer_recon}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://dealer_recon:dealer_recon@db:5432/dealer_recon}
       UPLOAD_STORAGE_PATH: ${UPLOAD_STORAGE_PATH:-/app/storage/uploads}
       BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:5173}
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app/backend
-      - ./scripts:/app/scripts
+      - ./server:/app/server
+      - server_node_modules:/app/server/node_modules
       - ./sample-data:/app/sample-data
       - ./storage/uploads:/app/storage/uploads
     depends_on:
@@ -52,3 +52,4 @@ services:
 volumes:
   postgres_data:
   frontend_node_modules:
+  server_node_modules:

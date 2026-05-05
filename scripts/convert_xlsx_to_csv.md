@@ -28,7 +28,7 @@ ssconvert "FLOORPLAN RECON - 2026-04-30T144427.635.XLS.xlsx" dealertrack.csv
 Then run the local reconciliation helper from the repo root:
 
 ```bash
-python scripts/run_floorplan_recon.py \
+npm --prefix server run recon -- \
   --boa-file "/path/to/BillingStatementMarch2026 (6).csv" \
   --dealertrack-file "/path/to/dealertrack.csv"
 ```

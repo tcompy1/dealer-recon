@@ -1,15 +1,15 @@
-import { API_BASE_URL } from "./client";
-import type { SourceType, UploadResponse } from "../types/sourceFile";
+import { API_BASE_URL, apiGet, getErrorMessage } from "./client";
+import type { SourceFileSummary, SourceType, UploadResponse } from "../types/sourceFile";
 
-type UploadTransactionsInput = {
+type UploadSourceFileInput = {
   sourceType: SourceType;
   file: File;
 };
 
-export async function uploadTransactions({
+export async function uploadSourceFile({
   sourceType,
   file,
-}: UploadTransactionsInput): Promise<UploadResponse> {
+}: UploadSourceFileInput): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("source_type", sourceType);
   formData.append("file", file);
@@ -20,21 +20,15 @@ export async function uploadTransactions({
   });
 
   if (!response.ok) {
-    throw new Error(await getErrorMessage(response));
+    throw new Error(await getErrorMessage(response, "Upload failed"));
   }
 
   return response.json() as Promise<UploadResponse>;
 }
 
-async function getErrorMessage(response: Response): Promise<string> {
-  try {
-    const body = (await response.json()) as { detail?: unknown };
-    if (typeof body.detail === "string") {
-      return body.detail;
-    }
-  } catch {
-    return `Upload failed with status ${response.status}`;
-  }
-
-  return `Upload failed with status ${response.status}`;
+export async function listSourceFiles(sourceType?: SourceType): Promise<SourceFileSummary[]> {
+  const query = sourceType ? `?source_type=${encodeURIComponent(sourceType)}` : "";
+  return apiGet<SourceFileSummary[]>(`/source-files${query}`);
 }
+
+export const uploadTransactions = uploadSourceFile;

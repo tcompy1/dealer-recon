@@ -1,0 +1,157 @@
+import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+
+import type {
+  ReconciliationException,
+  ReconciliationResponse,
+  TransactionSummary,
+} from "../domain/types.js";
+import { MemoryTransactionRepository } from "../repositories/transactionRepository.js";
+import { reconcileTransactions } from "../services/reconciliationEngine.js";
+import { normalizeTransactionsFromCsv } from "../services/transactionNormalizer.js";
+
+type CliArgs = {
+  boaFile: string;
+  dealertrackFile: string;
+};
+
+export async function runLocalFloorplanRecon(args: CliArgs): Promise<ReconciliationResponse> {
+  validateCsvPath(args.boaFile, "BOA");
+  validateCsvPath(args.dealertrackFile, "Dealertrack");
+
+  const repository = new MemoryTransactionRepository();
+  await loadFile(repository, args.boaFile, "boa");
+  await loadFile(repository, args.dealertrackFile, "dealertrack");
+  return reconcileTransactions(repository);
+}
+
+export function formatReconciliationResult(result: ReconciliationResponse): string {
+  const boaOnly = exceptionsByType(result, "missing_in_dealertrack");
+  const dealertrackOnly = exceptionsByType(result, "missing_in_boa");
+  const duplicateDealertrack = exceptionsByType(result, "duplicate_transaction");
+  const lines: string[] = [];
+
+  lines.push(`matched count: ${result.matched_count}`);
+  lines.push(`exceptions count: ${result.exception_count}`);
+  lines.push(`duplicates count: ${result.duplicate_count}`);
+  lines.push("");
+  lines.push("matches:");
+
+  if (result.match_groups.length === 0) {
+    lines.push("  none");
+  } else {
+    for (const group of result.match_groups) {
+      const boaTransaction = group.transactions[0];
+      const dealertrackTransaction = group.transactions[1];
+      lines.push(
+        `  ${rowLabel(boaTransaction)} <-> ${rowLabel(dealertrackTransaction)} | reason=${group.match_reason} | confidence=${group.confidence_score.toFixed(
+          2,
+        )}`,
+      );
+    }
+  }
+
+  lines.push("");
+  appendExceptionSection(lines, "BOA-only rows", boaOnly);
+  appendExceptionSection(lines, "Dealertrack-only rows", dealertrackOnly);
+  appendExceptionSection(lines, "duplicate Dealertrack rows", duplicateDealertrack);
+
+  return lines.join("\n");
+}
+
+async function loadFile(
+  repository: MemoryTransactionRepository,
+  filePath: string,
+  sourceType: "boa" | "dealertrack",
+) {
+  const content = await readFile(filePath);
+  const result = normalizeTransactionsFromCsv(content, sourceType);
+
+  if (result.validationErrors.length > 0) {
+    const formattedErrors = result.validationErrors
+      .map((error) => `row ${error.row}: ${error.message}`)
+      .join("; ");
+    throw new LocalReconError(`${sourceType} file has validation errors: ${formattedErrors}`);
+  }
+
+  await repository.insertMany(result.transactions);
+}
+
+function validateCsvPath(filePath: string, label: string): void {
+  if (!existsSync(filePath)) {
+    throw new LocalReconError(`${label} file does not exist: ${filePath}`);
+  }
+  if (/\.(xlsx|xls)$/i.test(filePath)) {
+    throw new LocalReconError(
+      `${label} file is an Excel workbook. Convert it to CSV first; see scripts/convert_xlsx_to_csv.md.`,
+    );
+  }
+  if (!/\.csv$/i.test(filePath)) {
+    throw new LocalReconError(`${label} file must be a CSV file: ${filePath}`);
+  }
+}
+
+function exceptionsByType(
+  result: ReconciliationResponse,
+  exceptionType: string,
+): ReconciliationException[] {
+  return result.exceptions.filter((exception) => exception.exception_type === exceptionType);
+}
+
+function appendExceptionSection(
+  lines: string[],
+  title: string,
+  exceptions: ReconciliationException[],
+): void {
+  lines.push(`${title}: ${exceptions.length}`);
+  if (exceptions.length === 0) {
+    lines.push("  none");
+    lines.push("");
+    return;
+  }
+
+  for (const exception of exceptions) {
+    lines.push(`  ${rowLabel(exception.transaction)} | ${exception.description}`);
+  }
+  lines.push("");
+}
+
+function rowLabel(transaction: TransactionSummary): string {
+  return `${transaction.source_type.toUpperCase()} id=${transaction.id} stock=${
+    transaction.stock_number ?? "n/a"
+  } vin=${transaction.vin ?? "n/a"} ref=${transaction.reference_number ?? "n/a"} amount=${
+    transaction.amount
+  }`;
+}
+
+function parseArgs(argv: string[]): CliArgs {
+  const args = new Map<string, string>();
+  for (let index = 0; index < argv.length; index += 2) {
+    args.set(argv[index], argv[index + 1]);
+  }
+
+  const boaFile = args.get("--boa-file");
+  const dealertrackFile = args.get("--dealertrack-file");
+  if (!boaFile || !dealertrackFile) {
+    throw new LocalReconError("Usage: npm run recon -- --boa-file <boa.csv> --dealertrack-file <dealertrack.csv>");
+  }
+
+  return {
+    boaFile: resolve(boaFile),
+    dealertrackFile: resolve(dealertrackFile),
+  };
+}
+
+class LocalReconError extends Error {}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  runLocalFloorplanRecon(parseArgs(process.argv.slice(2)))
+    .then((result) => {
+      console.log(formatReconciliationResult(result));
+    })
+    .catch((error) => {
+      console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    });
+}

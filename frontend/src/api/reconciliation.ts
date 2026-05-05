@@ -1,21 +1,31 @@
-import { API_BASE_URL } from "./client";
-import type { ReconciliationResponse } from "../types/reconciliation";
+import { apiGet, apiPost } from "./client";
+import type {
+  ReconcileSourceFilesInput,
+  ReconciliationResponse,
+  ReconciliationRunDetail,
+  ReconciliationRunListItem,
+} from "../types/reconciliation";
+
+export async function reconcileSourceFiles({
+  boaSourceFileId,
+  dealertrackSourceFileId,
+}: ReconcileSourceFilesInput): Promise<ReconciliationResponse> {
+  return apiPost<ReconciliationResponse>("/reconcile", {
+    boa_source_file_id: boaSourceFileId,
+    dealertrack_source_file_id: dealertrackSourceFileId,
+  });
+}
+
+export async function listReconciliationRuns(): Promise<ReconciliationRunListItem[]> {
+  return apiGet<ReconciliationRunListItem[]>("/reconciliation-runs");
+}
+
+export async function getReconciliationRun(
+  reconciliationRunId: number,
+): Promise<ReconciliationRunDetail> {
+  return apiGet<ReconciliationRunDetail>(`/reconciliation-runs/${reconciliationRunId}`);
+}
 
 export async function runReconciliation(): Promise<ReconciliationResponse> {
-  const response = await fetch(`${API_BASE_URL}/reconcile`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      left_source_type: "boa",
-      right_source_type: "dealertrack",
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Reconciliation failed with status ${response.status}`);
-  }
-
-  return response.json() as Promise<ReconciliationResponse>;
+  throw new Error("Choose BOA and Dealertrack uploads before running reconciliation.");
 }
