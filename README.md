@@ -491,5 +491,4 @@ VITE_API_BASE_URL=http://localhost:8000
 
 ## MVP Build Order
 
-1. Add exportable month-end reports.
-2. Add authentication and real user selection.
+1. Add authentication and real user selection.
