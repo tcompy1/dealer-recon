@@ -346,6 +346,8 @@ function toSummary(transaction: {
   reference_number: string | null;
   description: string | null;
   account: string | null;
+  account_type?: string;
+  account_identifier?: string;
   stock_number: string | null;
   vin: string | null;
 }): TransactionSummary {
@@ -360,6 +362,8 @@ function toSummary(transaction: {
     reference_number: transaction.reference_number,
     description: transaction.description,
     account: transaction.account,
+    account_type: transaction.account_type ?? "floorplan",
+    account_identifier: transaction.account_identifier ?? transaction.account ?? "floorplan",
     stock_number: transaction.stock_number,
     vin: transaction.vin,
   };

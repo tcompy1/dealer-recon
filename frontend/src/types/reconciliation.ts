@@ -10,6 +10,8 @@ export type ReconciledTransaction = {
   reference_number: string | null;
   description: string | null;
   account: string | null;
+  account_type?: string;
+  account_identifier?: string;
   stock_number: string | null;
   vin: string | null;
 };

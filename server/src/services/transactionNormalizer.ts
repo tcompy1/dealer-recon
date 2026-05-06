@@ -33,6 +33,16 @@ const columnAliases: Record<
   ],
   description: ["description", "memo", "details", "transaction description"],
   account: ["account", "gl account", "account number"],
+  account_type: ["account_type", "account type", "category", "account category"],
+  account_identifier: [
+    "account_identifier",
+    "account identifier",
+    "account_id",
+    "account id",
+    "gl account",
+    "account number",
+    "account",
+  ],
   stock_number: ["stock_number", "stock number", "stock #", "stock"],
   vin: ["vin", "vehicle identification number"],
 };
@@ -179,6 +189,8 @@ function normalizeDealertrackTransactionsFromCsv(
       reference_number: null,
       description: cleanedRow[1] || null,
       account: null,
+      account_type: defaultAccountType(sourceType),
+      account_identifier: defaultAccountIdentifier(sourceType),
       stock_number: cleanedRow[0].toUpperCase(),
       vin: null,
       raw_data: buildRawData(cleanedRow, null),
@@ -235,6 +247,11 @@ function normalizeHeaderRow(
       reference_number: getValue(row, headerLookup, "reference_number"),
       description: getValue(row, headerLookup, "description"),
       account: getValue(row, headerLookup, "account"),
+      account_type: getValue(row, headerLookup, "account_type") ?? defaultAccountType(sourceType),
+      account_identifier:
+        getValue(row, headerLookup, "account_identifier") ??
+        getValue(row, headerLookup, "account") ??
+        defaultAccountIdentifier(sourceType),
       stock_number: getValue(row, headerLookup, "stock_number"),
       vin: getValue(row, headerLookup, "vin"),
       raw_data: buildRawData(row, header),
@@ -292,6 +309,8 @@ function normalizeBoaRow(
       reference_number: referenceNumber,
       description: buildBoaDescription(row),
       account: null,
+      account_type: defaultAccountType(sourceType),
+      account_identifier: defaultAccountIdentifier(sourceType),
       stock_number: stockNumber,
       vin,
       raw_data: buildRawData(row, header),
@@ -478,6 +497,20 @@ function cleanCell(value: string | undefined): string {
 
 function normalizeHeader(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function defaultAccountType(sourceType: SourceType): string {
+  if (sourceType === "boa" || sourceType === "dealertrack") {
+    return "floorplan";
+  }
+  return sourceType;
+}
+
+function defaultAccountIdentifier(sourceType: SourceType): string {
+  if (sourceType === "boa" || sourceType === "dealertrack") {
+    return "floorplan";
+  }
+  return "unassigned";
 }
 
 function parseDate(value: string | null | undefined): string | null {

@@ -2,6 +2,9 @@ import pg from "pg";
 
 import { formatCents } from "../domain/money.js";
 import type {
+  AccountDetail,
+  AccountSourceTotal,
+  AccountSummary,
   NewSourceFile,
   NewTransaction,
   PersistReconciliationRunInput,
@@ -47,6 +50,8 @@ type TransactionRow = {
   reference_number: string | null;
   description: string | null;
   account: string | null;
+  account_type: string;
+  account_identifier: string;
   stock_number: string | null;
   vin: string | null;
   raw_data: Record<string, unknown>;
@@ -90,6 +95,14 @@ type ReconciliationExceptionRow = TransactionRow & {
   status: ReconciliationExceptionStatus;
   note: string;
   exception_created_at: Date | string;
+};
+
+type AccountSourceTotalRow = {
+  account_identifier: string;
+  account_type: string;
+  source_type: SourceType;
+  amount_cents: string;
+  transaction_count: string;
 };
 
 export class PostgresTransactionRepository implements TransactionRepository {
@@ -185,6 +198,149 @@ export class PostgresTransactionRepository implements TransactionRepository {
       [dealershipId, sourceFileId],
     );
     return result.rows.map(toTransaction);
+  }
+
+  async listAccountsSummary(dealershipId: number): Promise<AccountSummary[]> {
+    return buildAccountSummaries(
+      await this.listAccountSourceTotals(dealershipId),
+      await this.listUnresolvedExceptionCountsByAccount(dealershipId),
+    );
+  }
+
+  async getAccountDetail(
+    dealershipId: number,
+    accountIdentifier: string,
+  ): Promise<AccountDetail | null> {
+    const transactionResult = await this.pool.query<TransactionRow>(
+      `SELECT *
+       FROM transactions
+       WHERE dealership_id = $1
+         AND account_identifier = $2
+       ORDER BY source_type, transaction_date NULLS LAST, id`,
+      [dealershipId, accountIdentifier],
+    );
+    if (transactionResult.rows.length === 0) {
+      return null;
+    }
+
+    const accountType = transactionResult.rows[0].account_type;
+    const summary = buildAccountSummaries(
+      await this.listAccountSourceTotals(dealershipId, accountIdentifier),
+      await this.listUnresolvedExceptionCountsByAccount(dealershipId, accountIdentifier),
+    ).find(
+      (account) =>
+        account.account_identifier === accountIdentifier && account.account_type === accountType,
+    );
+    if (!summary) {
+      return null;
+    }
+
+    const relatedRuns = await this.pool.query<ReconciliationRunListRow>(
+      `SELECT DISTINCT
+        rr.*,
+        boa.original_filename AS boa_filename,
+        dealertrack.original_filename AS dealertrack_filename
+      FROM reconciliation_runs rr
+      JOIN source_files boa ON boa.id = rr.boa_source_file_id
+      JOIN source_files dealertrack ON dealertrack.id = rr.dealertrack_source_file_id
+      WHERE rr.dealership_id = $1
+        AND (
+          EXISTS (
+            SELECT 1
+            FROM transactions t
+            WHERE t.dealership_id = $1
+              AND t.account_identifier = $2
+              AND (t.source_file_id = rr.boa_source_file_id OR t.source_file_id = rr.dealertrack_source_file_id)
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM reconciliation_exceptions re
+            JOIN transactions t ON t.id = re.transaction_id
+            WHERE re.reconciliation_run_id = rr.id
+              AND re.dealership_id = $1
+              AND t.account_identifier = $2
+          )
+        )
+      ORDER BY rr.created_at DESC, rr.id DESC`,
+      [dealershipId, accountIdentifier],
+    );
+    const unresolvedExceptions = await this.pool.query<ReconciliationExceptionRow>(
+      `SELECT
+        re.id AS exception_id,
+        re.dealership_id,
+        re.source_type AS exception_source_type,
+        re.reason,
+        re.status,
+        re.note,
+        re.created_at AS exception_created_at,
+        t.*
+      FROM reconciliation_exceptions re
+      JOIN transactions t ON t.id = re.transaction_id
+      WHERE re.dealership_id = $1
+        AND re.status = 'unresolved'
+        AND t.account_identifier = $2
+      ORDER BY re.id`,
+      [dealershipId, accountIdentifier],
+    );
+
+    return {
+      ...summary,
+      transactions_by_source_type: groupTransactionsBySource(
+        transactionResult.rows.map(toTransaction),
+      ),
+      related_reconciliation_runs: relatedRuns.rows.map(toReconciliationRunListItem),
+      unresolved_exceptions: unresolvedExceptions.rows.map(toReconciliationExceptionDetail),
+    };
+  }
+
+  private async listAccountSourceTotals(
+    dealershipId: number,
+    accountIdentifier?: string,
+  ): Promise<AccountSourceTotalRow[]> {
+    const result = await this.pool.query<AccountSourceTotalRow>(
+      `SELECT
+        account_identifier,
+        account_type,
+        source_type,
+        SUM(amount_cents)::text AS amount_cents,
+        COUNT(*)::text AS transaction_count
+      FROM transactions
+      WHERE dealership_id = $1
+        AND ($2::text IS NULL OR account_identifier = $2)
+      GROUP BY account_identifier, account_type, source_type
+      ORDER BY account_identifier, account_type, source_type`,
+      [dealershipId, accountIdentifier ?? null],
+    );
+    return result.rows;
+  }
+
+  private async listUnresolvedExceptionCountsByAccount(
+    dealershipId: number,
+    accountIdentifier?: string,
+  ): Promise<Map<string, number>> {
+    const result = await this.pool.query<{
+      account_identifier: string;
+      account_type: string;
+      unresolved_exception_count: string;
+    }>(
+      `SELECT
+        t.account_identifier,
+        t.account_type,
+        COUNT(re.id)::text AS unresolved_exception_count
+      FROM reconciliation_exceptions re
+      JOIN transactions t ON t.id = re.transaction_id
+      WHERE re.dealership_id = $1
+        AND re.status = 'unresolved'
+        AND ($2::text IS NULL OR t.account_identifier = $2)
+      GROUP BY t.account_identifier, t.account_type`,
+      [dealershipId, accountIdentifier ?? null],
+    );
+    return new Map(
+      result.rows.map((row) => [
+        accountKey(row.account_identifier, row.account_type),
+        Number(row.unresolved_exception_count),
+      ]),
+    );
   }
 
   async createReconciliationRun(
@@ -488,6 +644,102 @@ export function createPool(databaseUrl: string): pg.Pool {
   return new pg.Pool({ connectionString: databaseUrl });
 }
 
+function buildAccountSummaries(
+  rows: AccountSourceTotalRow[],
+  unresolvedExceptionCounts: Map<string, number>,
+): AccountSummary[] {
+  const grouped = new Map<
+    string,
+    {
+      account_identifier: string;
+      account_type: string;
+      source_totals: AccountSourceTotal[];
+      net_difference_amount_cents: number;
+    }
+  >();
+
+  for (const row of rows) {
+    const key = accountKey(row.account_identifier, row.account_type);
+    const account =
+      grouped.get(key) ??
+      {
+        account_identifier: row.account_identifier,
+        account_type: row.account_type,
+        source_totals: [],
+        net_difference_amount_cents: 0,
+      };
+    const amountCents = Number(row.amount_cents);
+    account.source_totals.push({
+      source_type: row.source_type,
+      amount_cents: amountCents,
+      amount: formatCents(amountCents),
+      transaction_count: Number(row.transaction_count),
+    });
+    account.net_difference_amount_cents += amountCents;
+    grouped.set(key, account);
+  }
+
+  return Array.from(grouped.values())
+    .map((account) => ({
+      ...account,
+      source_totals: account.source_totals.sort((left, right) =>
+        left.source_type.localeCompare(right.source_type),
+      ),
+      net_difference_amount: formatCents(account.net_difference_amount_cents),
+      unresolved_exception_count:
+        unresolvedExceptionCounts.get(accountKey(account.account_identifier, account.account_type)) ??
+        0,
+    }))
+    .sort((left, right) => left.account_identifier.localeCompare(right.account_identifier));
+}
+
+function groupTransactionsBySource(
+  transactions: Transaction[],
+): Partial<Record<SourceType, TransactionSummary[]>> {
+  return transactions.reduce<Partial<Record<SourceType, TransactionSummary[]>>>(
+    (grouped, transaction) => {
+      grouped[transaction.source_type] = grouped[transaction.source_type] ?? [];
+      grouped[transaction.source_type]!.push(toTransactionSummary(transaction));
+      return grouped;
+    },
+    {},
+  );
+}
+
+function toReconciliationExceptionDetail(
+  row: ReconciliationExceptionRow,
+): ReconciliationRunDetail["exceptions"][number] {
+  return {
+    exception_id: row.exception_id,
+    dealership_id: row.dealership_id,
+    exception_type: exceptionTypeFromReason(row.reason),
+    status: row.status,
+    note: row.note,
+    source_type: row.exception_source_type,
+    reason: row.reason,
+    created_at: toDateTimeString(row.exception_created_at),
+    transaction: toTransactionSummary(toTransaction(row)),
+  };
+}
+
+function accountKey(accountIdentifier: string, accountType: string): string {
+  return `${accountIdentifier}\u0000${accountType}`;
+}
+
+function defaultAccountType(sourceType: SourceType): string {
+  if (sourceType === "boa" || sourceType === "dealertrack") {
+    return "floorplan";
+  }
+  return sourceType;
+}
+
+function defaultAccountIdentifier(sourceType: SourceType): string {
+  if (sourceType === "boa" || sourceType === "dealertrack") {
+    return "floorplan";
+  }
+  return "unassigned";
+}
+
 async function insertSourceFile(
   client: pg.PoolClient,
   dealershipId: number,
@@ -535,10 +787,12 @@ async function insertTransactions(
         reference_number,
         description,
         account,
+        account_type,
+        account_identifier,
         stock_number,
         vin,
         raw_data
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING *`,
       [
         (transaction as NewTransaction & { dealership_id?: number }).dealership_id ?? 1,
@@ -550,6 +804,10 @@ async function insertTransactions(
         transaction.reference_number,
         transaction.description,
         transaction.account,
+        transaction.account_type ?? defaultAccountType(transaction.source_type),
+        transaction.account_identifier ??
+          transaction.account ??
+          defaultAccountIdentifier(transaction.source_type),
         transaction.stock_number,
         transaction.vin,
         transaction.raw_data,
@@ -657,6 +915,8 @@ function toTransaction(row: TransactionRow): Transaction {
     reference_number: row.reference_number,
     description: row.description,
     account: row.account,
+    account_type: row.account_type,
+    account_identifier: row.account_identifier,
     stock_number: row.stock_number,
     vin: row.vin,
     raw_data: row.raw_data,
@@ -675,6 +935,8 @@ function toTransactionSummary(transaction: Transaction): TransactionSummary {
     reference_number: transaction.reference_number,
     description: transaction.description,
     account: transaction.account,
+    account_type: transaction.account_type,
+    account_identifier: transaction.account_identifier,
     stock_number: transaction.stock_number,
     vin: transaction.vin,
   };

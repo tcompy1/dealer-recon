@@ -21,6 +21,28 @@ describe("app", () => {
     expect(response.body).toEqual({ status: "ok" });
   });
 
+  test("GET /ready returns ready when dependencies are available", async () => {
+    const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined);
+
+    const response = await request(app).get("/ready").set("X-Request-ID", "test-request-id");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: "ready" });
+    expect(response.header["x-request-id"]).toBe("test-request-id");
+  });
+
+  test("GET /ready returns 503 when dependencies are unavailable", async () => {
+    const app = createApp(new MemoryTransactionRepository(), [], 1, async () => {
+      throw new Error("database unavailable");
+    });
+
+    const response = await request(app).get("/ready");
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ status: "not_ready" });
+    expect(response.header["x-request-id"]).toEqual(expect.any(String));
+  });
+
   test("POST /upload accepts CSV upload", async () => {
     const app = createApp(new MemoryTransactionRepository());
 
@@ -439,6 +461,132 @@ describe("app", () => {
     expect(response.text).toContain("missing_in_boa,unresolved,,dealertrack");
     expect(response.text).toContain("M30303");
     expect(response.text).not.toContain("M30202");
+  });
+
+  test("GET /accounts/summary aggregates integer cents and unresolved exceptions", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    await createReconciliation(app);
+
+    const response = await request(app).get("/accounts/summary");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([
+      expect.objectContaining({
+        account_identifier: "floorplan",
+        account_type: "floorplan",
+        net_difference_amount_cents: -100,
+        net_difference_amount: "-1.00",
+        unresolved_exception_count: 2,
+        source_totals: [
+          expect.objectContaining({
+            source_type: "boa",
+            amount_cents: 60300,
+            transaction_count: 2,
+          }),
+          expect.objectContaining({
+            source_type: "dealertrack",
+            amount_cents: -60400,
+            transaction_count: 2,
+          }),
+        ],
+      }),
+    ]);
+  });
+
+  test("GET /accounts/:account_identifier returns account detail from persisted records", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+
+    const response = await request(app).get("/accounts/floorplan");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      account_identifier: "floorplan",
+      transactions_by_source_type: {
+        boa: expect.arrayContaining([
+          expect.objectContaining({
+            account_identifier: "floorplan",
+            amount_cents: 30100,
+          }),
+        ]),
+        dealertrack: expect.arrayContaining([
+          expect.objectContaining({
+            account_identifier: "floorplan",
+            amount_cents: -30100,
+          }),
+        ]),
+      },
+      related_reconciliation_runs: [
+        expect.objectContaining({
+          reconciliation_run_id: reconciliation.reconciliation_run_id,
+        }),
+      ],
+      unresolved_exceptions: expect.arrayContaining([
+        expect.objectContaining({
+          status: "unresolved",
+          transaction: expect.objectContaining({ account_identifier: "floorplan" }),
+        }),
+      ]),
+    });
+  });
+
+  test("account unresolved exception counts change when reviews are resolved", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+    const detailResponse = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
+    );
+    const exceptionId = detailResponse.body.exceptions[0].exception_id as number;
+
+    await request(app)
+      .patch(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions/${exceptionId}`)
+      .send({ status: "resolved" })
+      .expect(200);
+
+    const summaryResponse = await request(app).get("/accounts/summary");
+    const detail = await request(app).get("/accounts/floorplan");
+
+    expect(summaryResponse.status).toBe(200);
+    expect(summaryResponse.body[0].unresolved_exception_count).toBe(1);
+    expect(detail.status).toBe(200);
+    expect(detail.body.unresolved_exceptions).toHaveLength(1);
+  });
+
+  test("account endpoints respect dealership scoping", async () => {
+    const repository = new MemoryTransactionRepository();
+    const firstDealershipApp = createApp(repository, [], 1);
+    const secondDealershipApp = createApp(repository, [], 2);
+
+    await uploadCsv(
+      firstDealershipApp,
+      "bank",
+      [
+        "transaction_date,amount,description,account",
+        "2026-04-30,1.23,Store deposit,1000",
+      ].join("\n"),
+      "bank-first.csv",
+    );
+    await uploadCsv(
+      secondDealershipApp,
+      "bank",
+      [
+        "transaction_date,amount,description,account",
+        "2026-04-30,4.56,Store deposit,2000",
+      ].join("\n"),
+      "bank-second.csv",
+    );
+
+    const firstSummary = await request(firstDealershipApp).get("/accounts/summary");
+    const secondSummary = await request(secondDealershipApp).get("/accounts/summary");
+    const crossDetail = await request(secondDealershipApp).get("/accounts/1000");
+
+    expect(firstSummary.body).toEqual([
+      expect.objectContaining({ account_identifier: "1000", net_difference_amount_cents: 123 }),
+    ]);
+    expect(secondSummary.body).toEqual([
+      expect.objectContaining({ account_identifier: "2000", net_difference_amount_cents: 456 }),
+    ]);
+    expect(crossDetail.status).toBe(404);
   });
 
   test("POST /reconcile only compares selected source files", async () => {

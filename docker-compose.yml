@@ -20,6 +20,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      target: dev
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://dealer_recon:dealer_recon@db:5432/dealer_recon}
       UPLOAD_STORAGE_PATH: ${UPLOAD_STORAGE_PATH:-/app/storage/uploads}
@@ -27,6 +28,7 @@ services:
       DEFAULT_DEALERSHIP_ID: ${DEFAULT_DEALERSHIP_ID:-1}
     ports:
       - "8000:8000"
+    command: sh -c "npm run migrate && npm run dev"
     volumes:
       - ./server:/app/server
       - server_node_modules:/app/server/node_modules
@@ -35,11 +37,17 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/ready >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
+      target: dev
     environment:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
     ports:
@@ -48,7 +56,8 @@ services:
       - ./frontend:/app/frontend
       - frontend_node_modules:/app/frontend/node_modules
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   postgres_data:

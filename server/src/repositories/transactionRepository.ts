@@ -1,4 +1,6 @@
 import type {
+  AccountDetail,
+  AccountSummary,
   NewSourceFile,
   NewTransaction,
   ReconciliationExceptionReviewUpdate,
@@ -44,6 +46,8 @@ export interface TransactionRepository {
   listSourceFiles(dealershipId: number, sourceType?: SourceType): Promise<SourceFileSummary[]>;
   listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]>;
   listBySourceFile(dealershipId: number, sourceFileId: number): Promise<Transaction[]>;
+  listAccountsSummary(dealershipId: number): Promise<AccountSummary[]>;
+  getAccountDetail(dealershipId: number, accountIdentifier: string): Promise<AccountDetail | null>;
   createReconciliationRun(input: PersistReconciliationRunInput): Promise<ReconciliationRun>;
   listReconciliationRuns(dealershipId: number): Promise<ReconciliationRunListItem[]>;
   getReconciliationRunDealershipId(reconciliationRunId: number): Promise<number | null>;
@@ -124,9 +128,14 @@ export class MemoryTransactionRepository implements TransactionRepository {
   }
 
   async insertMany(transactions: NewTransaction[]): Promise<Transaction[]> {
-    const inserted = transactions.map((transaction) => ({
+    const inserted: Transaction[] = transactions.map((transaction) => ({
       ...transaction,
       dealership_id: (transaction as NewTransaction & { dealership_id?: number }).dealership_id ?? 1,
+      account_type: transaction.account_type ?? defaultAccountType(transaction.source_type),
+      account_identifier:
+        transaction.account_identifier ??
+        transaction.account ??
+        defaultAccountIdentifier(transaction.source_type),
       id: this.nextId++,
     }));
     this.transactions.push(...inserted);
@@ -179,6 +188,74 @@ export class MemoryTransactionRepository implements TransactionRepository {
           transaction.dealership_id === dealershipId && transaction.source_file_id === sourceFileId,
       )
       .sort((left, right) => left.id - right.id);
+  }
+
+  async listAccountsSummary(dealershipId: number): Promise<AccountSummary[]> {
+    return buildAccountSummaries(
+      this.transactions.filter((transaction) => transaction.dealership_id === dealershipId),
+      this.reconciliationExceptions.filter((exception) => exception.dealership_id === dealershipId),
+    );
+  }
+
+  async getAccountDetail(
+    dealershipId: number,
+    accountIdentifier: string,
+  ): Promise<AccountDetail | null> {
+    const accountTransactions = this.transactions.filter(
+      (transaction) =>
+        transaction.dealership_id === dealershipId &&
+        transaction.account_identifier === accountIdentifier,
+    );
+    if (accountTransactions.length === 0) {
+      return null;
+    }
+
+    const [summary] = buildAccountSummaries(
+      accountTransactions,
+      this.reconciliationExceptions.filter((exception) => exception.dealership_id === dealershipId),
+    );
+    const transactionIds = new Set(accountTransactions.map((transaction) => transaction.id));
+    const relatedRunIds = new Set<number>();
+
+    for (const link of this.reconciliationMatchGroupTransactions) {
+      if (!transactionIds.has(link.transaction_id)) {
+        continue;
+      }
+      const matchGroup = this.reconciliationMatchGroups.find(
+        (candidate) => candidate.id === link.match_group_id,
+      );
+      if (matchGroup) {
+        relatedRunIds.add(matchGroup.reconciliation_run_id);
+      }
+    }
+    for (const exception of this.reconciliationExceptions) {
+      if (
+        exception.dealership_id === dealershipId &&
+        transactionIds.has(exception.transaction_id)
+      ) {
+        relatedRunIds.add(exception.reconciliation_run_id);
+      }
+    }
+
+    return {
+      ...summary,
+      transactions_by_source_type: groupTransactionsBySource(accountTransactions),
+      related_reconciliation_runs: this.reconciliationRuns
+        .filter((run) => relatedRunIds.has(run.id) && run.dealership_id === dealershipId)
+        .slice()
+        .sort((left, right) => right.id - left.id)
+        .map((run) => this.toReconciliationRunListItem(run))
+        .filter((run): run is ReconciliationRunListItem => run !== null),
+      unresolved_exceptions: this.reconciliationExceptions
+        .filter(
+          (exception) =>
+            exception.dealership_id === dealershipId &&
+            exception.status === "unresolved" &&
+            transactionIds.has(exception.transaction_id),
+        )
+        .sort((left, right) => left.id - right.id)
+        .map((exception) => this.toRunDetailException(exception)),
+    };
   }
 
   async createReconciliationRun(input: PersistReconciliationRunInput): Promise<ReconciliationRun> {
@@ -438,9 +515,106 @@ function toTransactionSummary(transaction: Transaction): TransactionSummary {
     reference_number: transaction.reference_number,
     description: transaction.description,
     account: transaction.account,
+    account_type: transaction.account_type,
+    account_identifier: transaction.account_identifier,
     stock_number: transaction.stock_number,
     vin: transaction.vin,
   };
+}
+
+function groupTransactionsBySource(
+  transactions: Transaction[],
+): Partial<Record<SourceType, TransactionSummary[]>> {
+  return transactions.reduce<Partial<Record<SourceType, TransactionSummary[]>>>(
+    (grouped, transaction) => {
+      grouped[transaction.source_type] = grouped[transaction.source_type] ?? [];
+      grouped[transaction.source_type]!.push(toTransactionSummary(transaction));
+      return grouped;
+    },
+    {},
+  );
+}
+
+function buildAccountSummaries(
+  transactions: Transaction[],
+  exceptions: Array<{ status: ReconciliationExceptionStatus; transaction_id: number }>,
+): AccountSummary[] {
+  const unresolvedExceptionCounts = new Map<number, number>();
+  for (const exception of exceptions) {
+    if (exception.status !== "unresolved") {
+      continue;
+    }
+    unresolvedExceptionCounts.set(
+      exception.transaction_id,
+      (unresolvedExceptionCounts.get(exception.transaction_id) ?? 0) + 1,
+    );
+  }
+
+  const grouped = new Map<
+    string,
+    {
+      account_identifier: string;
+      account_type: string;
+      source_totals: Map<SourceType, { amount_cents: number; transaction_count: number }>;
+      net_difference_amount_cents: number;
+      unresolved_exception_count: number;
+    }
+  >();
+
+  for (const transaction of transactions) {
+    const key = `${transaction.account_identifier}\u0000${transaction.account_type}`;
+    const account =
+      grouped.get(key) ??
+      {
+        account_identifier: transaction.account_identifier,
+        account_type: transaction.account_type,
+        source_totals: new Map(),
+        net_difference_amount_cents: 0,
+        unresolved_exception_count: 0,
+      };
+    const sourceTotal =
+      account.source_totals.get(transaction.source_type) ??
+      { amount_cents: 0, transaction_count: 0 };
+
+    sourceTotal.amount_cents += transaction.amount_cents;
+    sourceTotal.transaction_count += 1;
+    account.source_totals.set(transaction.source_type, sourceTotal);
+    account.net_difference_amount_cents += transaction.amount_cents;
+    account.unresolved_exception_count += unresolvedExceptionCounts.get(transaction.id) ?? 0;
+    grouped.set(key, account);
+  }
+
+  return Array.from(grouped.values())
+    .map((account) => ({
+      account_identifier: account.account_identifier,
+      account_type: account.account_type,
+      source_totals: Array.from(account.source_totals.entries())
+        .map(([sourceType, total]) => ({
+          source_type: sourceType,
+          amount_cents: total.amount_cents,
+          amount: formatCents(total.amount_cents),
+          transaction_count: total.transaction_count,
+        }))
+        .sort((left, right) => left.source_type.localeCompare(right.source_type)),
+      net_difference_amount_cents: account.net_difference_amount_cents,
+      net_difference_amount: formatCents(account.net_difference_amount_cents),
+      unresolved_exception_count: account.unresolved_exception_count,
+    }))
+    .sort((left, right) => left.account_identifier.localeCompare(right.account_identifier));
+}
+
+function defaultAccountType(sourceType: SourceType): string {
+  if (sourceType === "boa" || sourceType === "dealertrack") {
+    return "floorplan";
+  }
+  return sourceType;
+}
+
+function defaultAccountIdentifier(sourceType: SourceType): string {
+  if (sourceType === "boa" || sourceType === "dealertrack") {
+    return "floorplan";
+  }
+  return "unassigned";
 }
 
 function sideOrder(side: string): number {

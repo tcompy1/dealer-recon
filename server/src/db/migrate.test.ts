@@ -55,9 +55,9 @@ describeIfDatabase("migrate", () => {
            FROM information_schema.columns
            WHERE table_schema = 'public'
              AND table_name = 'transactions'
-             AND column_name IN ('source_file_id', 'amount_cents')`,
+          AND column_name IN ('source_file_id', 'amount_cents', 'account_type', 'account_identifier')`,
         );
-        expect(columnResult.rows).toHaveLength(2);
+        expect(columnResult.rows).toHaveLength(4);
         const amountColumnResult = await pool.query<{ data_type: string }>(
           `SELECT data_type
            FROM information_schema.columns
@@ -157,10 +157,12 @@ describeIfDatabase("migrate", () => {
               reference_number,
               description,
               account,
+              account_type,
+              account_identifier,
               stock_number,
               vin,
               raw_data
-            ) VALUES ($1, 1, 'boa', '2026-04-30', NULL, 0, NULL, NULL, NULL, 'M10001', NULL, '{}'::jsonb)`,
+            ) VALUES ($1, 1, 'boa', '2026-04-30', NULL, 0, NULL, NULL, NULL, 'floorplan', 'floorplan', 'M10001', NULL, '{}'::jsonb)`,
             [sourceFileId],
           ),
         ).rejects.toThrow();
@@ -176,10 +178,12 @@ describeIfDatabase("migrate", () => {
             reference_number,
             description,
             account,
+            account_type,
+            account_identifier,
             stock_number,
             vin,
             raw_data
-          ) VALUES ($1, 1, 'boa', '2026-04-30', NULL, 10000, NULL, NULL, NULL, 'M10001', NULL, '{}'::jsonb)
+          ) VALUES ($1, 1, 'boa', '2026-04-30', NULL, 10000, NULL, NULL, NULL, 'floorplan', 'floorplan', 'M10001', NULL, '{}'::jsonb)
           RETURNING id`,
           [sourceFileId],
         );

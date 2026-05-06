@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import cors from "cors";
 import express from "express";
@@ -22,6 +23,7 @@ import {
   CsvNormalizationError,
   normalizeTransactionsFromCsv,
 } from "./services/transactionNormalizer.js";
+import { logError, logInfo, serializeError } from "./logger.js";
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const allowedCsvMimeTypes = new Set([
@@ -52,9 +54,11 @@ export function createApp(
   repository: TransactionRepository,
   corsOrigins: string[] = [],
   dealershipId = 1,
+  readinessCheck: () => Promise<void> = async () => undefined,
 ) {
   const app = express();
 
+  app.use(requestLogger);
   app.use(express.json());
   app.use(
     cors({
@@ -67,6 +71,16 @@ export function createApp(
     response.json({ status: "ok" });
   });
 
+  app.get("/ready", async (_request, response) => {
+    try {
+      await readinessCheck();
+      response.json({ status: "ready" });
+    } catch (error) {
+      logError("readiness_check_failed", serializeError(error));
+      response.status(503).json({ status: "not_ready" });
+    }
+  });
+
   app.get("/source-files", async (request, response, next) => {
     try {
       const sourceType = parseSourceTypeQuery(request.query.source_type);
@@ -76,6 +90,34 @@ export function createApp(
       }
 
       response.json(await repository.listSourceFiles(dealershipId, sourceType));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/accounts/summary", async (_request, response, next) => {
+    try {
+      response.json(await repository.listAccountsSummary(dealershipId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/accounts/:account_identifier", async (request, response, next) => {
+    try {
+      const accountIdentifier = request.params.account_identifier?.trim();
+      if (!accountIdentifier) {
+        response.status(404).json({ detail: "Account was not found." });
+        return;
+      }
+
+      const detail = await repository.getAccountDetail(dealershipId, accountIdentifier);
+      if (!detail) {
+        response.status(404).json({ detail: "Account was not found." });
+        return;
+      }
+
+      response.json(detail);
     } catch (error) {
       next(error);
     }
@@ -187,6 +229,16 @@ export function createApp(
         boa_source_file_id: boaSourceFileId,
         dealertrack_source_file_id: dealertrackSourceFileId,
         result,
+      });
+      logInfo("reconciliation_run_created", {
+        request_id: response.locals.requestId,
+        dealership_id: dealershipId,
+        reconciliation_run_id: run.id,
+        boa_source_file_id: boaSourceFileId,
+        dealertrack_source_file_id: dealertrackSourceFileId,
+        matched_count: result.matched_count,
+        exception_count: result.exception_count,
+        duplicate_count: result.duplicate_count,
       });
 
       response.json({
@@ -350,12 +402,49 @@ export function createApp(
         response.status(409).json({ detail: error.message });
         return;
       }
-      console.error(error);
+      logError("request_failed", {
+        request_id: response.locals.requestId,
+        ...serializeError(error),
+      });
       response.status(500).json({ detail: "Internal server error." });
     },
   );
 
   return app;
+}
+
+function requestLogger(
+  request: express.Request,
+  response: express.Response,
+  next: express.NextFunction,
+) {
+  const requestId = getRequestId(request.headers["x-request-id"]);
+  const startedAt = process.hrtime.bigint();
+  response.locals.requestId = requestId;
+  response.setHeader("X-Request-ID", requestId);
+
+  response.on("finish", () => {
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    logInfo("request_completed", {
+      request_id: requestId,
+      method: request.method,
+      path: request.originalUrl,
+      status_code: response.statusCode,
+      duration_ms: Math.round(durationMs * 100) / 100,
+    });
+  });
+
+  next();
+}
+
+function getRequestId(value: unknown): string {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim().slice(0, 100);
+  }
+  if (Array.isArray(value) && typeof value[0] === "string" && value[0].trim()) {
+    return value[0].trim().slice(0, 100);
+  }
+  return randomUUID();
 }
 
 function parseSourceFileId(value: unknown): number | null {

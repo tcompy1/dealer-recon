@@ -60,6 +60,7 @@ Services:
 
 - Frontend: http://localhost:5173
 - Health check: http://localhost:8000/health
+- Readiness check: http://localhost:8000/ready
 - PostgreSQL: localhost:5432
 
 ## Backend Development
@@ -95,6 +96,63 @@ Run the backend with Docker:
 docker compose up backend db
 ```
 
+Migrations are managed by `node-pg-migrate` and recorded in the `pgmigrations` table. The backend
+does not run migrations automatically when `node dist/index.js` starts. Development Compose runs
+migrations before watch mode for local convenience; production deployments should run migrations as
+an explicit release step.
+
+Create a migration:
+
+```bash
+npm --prefix server exec node-pg-migrate create add_new_table \
+  --migrations-dir src/db/migrations \
+  --migration-file-language js
+```
+
+Run migrations:
+
+```bash
+npm --prefix server run migrate
+```
+
+Rollback one migration:
+
+```bash
+npm --prefix server run migrate:down
+```
+
+Before production rollback, take a database backup and review the migration `down` body. The initial
+baseline migration has a destructive rollback because it owns the whole prototype schema.
+
+## Deployment Runtime
+
+Development uses `docker-compose.yml`, bind mounts, and `tsx watch`:
+
+```bash
+docker compose up --build
+```
+
+Production-like Compose uses compiled assets and non-root container users where practical:
+
+```bash
+docker compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml run --rm backend npm run migrate:prod
+docker compose -f docker-compose.prod.yml up -d
+curl -f http://localhost:8000/ready
+```
+
+Deployment sequence:
+
+1. Build immutable backend and frontend images.
+2. Back up the database.
+3. Run `npm run migrate:prod` once against the target database.
+4. Start or roll the backend and frontend containers.
+5. Check `/ready`, then run the manual smoke test.
+
+If a deployment fails after migrations, prefer restoring the backup for destructive changes. For
+small reversible changes, stop the app, run `npm run migrate:prod:down`, redeploy the prior image, and
+check `/ready`.
+
 ## Tenancy Model
 
 The backend has basic dealership scoping but does not have authentication yet. For now, every API
@@ -118,6 +176,8 @@ The TypeScript backend runs a lightweight PostgreSQL migration on startup and ex
 
 ```text
 GET /health
+GET /accounts/summary
+GET /accounts/:account_identifier
 GET /source-files
 GET /reconciliation-runs
 GET /reconciliation-runs/:id
@@ -250,6 +310,30 @@ the exception and returned in run detail and CSV exports.
 PATCH /reconciliation-runs/10/exceptions/42
 ```
 
+## Account Close Support
+
+The account view summarizes persisted transaction activity by account identifier, account type, and
+source. BOA and Dealertrack floorplan uploads default to the `floorplan` account identifier. Generic
+CSV uploads can provide `account_type` and `account_identifier` columns; otherwise
+`account_identifier` falls back to `account`, then `unassigned`.
+
+`GET /accounts/summary` returns one row per account with source totals, signed net difference, and
+the unresolved exception count:
+
+```json
+{
+  "account_identifier": "floorplan",
+  "account_type": "floorplan",
+  "source_totals": [],
+  "net_difference_amount_cents": -100,
+  "net_difference_amount": "-1.00",
+  "unresolved_exception_count": 2
+}
+```
+
+`GET /accounts/:account_identifier` adds transactions grouped by source type, related
+reconciliation runs, and unresolved exceptions for the selected account.
+
 ## Sample Data
 
 Floorplan reconciliation samples are available in:
@@ -365,6 +449,7 @@ docker compose run --rm frontend npm run lint
 POSTGRES_DB=dealer_recon
 POSTGRES_USER=dealer_recon
 POSTGRES_PASSWORD=dealer_recon
+NODE_ENV=development
 DATABASE_URL=postgresql://dealer_recon:dealer_recon@db:5432/dealer_recon
 BACKEND_CORS_ORIGINS=http://localhost:5173
 UPLOAD_STORAGE_PATH=/app/storage/uploads
@@ -374,7 +459,5 @@ VITE_API_BASE_URL=http://localhost:8000
 
 ## MVP Build Order
 
-1. Add account-level close support views.
-2. Add exportable month-end reports.
-3. Add basic user/dealership scoping.
-4. Add production migration tooling and deployment hardening.
+1. Add exportable month-end reports.
+2. Add authentication and real user selection.

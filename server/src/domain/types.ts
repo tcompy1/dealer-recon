@@ -19,12 +19,18 @@ export type Transaction = {
   reference_number: string | null;
   description: string | null;
   account: string | null;
+  account_type: string;
+  account_identifier: string;
   stock_number: string | null;
   vin: string | null;
   raw_data: Record<string, unknown>;
 };
 
-export type NewTransaction = Omit<Transaction, "id" | "dealership_id">;
+export type NewTransaction = Omit<
+  Transaction,
+  "id" | "dealership_id" | "account_type" | "account_identifier"
+> &
+  Partial<Pick<Transaction, "account_type" | "account_identifier">>;
 
 export type SourceFile = {
   id: number;
@@ -74,8 +80,26 @@ export type TransactionSummary = {
   reference_number: string | null;
   description: string | null;
   account: string | null;
+  account_type?: string;
+  account_identifier?: string;
   stock_number: string | null;
   vin: string | null;
+};
+
+export type AccountSourceTotal = {
+  source_type: SourceType;
+  amount_cents: number;
+  amount: string;
+  transaction_count: number;
+};
+
+export type AccountSummary = {
+  account_identifier: string;
+  account_type: string;
+  source_totals: AccountSourceTotal[];
+  net_difference_amount_cents: number;
+  net_difference_amount: string;
+  unresolved_exception_count: number;
 };
 
 export type MatchGroup = {
@@ -184,6 +208,12 @@ export type ReconciliationRunDetail = ReconciliationRunListItem & {
     created_at: string;
     transaction: TransactionSummary;
   }>;
+};
+
+export type AccountDetail = AccountSummary & {
+  transactions_by_source_type: Partial<Record<SourceType, TransactionSummary[]>>;
+  related_reconciliation_runs: ReconciliationRunListItem[];
+  unresolved_exceptions: ReconciliationRunDetail["exceptions"];
 };
 
 export function isSourceType(value: unknown): value is SourceType {
