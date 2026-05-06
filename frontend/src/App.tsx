@@ -1,14 +1,61 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
+import { getMe, logout } from "./api/auth";
 import { Layout } from "./components/Layout";
 import { AccountsPage } from "./pages/AccountsPage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { LoginPage } from "./pages/LoginPage";
 import { ReportsPage } from "./pages/ReportsPage";
+import type { CurrentUser } from "./types/auth";
 
 type AppSection = "reconciliation" | "accounts" | "reports";
 
 export default function App() {
   const [section, setSection] = useState<AppSection>("reconciliation");
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [isCheckingSession, setIsCheckingSession] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    getMe()
+      .then((response) => {
+        if (isMounted) {
+          setCurrentUser(response.user);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setCurrentUser(null);
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsCheckingSession(false);
+        }
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  async function handleLogout() {
+    await logout();
+    setCurrentUser(null);
+  }
+
+  if (isCheckingSession) {
+    return (
+      <Layout>
+        <section className="grid flex-1 place-items-center py-8">
+          <p className="text-sm font-semibold text-slate-600">Checking session...</p>
+        </section>
+      </Layout>
+    );
+  }
+
+  if (!currentUser) {
+    return <LoginPage onLogin={setCurrentUser} />;
+  }
 
   return (
     <Layout>
@@ -41,6 +88,19 @@ export default function App() {
               onClick={() => setSection("reports")}
             />
           </nav>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-white px-4 py-3">
+          <div className="grid gap-1">
+            <span className="text-xs font-semibold uppercase text-slate-500">Signed in</span>
+            <span className="text-sm font-semibold text-slate-900">{currentUser.email}</span>
+          </div>
+          <button
+            className="inline-flex h-9 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+            type="button"
+            onClick={handleLogout}
+          >
+            Logout
+          </button>
         </div>
 
         {section === "reconciliation" ? <DashboardPage embedded /> : null}

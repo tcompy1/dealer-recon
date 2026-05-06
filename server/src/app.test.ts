@@ -2,6 +2,7 @@ import request from "supertest";
 import { describe, expect, test } from "vitest";
 
 import { createApp } from "./app.js";
+import { MemoryAuthRepository } from "./auth.js";
 import { MemoryTransactionRepository } from "./repositories/transactionRepository.js";
 import { MAX_CSV_ROWS } from "./services/transactionNormalizer.js";
 
@@ -12,6 +13,136 @@ const dealertrackUploadCsv = (stockNumber: string, amount: string) =>
   `${stockNumber},"BOA FLOORPLAN",${amount},0`;
 
 describe("app", () => {
+  test("POST /login authenticates a local user and GET /me returns the user", async () => {
+    const authRepository = new MemoryAuthRepository();
+    await authRepository.addUser({
+      email: "controller@example.com",
+      password: "correct-password",
+      dealership_id: 2,
+    });
+    const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+    const agent = request.agent(app);
+
+    const loginResponse = await agent
+      .post("/login")
+      .send({ email: "controller@example.com", password: "correct-password" });
+    const meResponse = await agent.get("/me");
+
+    expect(loginResponse.status).toBe(200);
+    expect(loginResponse.body.user).toMatchObject({
+      email: "controller@example.com",
+      dealership_id: 2,
+    });
+    expect(loginResponse.headers["set-cookie"]?.[0]).toContain("dealer_recon_session=");
+    expect(meResponse.status).toBe(200);
+    expect(meResponse.body.user).toMatchObject({
+      email: "controller@example.com",
+      dealership_id: 2,
+    });
+  });
+
+  test("POST /login rejects invalid credentials", async () => {
+    const authRepository = new MemoryAuthRepository();
+    await authRepository.addUser({
+      email: "controller@example.com",
+      password: "correct-password",
+      dealership_id: 1,
+    });
+    const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+
+    const response = await request(app)
+      .post("/login")
+      .send({ email: "controller@example.com", password: "wrong-password" });
+
+    expect(response.status).toBe(401);
+  });
+
+  test("protected routes require authentication when auth is configured", async () => {
+    const authRepository = new MemoryAuthRepository();
+    const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+
+    const response = await request(app).get("/source-files");
+
+    expect(response.status).toBe(401);
+  });
+
+  test("authenticated requests scope dealership from the user", async () => {
+    const repository = new MemoryTransactionRepository();
+    const authRepository = new MemoryAuthRepository();
+    await authRepository.addUser({
+      email: "controller@example.com",
+      password: "correct-password",
+      dealership_id: 2,
+    });
+    const app = createApp(repository, [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+    const agent = request.agent(app);
+    await agent.post("/login").send({
+      email: "controller@example.com",
+      password: "correct-password",
+    });
+
+    const upload = await agent
+      .post("/upload")
+      .field("source_type", "bank")
+      .attach(
+        "file",
+        Buffer.from(
+          [
+            "transaction_date,post_date,amount,reference_number,description,account,stock_number,vin",
+            "2026-04-30,2026-05-01,100.00,DEP-1001,Daily deposit,1000,STK123,1HGCM82633A004352",
+          ].join("\n"),
+        ),
+        "bank.csv",
+      );
+
+    expect(upload.status).toBe(200);
+    await expect(repository.getSourceFile(upload.body.source_file_id)).resolves.toMatchObject({
+      dealership_id: 2,
+    });
+  });
+
+  test("POST /logout clears the session", async () => {
+    const authRepository = new MemoryAuthRepository();
+    await authRepository.addUser({
+      email: "controller@example.com",
+      password: "correct-password",
+      dealership_id: 1,
+    });
+    const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+    const agent = request.agent(app);
+    await agent.post("/login").send({
+      email: "controller@example.com",
+      password: "correct-password",
+    });
+
+    const logoutResponse = await agent.post("/logout");
+    const meResponse = await agent.get("/me");
+
+    expect(logoutResponse.status).toBe(200);
+    expect(logoutResponse.headers["set-cookie"]?.[0]).toContain("dealer_recon_session=;");
+    expect(meResponse.status).toBe(401);
+  });
+
   test("GET /health returns ok", async () => {
     const app = createApp(new MemoryTransactionRepository());
 

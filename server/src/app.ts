@@ -6,6 +6,15 @@ import express from "express";
 import multer, { MulterError } from "multer";
 
 import {
+  type AuthRepository,
+  type AuthUser,
+  createSessionToken,
+  parseCookies,
+  sessionCookieName,
+  verifyPassword,
+  verifySessionToken,
+} from "./auth.js";
+import {
   isReconciliationExceptionStatus,
   isReconciliationExceptionType,
   isSourceType,
@@ -56,8 +65,20 @@ export function createApp(
   corsOrigins: string[] = [],
   dealershipId = 1,
   readinessCheck: () => Promise<void> = async () => undefined,
+  authOptions: {
+    authRepository?: AuthRepository;
+    sessionSecret?: string;
+    nodeEnv?: string;
+    allowDevDealershipFallback?: boolean;
+  } = {},
 ) {
   const app = express();
+  const authRepository = authOptions.authRepository;
+  const sessionSecret =
+    authOptions.sessionSecret ?? "local-dev-session-secret-change-before-production";
+  const isProduction = authOptions.nodeEnv === "production";
+  const allowDevDealershipFallback =
+    authOptions.allowDevDealershipFallback ?? authRepository === undefined;
 
   app.use(requestLogger);
   app.use(express.json());
@@ -82,15 +103,86 @@ export function createApp(
     }
   });
 
+  app.post("/login", async (request, response, next) => {
+    try {
+      if (!authRepository) {
+        response.status(503).json({ detail: "Authentication is not configured." });
+        return;
+      }
+
+      const credentials = parseLoginRequest(request.body);
+      if (!credentials) {
+        response.status(422).json({ detail: "Email and password are required." });
+        return;
+      }
+
+      const user = await authRepository.findUserByEmail(credentials.email);
+      if (!user || !(await verifyPassword(credentials.password, user.password_hash))) {
+        response.status(401).json({ detail: "Invalid email or password." });
+        return;
+      }
+
+      const publicUser = toPublicUser(user);
+      response.cookie(sessionCookieName, createSessionToken(publicUser, sessionSecret), {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: isProduction,
+        maxAge: 8 * 60 * 60 * 1000,
+        path: "/",
+      });
+      response.json({ user: publicUser });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.use(async (request, response, next) => {
+    try {
+      const user = await resolveRequestUser(request, authRepository, sessionSecret);
+      if (user) {
+        response.locals.user = user;
+        next();
+        return;
+      }
+      if (allowDevDealershipFallback) {
+        response.locals.user = {
+          id: 0,
+          email: "local-dev-fallback@dealer-recon.local",
+          dealership_id: dealershipId,
+        } satisfies AuthUser;
+        next();
+        return;
+      }
+      response.status(401).json({ detail: "Authentication required." });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/logout", (_request, response) => {
+    response.clearCookie(sessionCookieName, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: isProduction,
+      path: "/",
+    });
+    response.json({ status: "ok" });
+  });
+
+  app.get("/me", (request, response) => {
+    response.json({ user: getAuthenticatedUser(response) });
+  });
+
   app.get("/source-files", async (request, response, next) => {
     try {
+      const requestDealershipId = getRequestDealershipId(response);
       const sourceType = parseSourceTypeQuery(request.query.source_type);
       if (sourceType === false) {
         response.status(422).json({ detail: "Invalid source_type." });
         return;
       }
 
-      response.json(await repository.listSourceFiles(dealershipId, sourceType));
+      response.json(await repository.listSourceFiles(requestDealershipId, sourceType));
     } catch (error) {
       next(error);
     }
@@ -98,7 +190,7 @@ export function createApp(
 
   app.get("/accounts/summary", async (_request, response, next) => {
     try {
-      response.json(await repository.listAccountsSummary(dealershipId));
+      response.json(await repository.listAccountsSummary(getRequestDealershipId(response)));
     } catch (error) {
       next(error);
     }
@@ -112,7 +204,10 @@ export function createApp(
         return;
       }
 
-      const detail = await repository.getAccountDetail(dealershipId, accountIdentifier);
+      const detail = await repository.getAccountDetail(
+        getRequestDealershipId(response),
+        accountIdentifier,
+      );
       if (!detail) {
         response.status(404).json({ detail: "Account was not found." });
         return;
@@ -133,7 +228,7 @@ export function createApp(
       }
 
       const report = await repository.getMonthEndReport(
-        dealershipId,
+        getRequestDealershipId(response),
         reportQuery.startDate,
         reportQuery.endDate,
       );
@@ -168,8 +263,9 @@ export function createApp(
       }
 
       const fileHash = createFileHash(request.file.buffer);
+      const requestDealershipId = getRequestDealershipId(response);
       const duplicateSourceFile = await repository.getSourceFileByHash(
-        dealershipId,
+        requestDealershipId,
         sourceType,
         fileHash,
       );
@@ -184,7 +280,7 @@ export function createApp(
 
       const result = normalizeTransactionsFromCsv(request.file.buffer, sourceType);
       const importResult = await repository.createSourceFileWithTransactions(
-        dealershipId,
+        requestDealershipId,
         {
           source_type: sourceType,
           original_filename: request.file.originalname || "upload.csv",
@@ -228,13 +324,14 @@ export function createApp(
         repository.getSourceFile(dealertrackSourceFileId),
       ]);
 
+      const requestDealershipId = getRequestDealershipId(response);
       if (!boaSourceFile || !dealertrackSourceFile) {
         response.status(404).json({ detail: "Source file was not found." });
         return;
       }
       if (
-        boaSourceFile.dealership_id !== dealershipId ||
-        dealertrackSourceFile.dealership_id !== dealershipId
+        boaSourceFile.dealership_id !== requestDealershipId ||
+        dealertrackSourceFile.dealership_id !== requestDealershipId
       ) {
         response.status(403).json({ detail: "Source file belongs to another dealership." });
         return;
@@ -252,19 +349,19 @@ export function createApp(
       }
 
       const result = await reconcileTransactions(repository, "boa", "dealertrack", {
-        dealershipId,
+        dealershipId: requestDealershipId,
         leftSourceFileId: boaSourceFileId,
         rightSourceFileId: dealertrackSourceFileId,
       });
       const run = await repository.createReconciliationRun({
-        dealership_id: dealershipId,
+        dealership_id: requestDealershipId,
         boa_source_file_id: boaSourceFileId,
         dealertrack_source_file_id: dealertrackSourceFileId,
         result,
       });
       logInfo("reconciliation_run_created", {
         request_id: response.locals.requestId,
-        dealership_id: dealershipId,
+        dealership_id: requestDealershipId,
         reconciliation_run_id: run.id,
         boa_source_file_id: boaSourceFileId,
         dealertrack_source_file_id: dealertrackSourceFileId,
@@ -284,7 +381,7 @@ export function createApp(
 
   app.get("/reconciliation-runs", async (_request, response, next) => {
     try {
-      response.json(await repository.listReconciliationRuns(dealershipId));
+      response.json(await repository.listReconciliationRuns(getRequestDealershipId(response)));
     } catch (error) {
       next(error);
     }
@@ -305,14 +402,14 @@ export function createApp(
       }
 
       const detail = await repository.getReconciliationRunDetail(
-        dealershipId,
+        getRequestDealershipId(response),
         reconciliationRunId,
         filters,
       );
       if (!detail) {
         const ownerDealershipId =
           await repository.getReconciliationRunDealershipId(reconciliationRunId);
-        if (ownerDealershipId !== null && ownerDealershipId !== dealershipId) {
+        if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
           response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
           return;
         }
@@ -341,14 +438,14 @@ export function createApp(
       }
 
       const detail = await repository.getReconciliationRunDetail(
-        dealershipId,
+        getRequestDealershipId(response),
         reconciliationRunId,
         filters,
       );
       if (!detail) {
         const ownerDealershipId =
           await repository.getReconciliationRunDealershipId(reconciliationRunId);
-        if (ownerDealershipId !== null && ownerDealershipId !== dealershipId) {
+        if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
           response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
           return;
         }
@@ -387,7 +484,7 @@ export function createApp(
         }
 
         const exception = await repository.updateReconciliationExceptionReview(
-          dealershipId,
+          getRequestDealershipId(response),
           reconciliationRunId,
           exceptionId,
           update,
@@ -397,7 +494,7 @@ export function createApp(
             reconciliationRunId,
             exceptionId,
           );
-          if (owner !== null && owner !== dealershipId) {
+          if (owner !== null && owner !== getRequestDealershipId(response)) {
             response
               .status(403)
               .json({ detail: "Reconciliation exception belongs to another dealership." });
@@ -477,6 +574,69 @@ function getRequestId(value: unknown): string {
     return value[0].trim().slice(0, 100);
   }
   return randomUUID();
+}
+
+async function resolveRequestUser(
+  request: express.Request,
+  authRepository: AuthRepository | undefined,
+  sessionSecret: string,
+): Promise<AuthUser | null> {
+  if (!authRepository) {
+    return null;
+  }
+  const cookies = parseCookies(request.headers.cookie);
+  const token = cookies[sessionCookieName] ?? getBearerToken(request.headers.authorization);
+  if (!token) {
+    return null;
+  }
+  const session = verifySessionToken(token, sessionSecret);
+  if (!session) {
+    return null;
+  }
+  const user = await authRepository.findUserById(session.userId);
+  if (!user || user.dealership_id !== session.dealershipId) {
+    return null;
+  }
+  return user;
+}
+
+function getBearerToken(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const [scheme, token] = value.split(" ");
+  return scheme?.toLowerCase() === "bearer" && token ? token : null;
+}
+
+function parseLoginRequest(value: unknown): { email: string; password: string } | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const body = value as { email?: unknown; password?: unknown };
+  if (typeof body.email !== "string" || typeof body.password !== "string") {
+    return null;
+  }
+  const email = body.email.trim().toLowerCase();
+  if (!email || !body.password) {
+    return null;
+  }
+  return { email, password: body.password };
+}
+
+function getAuthenticatedUser(response: express.Response): AuthUser {
+  return response.locals.user as AuthUser;
+}
+
+function getRequestDealershipId(response: express.Response): number {
+  return getAuthenticatedUser(response).dealership_id;
+}
+
+function toPublicUser(user: AuthUser): AuthUser {
+  return {
+    id: user.id,
+    email: user.email,
+    dealership_id: user.dealership_id,
+  };
 }
 
 function parseSourceFileId(value: unknown): number | null {

@@ -6,6 +6,7 @@ export type AppConfig = {
   databaseUrl: string;
   corsOrigins: string[];
   defaultDealershipId: number;
+  sessionSecret: string;
 };
 
 export function loadConfig(): AppConfig {
@@ -20,6 +21,14 @@ export function loadConfig(): AppConfig {
     "DEFAULT_DEALERSHIP_ID",
   );
   const corsOrigins = parseCorsOrigins(process.env.BACKEND_CORS_ORIGINS ?? "http://localhost:5173");
+  const sessionSecret =
+    process.env.SESSION_SECRET ?? "local-dev-session-secret-change-before-production";
+  if (nodeEnv === "production" && !process.env.SESSION_SECRET) {
+    throw new Error("SESSION_SECRET is required when NODE_ENV=production.");
+  }
+  if (sessionSecret.length < 32) {
+    throw new Error("SESSION_SECRET must be at least 32 characters.");
+  }
 
   return {
     appName: "Dealer Recon API",
@@ -32,6 +41,7 @@ export function loadConfig(): AppConfig {
     ),
     corsOrigins,
     defaultDealershipId,
+    sessionSecret,
   };
 }
 

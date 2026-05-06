@@ -6,8 +6,8 @@ support for month-end close and OEM receivables reconciliation.
 
 This repo contains a TypeScript implementation of the upload-based reconciliation prototype. It
 supports CSV upload, BOA and Dealertrack floorplan normalization, V1 reconciliation, account close
-summaries, month-end reporting, and a local sample-file reconciliation workflow. Authentication and
-external integrations are intentionally not built yet.
+summaries, month-end reporting, local user authentication, and a local sample-file reconciliation
+workflow. External integrations are intentionally not built yet.
 
 ## Stack
 
@@ -155,28 +155,32 @@ check `/ready`.
 
 ## Tenancy Model
 
-The backend has basic dealership scoping but does not have authentication yet. For now, every API
-request runs in temporary single-dealership mode using `DEFAULT_DEALERSHIP_ID` from the backend
-environment. Docker defaults this to dealership `1`.
+The backend resolves dealership scope from the authenticated user. `DEFAULT_DEALERSHIP_ID` remains
+only as local migration seed configuration and explicit dev/test fallback plumbing.
 
 All uploaded source files, normalized transactions, reconciliation runs, and reconciliation
-exceptions are stored with `dealership_id`. Reads are filtered to the configured dealership, writes
-attach the configured dealership, and cross-dealership source file, run, or exception IDs are
-rejected with `403`.
+exceptions are stored with `dealership_id`. Reads are filtered to the authenticated user's
+dealership, writes attach that dealership, and cross-dealership source file, run, or exception IDs
+are rejected with `403`.
 
-The migration creates `dealerships` and `users` tables and backfills existing prototype data to the
-default dealership. The `users` table is only schema groundwork right now; user authentication and
-request-level user selection are not implemented.
+The local development migration seeds a demo user for dealership `1`:
 
 ```text
-DEFAULT_DEALERSHIP_ID=1
+email: demo@dealer-recon.local
+password: dealer-recon-demo
 ```
+
+These credentials are for local development only. Production deployments must provide their own
+users and a strong `SESSION_SECRET`.
 
 The TypeScript backend exposes:
 
 ```text
 GET /health
 GET /ready
+POST /login
+POST /logout
+GET /me
 GET /accounts/summary
 GET /accounts/:account_identifier
 GET /reports/month-end
@@ -188,6 +192,8 @@ PATCH /reconciliation-runs/:id/exceptions/:exception_id
 POST /upload
 POST /reconcile
 ```
+
+All endpoints except `/health`, `/ready`, and `/login` require an authenticated session cookie.
 
 `POST /upload` accepts multipart form data:
 
@@ -390,14 +396,15 @@ docker compose up --build
 
 Open http://localhost:5173 and use the workflow dashboard:
 
-1. Upload `sample-data/boa_floorplan_sample.csv` as the BOA file.
-2. Upload `sample-data/dealertrack_floorplan_sample.csv` as the Dealertrack file.
-3. Click `Run reconciliation`.
-4. Confirm the result summary shows `Matched: 3`, `Exceptions: 3`, and `Duplicates: 1`.
-5. In the exceptions table, mark one exception resolved or ignored and add a note.
-6. Use the status/source/type/search filters to confirm exceptions reload from the API.
-7. Click `Export CSV` and confirm the downloaded file contains the currently filtered exceptions.
-8. In History, reopen the run and confirm the same result counts and review state are still present.
+1. Sign in with the local demo user.
+2. Upload `sample-data/boa_floorplan_sample.csv` as the BOA file.
+3. Upload `sample-data/dealertrack_floorplan_sample.csv` as the Dealertrack file.
+4. Click `Run reconciliation`.
+5. Confirm the result summary shows `Matched: 3`, `Exceptions: 3`, and `Duplicates: 1`.
+6. In the exceptions table, mark one exception resolved or ignored and add a note.
+7. Use the status/source/type/search filters to confirm exceptions reload from the API.
+8. Click `Export CSV` and confirm the downloaded file contains the currently filtered exceptions.
+9. In History, reopen the run and confirm the same result counts and review state are still present.
 
 Expected sample outcome:
 
@@ -486,9 +493,10 @@ DATABASE_URL=postgresql://dealer_recon:dealer_recon@db:5432/dealer_recon
 BACKEND_CORS_ORIGINS=http://localhost:5173
 UPLOAD_STORAGE_PATH=/app/storage/uploads
 DEFAULT_DEALERSHIP_ID=1
+SESSION_SECRET=local-dev-session-secret-change-before-production
 VITE_API_BASE_URL=http://localhost:8000
 ```
 
 ## MVP Build Order
 
-1. Add authentication and real user selection.
+MVP build items are complete.

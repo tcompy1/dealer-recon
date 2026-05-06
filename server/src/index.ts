@@ -1,5 +1,6 @@
 import { loadConfig } from "./config.js";
 import { createApp } from "./app.js";
+import { PostgresAuthRepository } from "./auth.js";
 import { logError, logInfo, serializeError } from "./logger.js";
 import {
   createPool,
@@ -12,12 +13,19 @@ async function main() {
   await assertDatabaseReady(pool);
 
   const repository = new PostgresTransactionRepository(pool);
+  const authRepository = new PostgresAuthRepository(pool);
   const app = createApp(
     repository,
     config.corsOrigins,
     config.defaultDealershipId,
     async () => {
       await assertDatabaseReady(pool);
+    },
+    {
+      authRepository,
+      sessionSecret: config.sessionSecret,
+      nodeEnv: config.nodeEnv,
+      allowDevDealershipFallback: false,
     },
   );
 

@@ -55,9 +55,27 @@ describeIfDatabase("migrate", () => {
            FROM information_schema.columns
            WHERE table_schema = 'public'
              AND table_name = 'transactions'
-          AND column_name IN ('source_file_id', 'amount_cents', 'account_type', 'account_identifier')`,
+             AND column_name IN ('source_file_id', 'amount_cents', 'account_type', 'account_identifier')`,
         );
         expect(columnResult.rows).toHaveLength(4);
+        const userPasswordColumnResult = await pool.query<{ column_name: string }>(
+          `SELECT column_name
+           FROM information_schema.columns
+           WHERE table_schema = 'public'
+             AND table_name = 'users'
+             AND column_name = 'password_hash'
+             AND is_nullable = 'NO'`,
+        );
+        expect(userPasswordColumnResult.rows).toHaveLength(1);
+        const demoUserResult = await pool.query<{ email: string; dealership_id: number }>(
+          `SELECT email, dealership_id
+           FROM users
+           WHERE lower(email) = lower('demo@dealer-recon.local')`,
+        );
+        expect(demoUserResult.rows[0]).toMatchObject({
+          email: "demo@dealer-recon.local",
+          dealership_id: 1,
+        });
         const amountColumnResult = await pool.query<{ data_type: string }>(
           `SELECT data_type
            FROM information_schema.columns

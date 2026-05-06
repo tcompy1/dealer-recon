@@ -12,8 +12,17 @@ describe("loadConfig", () => {
   test("validates production DATABASE_URL", () => {
     process.env.NODE_ENV = "production";
     delete process.env.DATABASE_URL;
+    process.env.SESSION_SECRET = "production-session-secret-with-enough-length";
 
     expect(() => loadConfig()).toThrow("DATABASE_URL is required");
+  });
+
+  test("validates production SESSION_SECRET", () => {
+    process.env.NODE_ENV = "production";
+    process.env.DATABASE_URL = "postgresql://dealer_recon:dealer_recon@db:5432/dealer_recon";
+    delete process.env.SESSION_SECRET;
+
+    expect(() => loadConfig()).toThrow("SESSION_SECRET is required");
   });
 
   test("validates integer config values", () => {
