@@ -3,8 +3,9 @@ import { useState } from "react";
 import { Layout } from "./components/Layout";
 import { AccountsPage } from "./pages/AccountsPage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { ReportsPage } from "./pages/ReportsPage";
 
-type AppSection = "reconciliation" | "accounts";
+type AppSection = "reconciliation" | "accounts" | "reports";
 
 export default function App() {
   const [section, setSection] = useState<AppSection>("reconciliation");
@@ -16,7 +17,11 @@ export default function App() {
           <div className="flex flex-col gap-2">
             <p className="text-sm font-semibold text-cyan-700">Dealer Recon</p>
             <h1 className="text-3xl font-semibold text-slate-950">
-              {section === "reconciliation" ? "Floorplan reconciliation" : "Account close support"}
+              {section === "reconciliation"
+                ? "Floorplan reconciliation"
+                : section === "accounts"
+                  ? "Account close support"
+                  : "Month-end reports"}
             </h1>
           </div>
           <nav className="flex flex-wrap gap-2">
@@ -30,10 +35,17 @@ export default function App() {
               label="Accounts"
               onClick={() => setSection("accounts")}
             />
+            <NavButton
+              active={section === "reports"}
+              label="Reports"
+              onClick={() => setSection("reports")}
+            />
           </nav>
         </div>
 
-        {section === "reconciliation" ? <DashboardPage embedded /> : <AccountsPage />}
+        {section === "reconciliation" ? <DashboardPage embedded /> : null}
+        {section === "accounts" ? <AccountsPage /> : null}
+        {section === "reports" ? <ReportsPage /> : null}
       </section>
     </Layout>
   );

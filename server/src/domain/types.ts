@@ -102,6 +102,21 @@ export type AccountSummary = {
   unresolved_exception_count: number;
 };
 
+export type MonthEndReportAccount = AccountSummary & {
+  resolved_exception_count: number;
+  ignored_exception_count: number;
+};
+
+export type MonthEndReport = {
+  reporting_period: {
+    start_date: string;
+    end_date: string;
+  };
+  generated_at: string;
+  account_summaries: MonthEndReportAccount[];
+  reconciliation_runs_included: ReconciliationRunListItem[];
+};
+
 export type MatchGroup = {
   match_reason: string;
   confidence_score: number;

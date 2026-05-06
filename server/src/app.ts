@@ -11,6 +11,7 @@ import {
   isSourceType,
   type ReconciliationRequest,
   type ReconciliationExceptionReviewUpdate,
+  type MonthEndReport,
   type ReconciliationRunDetail,
   type ReconciliationRunDetailFilters,
 } from "./domain/types.js";
@@ -118,6 +119,37 @@ export function createApp(
       }
 
       response.json(detail);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/reports/month-end", async (request, response, next) => {
+    try {
+      const reportQuery = parseMonthEndReportQuery(request.query);
+      if (reportQuery === false) {
+        response.status(422).json({ detail: "Invalid month-end report query." });
+        return;
+      }
+
+      const report = await repository.getMonthEndReport(
+        dealershipId,
+        reportQuery.startDate,
+        reportQuery.endDate,
+      );
+      if (reportQuery.format === "csv") {
+        response
+          .status(200)
+          .type("text/csv")
+          .setHeader(
+            "Content-Disposition",
+            `attachment; filename="month-end-${reportQuery.startDate}-to-${reportQuery.endDate}.csv"`,
+          )
+          .send(toMonthEndReportCsv(report));
+        return;
+      }
+
+      response.json(report);
     } catch (error) {
       next(error);
     }
@@ -555,6 +587,34 @@ function parseExceptionReviewUpdate(value: unknown): ReconciliationExceptionRevi
   };
 }
 
+function parseMonthEndReportQuery(
+  query: express.Request["query"],
+): { startDate: string; endDate: string; format: "json" | "csv" } | false {
+  if (!isIsoDate(query.start_date) || !isIsoDate(query.end_date)) {
+    return false;
+  }
+  if (query.start_date > query.end_date) {
+    return false;
+  }
+  const format = query.format ?? "json";
+  if (format !== "json" && format !== "csv") {
+    return false;
+  }
+  return {
+    startDate: query.start_date,
+    endDate: query.end_date,
+    format,
+  };
+}
+
+function isIsoDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+}
+
 function toExceptionsCsv(detail: ReconciliationRunDetail): string {
   const headers = [
     "reconciliation_run_id",
@@ -599,6 +659,38 @@ function toExceptionsCsv(detail: ReconciliationRunDetail): string {
   });
 
   return [headers, ...rows].map((row) => row.map(toCsvCell).join(",")).join("\n") + "\n";
+}
+
+function toMonthEndReportCsv(report: MonthEndReport): string {
+  const headers = [
+    "account_identifier",
+    "account_type",
+    "boa_total",
+    "dealertrack_total",
+    "net_difference",
+    "unresolved_exception_count",
+    "resolved_exception_count",
+    "ignored_exception_count",
+  ];
+  const rows = report.account_summaries.map((account) => [
+    account.account_identifier,
+    account.account_type,
+    sourceTotalAmount(account.source_totals, "boa"),
+    sourceTotalAmount(account.source_totals, "dealertrack"),
+    account.net_difference_amount,
+    account.unresolved_exception_count,
+    account.resolved_exception_count,
+    account.ignored_exception_count,
+  ]);
+
+  return [headers, ...rows].map((row) => row.map(toCsvCell).join(",")).join("\n") + "\n";
+}
+
+function sourceTotalAmount(
+  sourceTotals: MonthEndReport["account_summaries"][number]["source_totals"],
+  sourceType: "boa" | "dealertrack",
+): string {
+  return sourceTotals.find((total) => total.source_type === sourceType)?.amount ?? "0.00";
 }
 
 function toCsvCell(value: string | number | null): string {

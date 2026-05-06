@@ -589,6 +589,164 @@ describe("app", () => {
     expect(crossDetail.status).toBe(404);
   });
 
+  test("GET /reports/month-end filters account totals by reporting period", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    await uploadCsv(
+      app,
+      "bank",
+      [
+        "transaction_date,amount,description,account",
+        "2026-04-30,1.23,April deposit,1000",
+        "2026-05-01,4.56,May deposit,1000",
+      ].join("\n"),
+      "bank-period.csv",
+    );
+
+    const response = await request(app).get("/reports/month-end").query({
+      start_date: "2026-04-01",
+      end_date: "2026-04-30",
+      format: "json",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      reporting_period: {
+        start_date: "2026-04-01",
+        end_date: "2026-04-30",
+      },
+      generated_at: expect.any(String),
+      account_summaries: [
+        expect.objectContaining({
+          account_identifier: "1000",
+          account_type: "bank",
+          net_difference_amount_cents: 123,
+          source_totals: [
+            expect.objectContaining({
+              source_type: "bank",
+              amount_cents: 123,
+              transaction_count: 1,
+            }),
+          ],
+        }),
+      ],
+      reconciliation_runs_included: [],
+    });
+  });
+
+  test("GET /reports/month-end reports cent totals and exception status counts", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const boaUpload = await uploadCsv(
+      app,
+      "boa",
+      [
+        boaUploadCsv("M30101", "1HGCM82633A004352", "$100.00", "30101"),
+        boaUploadCsv("M30202", "2HGCM82633A004352", "$200.00", "30202"),
+        boaUploadCsv("M30404", "4HGCM82633A004352", "$300.00", "30404"),
+      ].join("\n"),
+      "boa-report.csv",
+    );
+    const dealertrackUpload = await uploadCsv(
+      app,
+      "dealertrack",
+      dealertrackUploadCsv("M30101", "-100"),
+      "dealertrack-report.csv",
+    );
+    const reconciliationResponse = await request(app).post("/reconcile").send({
+      boa_source_file_id: boaUpload.source_file_id,
+      dealertrack_source_file_id: dealertrackUpload.source_file_id,
+    });
+    expect(reconciliationResponse.status).toBe(200);
+    const reconciliation = reconciliationResponse.body as { reconciliation_run_id: number };
+    const detailResponse = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
+    );
+    const [resolvedException, ignoredException] = detailResponse.body.exceptions as Array<{
+      exception_id: number;
+    }>;
+    await request(app)
+      .patch(
+        `/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions/${resolvedException.exception_id}`,
+      )
+      .send({ status: "resolved" })
+      .expect(200);
+    await request(app)
+      .patch(
+        `/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions/${ignoredException.exception_id}`,
+      )
+      .send({ status: "ignored" })
+      .expect(200);
+
+    const response = await request(app).get("/reports/month-end").query({
+      start_date: "2025-09-01",
+      end_date: "2025-09-30",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.account_summaries).toEqual([
+      expect.objectContaining({
+        account_identifier: "floorplan",
+        account_type: "floorplan",
+        net_difference_amount_cents: 60000,
+        unresolved_exception_count: 0,
+        resolved_exception_count: 1,
+        ignored_exception_count: 1,
+        source_totals: [
+          expect.objectContaining({
+            source_type: "boa",
+            amount_cents: 60000,
+          }),
+        ],
+      }),
+    ]);
+    expect(response.body.reconciliation_runs_included).toEqual([
+      expect.objectContaining({
+        reconciliation_run_id: reconciliation.reconciliation_run_id,
+      }),
+    ]);
+  });
+
+  test("GET /reports/month-end exports CSV", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    await createReconciliation(app);
+
+    const response = await request(app).get("/reports/month-end").query({
+      start_date: "2025-09-01",
+      end_date: "2025-09-30",
+      format: "csv",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.header["content-type"]).toContain("text/csv");
+    expect(response.header["content-disposition"]).toContain(
+      "month-end-2025-09-01-to-2025-09-30.csv",
+    );
+    expect(response.text.split("\n")[0]).toBe(
+      [
+        "account_identifier",
+        "account_type",
+        "boa_total",
+        "dealertrack_total",
+        "net_difference",
+        "unresolved_exception_count",
+        "resolved_exception_count",
+        "ignored_exception_count",
+      ].join(","),
+    );
+    expect(response.text).toContain("floorplan,floorplan,603.00,0.00,603.00,1,0,0");
+  });
+
+  test("GET /reports/month-end rejects invalid query parameters", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+
+    const response = await request(app).get("/reports/month-end").query({
+      start_date: "2026-05-01",
+      end_date: "2026-04-30",
+      format: "pdf",
+    });
+
+    expect(response.status).toBe(422);
+  });
+
   test("POST /reconcile only compares selected source files", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const boaUpload = await uploadCsv(

@@ -5,6 +5,8 @@ import type {
   AccountDetail,
   AccountSourceTotal,
   AccountSummary,
+  MonthEndReport,
+  MonthEndReportAccount,
   NewSourceFile,
   NewTransaction,
   PersistReconciliationRunInput,
@@ -103,6 +105,13 @@ type AccountSourceTotalRow = {
   source_type: SourceType;
   amount_cents: string;
   transaction_count: string;
+};
+
+type ReportExceptionCountRow = {
+  account_identifier: string;
+  account_type: string;
+  status: ReconciliationExceptionStatus;
+  exception_count: string;
 };
 
 export class PostgresTransactionRepository implements TransactionRepository {
@@ -293,6 +302,25 @@ export class PostgresTransactionRepository implements TransactionRepository {
     };
   }
 
+  async getMonthEndReport(
+    dealershipId: number,
+    startDate: string,
+    endDate: string,
+  ): Promise<MonthEndReport> {
+    const [sourceTotals, exceptionCounts, relatedRuns] = await Promise.all([
+      this.listReportAccountSourceTotals(dealershipId, startDate, endDate),
+      this.listReportExceptionCounts(dealershipId, startDate, endDate),
+      this.listReportReconciliationRuns(dealershipId, startDate, endDate),
+    ]);
+
+    return {
+      reporting_period: { start_date: startDate, end_date: endDate },
+      generated_at: new Date().toISOString(),
+      account_summaries: buildReportAccountSummaries(sourceTotals, exceptionCounts),
+      reconciliation_runs_included: relatedRuns,
+    };
+  }
+
   private async listAccountSourceTotals(
     dealershipId: number,
     accountIdentifier?: string,
@@ -341,6 +369,91 @@ export class PostgresTransactionRepository implements TransactionRepository {
         Number(row.unresolved_exception_count),
       ]),
     );
+  }
+
+  private async listReportAccountSourceTotals(
+    dealershipId: number,
+    startDate: string,
+    endDate: string,
+  ): Promise<AccountSourceTotalRow[]> {
+    const result = await this.pool.query<AccountSourceTotalRow>(
+      `SELECT
+        account_identifier,
+        account_type,
+        source_type,
+        SUM(amount_cents)::text AS amount_cents,
+        COUNT(*)::text AS transaction_count
+      FROM transactions
+      WHERE dealership_id = $1
+        AND COALESCE(transaction_date, post_date) >= $2::date
+        AND COALESCE(transaction_date, post_date) <= $3::date
+      GROUP BY account_identifier, account_type, source_type
+      ORDER BY account_identifier, account_type, source_type`,
+      [dealershipId, startDate, endDate],
+    );
+    return result.rows;
+  }
+
+  private async listReportExceptionCounts(
+    dealershipId: number,
+    startDate: string,
+    endDate: string,
+  ): Promise<ReportExceptionCountRow[]> {
+    const result = await this.pool.query<ReportExceptionCountRow>(
+      `SELECT
+        t.account_identifier,
+        t.account_type,
+        re.status,
+        COUNT(re.id)::text AS exception_count
+      FROM reconciliation_exceptions re
+      JOIN transactions t ON t.id = re.transaction_id
+      WHERE re.dealership_id = $1
+        AND COALESCE(t.transaction_date, t.post_date) >= $2::date
+        AND COALESCE(t.transaction_date, t.post_date) <= $3::date
+      GROUP BY t.account_identifier, t.account_type, re.status
+      ORDER BY t.account_identifier, t.account_type, re.status`,
+      [dealershipId, startDate, endDate],
+    );
+    return result.rows;
+  }
+
+  private async listReportReconciliationRuns(
+    dealershipId: number,
+    startDate: string,
+    endDate: string,
+  ): Promise<ReconciliationRunListItem[]> {
+    const result = await this.pool.query<ReconciliationRunListRow>(
+      `SELECT DISTINCT
+        rr.*,
+        boa.original_filename AS boa_filename,
+        dealertrack.original_filename AS dealertrack_filename
+      FROM reconciliation_runs rr
+      JOIN source_files boa ON boa.id = rr.boa_source_file_id
+      JOIN source_files dealertrack ON dealertrack.id = rr.dealertrack_source_file_id
+      WHERE rr.dealership_id = $1
+        AND (
+          EXISTS (
+            SELECT 1
+            FROM transactions t
+            WHERE t.dealership_id = $1
+              AND (t.source_file_id = rr.boa_source_file_id OR t.source_file_id = rr.dealertrack_source_file_id)
+              AND COALESCE(t.transaction_date, t.post_date) >= $2::date
+              AND COALESCE(t.transaction_date, t.post_date) <= $3::date
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM reconciliation_exceptions re
+            JOIN transactions t ON t.id = re.transaction_id
+            WHERE re.reconciliation_run_id = rr.id
+              AND re.dealership_id = $1
+              AND COALESCE(t.transaction_date, t.post_date) >= $2::date
+              AND COALESCE(t.transaction_date, t.post_date) <= $3::date
+          )
+        )
+      ORDER BY rr.created_at DESC, rr.id DESC`,
+      [dealershipId, startDate, endDate],
+    );
+    return result.rows.map(toReconciliationRunListItem);
   }
 
   async createReconciliationRun(
@@ -691,6 +804,40 @@ function buildAccountSummaries(
         0,
     }))
     .sort((left, right) => left.account_identifier.localeCompare(right.account_identifier));
+}
+
+function buildReportAccountSummaries(
+  rows: AccountSourceTotalRow[],
+  exceptionCountRows: ReportExceptionCountRow[],
+): MonthEndReportAccount[] {
+  const exceptionCounts = new Map<
+    string,
+    Record<ReconciliationExceptionStatus, number>
+  >();
+  for (const row of exceptionCountRows) {
+    const key = accountKey(row.account_identifier, row.account_type);
+    const current =
+      exceptionCounts.get(key) ?? { unresolved: 0, resolved: 0, ignored: 0 };
+    current[row.status] = Number(row.exception_count);
+    exceptionCounts.set(key, current);
+  }
+
+  return buildAccountSummaries(
+    rows,
+    new Map(
+      Array.from(exceptionCounts.entries()).map(([key, counts]) => [key, counts.unresolved]),
+    ),
+  ).map((account) => {
+    const counts =
+      exceptionCounts.get(accountKey(account.account_identifier, account.account_type)) ??
+      { unresolved: 0, resolved: 0, ignored: 0 };
+    return {
+      ...account,
+      unresolved_exception_count: counts.unresolved,
+      resolved_exception_count: counts.resolved,
+      ignored_exception_count: counts.ignored,
+    };
+  });
 }
 
 function groupTransactionsBySource(

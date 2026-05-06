@@ -1,6 +1,8 @@
 import type {
   AccountDetail,
   AccountSummary,
+  MonthEndReport,
+  MonthEndReportAccount,
   NewSourceFile,
   NewTransaction,
   ReconciliationExceptionReviewUpdate,
@@ -48,6 +50,11 @@ export interface TransactionRepository {
   listBySourceFile(dealershipId: number, sourceFileId: number): Promise<Transaction[]>;
   listAccountsSummary(dealershipId: number): Promise<AccountSummary[]>;
   getAccountDetail(dealershipId: number, accountIdentifier: string): Promise<AccountDetail | null>;
+  getMonthEndReport(
+    dealershipId: number,
+    startDate: string,
+    endDate: string,
+  ): Promise<MonthEndReport>;
   createReconciliationRun(input: PersistReconciliationRunInput): Promise<ReconciliationRun>;
   listReconciliationRuns(dealershipId: number): Promise<ReconciliationRunListItem[]>;
   getReconciliationRunDealershipId(reconciliationRunId: number): Promise<number | null>;
@@ -255,6 +262,49 @@ export class MemoryTransactionRepository implements TransactionRepository {
         )
         .sort((left, right) => left.id - right.id)
         .map((exception) => this.toRunDetailException(exception)),
+    };
+  }
+
+  async getMonthEndReport(
+    dealershipId: number,
+    startDate: string,
+    endDate: string,
+  ): Promise<MonthEndReport> {
+    const transactions = this.transactions.filter(
+      (transaction) =>
+        transaction.dealership_id === dealershipId &&
+        isWithinPeriod(effectiveTransactionDate(transaction), startDate, endDate),
+    );
+    const transactionIds = new Set(transactions.map((transaction) => transaction.id));
+    const exceptions = this.reconciliationExceptions.filter(
+      (exception) => exception.dealership_id === dealershipId && transactionIds.has(exception.transaction_id),
+    );
+    const runIds = new Set<number>();
+    const sourceFileIds = new Set(transactions.map((transaction) => transaction.source_file_id));
+
+    for (const run of this.reconciliationRuns) {
+      if (
+        run.dealership_id === dealershipId &&
+        (sourceFileIds.has(run.boa_source_file_id) ||
+          sourceFileIds.has(run.dealertrack_source_file_id))
+      ) {
+        runIds.add(run.id);
+      }
+    }
+    for (const exception of exceptions) {
+      runIds.add(exception.reconciliation_run_id);
+    }
+
+    return {
+      reporting_period: { start_date: startDate, end_date: endDate },
+      generated_at: new Date().toISOString(),
+      account_summaries: buildReportAccountSummaries(transactions, exceptions),
+      reconciliation_runs_included: this.reconciliationRuns
+        .filter((run) => runIds.has(run.id) && run.dealership_id === dealershipId)
+        .slice()
+        .sort((left, right) => right.id - left.id)
+        .map((run) => this.toReconciliationRunListItem(run))
+        .filter((run): run is ReconciliationRunListItem => run !== null),
     };
   }
 
@@ -601,6 +651,93 @@ function buildAccountSummaries(
       unresolved_exception_count: account.unresolved_exception_count,
     }))
     .sort((left, right) => left.account_identifier.localeCompare(right.account_identifier));
+}
+
+function buildReportAccountSummaries(
+  transactions: Transaction[],
+  exceptions: Array<{ status: ReconciliationExceptionStatus; transaction_id: number }>,
+): MonthEndReportAccount[] {
+  const statusCountsByTransaction = new Map<
+    number,
+    Record<ReconciliationExceptionStatus, number>
+  >();
+  for (const exception of exceptions) {
+    const current =
+      statusCountsByTransaction.get(exception.transaction_id) ??
+      { unresolved: 0, resolved: 0, ignored: 0 };
+    current[exception.status] += 1;
+    statusCountsByTransaction.set(exception.transaction_id, current);
+  }
+
+  const grouped = new Map<
+    string,
+    {
+      account_identifier: string;
+      account_type: string;
+      source_totals: Map<SourceType, { amount_cents: number; transaction_count: number }>;
+      net_difference_amount_cents: number;
+      unresolved_exception_count: number;
+      resolved_exception_count: number;
+      ignored_exception_count: number;
+    }
+  >();
+
+  for (const transaction of transactions) {
+    const key = `${transaction.account_identifier}\u0000${transaction.account_type}`;
+    const account =
+      grouped.get(key) ??
+      {
+        account_identifier: transaction.account_identifier,
+        account_type: transaction.account_type,
+        source_totals: new Map(),
+        net_difference_amount_cents: 0,
+        unresolved_exception_count: 0,
+        resolved_exception_count: 0,
+        ignored_exception_count: 0,
+      };
+    const sourceTotal =
+      account.source_totals.get(transaction.source_type) ??
+      { amount_cents: 0, transaction_count: 0 };
+    const statusCounts =
+      statusCountsByTransaction.get(transaction.id) ?? { unresolved: 0, resolved: 0, ignored: 0 };
+
+    sourceTotal.amount_cents += transaction.amount_cents;
+    sourceTotal.transaction_count += 1;
+    account.source_totals.set(transaction.source_type, sourceTotal);
+    account.net_difference_amount_cents += transaction.amount_cents;
+    account.unresolved_exception_count += statusCounts.unresolved;
+    account.resolved_exception_count += statusCounts.resolved;
+    account.ignored_exception_count += statusCounts.ignored;
+    grouped.set(key, account);
+  }
+
+  return Array.from(grouped.values())
+    .map((account) => ({
+      account_identifier: account.account_identifier,
+      account_type: account.account_type,
+      source_totals: Array.from(account.source_totals.entries())
+        .map(([sourceType, total]) => ({
+          source_type: sourceType,
+          amount_cents: total.amount_cents,
+          amount: formatCents(total.amount_cents),
+          transaction_count: total.transaction_count,
+        }))
+        .sort((left, right) => left.source_type.localeCompare(right.source_type)),
+      net_difference_amount_cents: account.net_difference_amount_cents,
+      net_difference_amount: formatCents(account.net_difference_amount_cents),
+      unresolved_exception_count: account.unresolved_exception_count,
+      resolved_exception_count: account.resolved_exception_count,
+      ignored_exception_count: account.ignored_exception_count,
+    }))
+    .sort((left, right) => left.account_identifier.localeCompare(right.account_identifier));
+}
+
+function effectiveTransactionDate(transaction: Transaction): string | null {
+  return transaction.transaction_date ?? transaction.post_date;
+}
+
+function isWithinPeriod(value: string | null, startDate: string, endDate: string): boolean {
+  return value !== null && value >= startDate && value <= endDate;
 }
 
 function defaultAccountType(sourceType: SourceType): string {

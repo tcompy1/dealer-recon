@@ -5,9 +5,9 @@ groups. The first product wedge is daily bank/cash reconciliation from exported 
 support for month-end close and OEM receivables reconciliation.
 
 This repo contains a TypeScript implementation of the upload-based reconciliation prototype. It
-supports CSV upload, BOA and Dealertrack floorplan normalization, V1 reconciliation, and a local
-sample-file reconciliation workflow. Authentication, external integrations, and production
-deployment hardening are intentionally not built yet.
+supports CSV upload, BOA and Dealertrack floorplan normalization, V1 reconciliation, account close
+summaries, month-end reporting, and a local sample-file reconciliation workflow. Authentication and
+external integrations are intentionally not built yet.
 
 ## Stack
 
@@ -172,12 +172,14 @@ request-level user selection are not implemented.
 DEFAULT_DEALERSHIP_ID=1
 ```
 
-The TypeScript backend runs a lightweight PostgreSQL migration on startup and exposes:
+The TypeScript backend exposes:
 
 ```text
 GET /health
+GET /ready
 GET /accounts/summary
 GET /accounts/:account_identifier
+GET /reports/month-end
 GET /source-files
 GET /reconciliation-runs
 GET /reconciliation-runs/:id
@@ -334,6 +336,34 @@ the unresolved exception count:
 `GET /accounts/:account_identifier` adds transactions grouped by source type, related
 reconciliation runs, and unresolved exceptions for the selected account.
 
+## Month-End Reports
+
+Month-end reports are generated from persisted transactions, reconciliation runs, and reconciliation
+exceptions. They do not re-run the reconciliation engine.
+
+```text
+GET /reports/month-end?start_date=2025-09-01&end_date=2025-09-30
+GET /reports/month-end?start_date=2025-09-01&end_date=2025-09-30&format=csv
+```
+
+The JSON report includes the reporting period, generated timestamp, account summaries, source totals
+by account, net differences, unresolved/resolved/ignored exception counts, and reconciliation runs
+included in the period. The CSV export returns one row per account with:
+
+```text
+account_identifier
+account_type
+boa_total
+dealertrack_total
+net_difference
+unresolved_exception_count
+resolved_exception_count
+ignored_exception_count
+```
+
+Report data is filtered to the configured dealership and to transactions whose transaction date, or
+post date when transaction date is absent, falls inside the inclusive reporting period.
+
 ## Sample Data
 
 Floorplan reconciliation samples are available in:
@@ -427,14 +457,16 @@ The frontend runs through Vite:
 docker compose up frontend
 ```
 
-The frontend now supports the first floorplan reconciliation loop:
+The frontend supports the floorplan close loop:
 
 ```text
-upload BOA CSV -> upload Dealertrack CSV -> run reconciliation -> view results -> reopen run history
+upload BOA CSV -> upload Dealertrack CSV -> run reconciliation -> review exceptions -> export -> accounts -> reports
 ```
 
 The dashboard shows uploaded source file IDs, validation errors, current reconciliation results,
-duplicate rows in the exceptions table, and prior persisted reconciliation runs.
+duplicate rows in the exceptions table, and prior persisted reconciliation runs. The Accounts
+section provides account-level close summaries and detail. The Reports section generates month-end
+JSON-backed summaries and links to the CSV export for the selected date range.
 
 Useful frontend checks:
 
