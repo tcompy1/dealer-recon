@@ -70,6 +70,28 @@ describe("normalizeTransactionsFromCsv", () => {
     stderr.mockRestore();
   });
 
+  test("parses BOA export headers for Serial No/VIN and balance amount", () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const result = normalizeTransactionsFromCsv(
+      [
+        "Serial No/VIN,Stock/Lease No,Original Amount,Beginning Balance,Ending Balance",
+        "JM3KFBCM9S0716259,M20552,34050,34050,34050",
+      ].join("\n"),
+      "boa",
+    );
+
+    expect(result.validationErrors).toEqual([]);
+    expect(result.transactions).toHaveLength(1);
+    expect(result.transactions[0]).toMatchObject({
+      source_type: "boa",
+      amount_cents: 3405000,
+      stock_number: "M20552",
+      vin: "JM3KFBCM9S0716259",
+    });
+    expect(result.transactions[0].raw_data["Serial No/VIN"]).toBe("JM3KFBCM9S0716259");
+    stderr.mockRestore();
+  });
+
   test("BOA filter rejects headers, totals, empty rows, and rows without currency", () => {
     const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const result = normalizeTransactionsFromCsv(
@@ -118,6 +140,45 @@ describe("normalizeTransactionsFromCsv", () => {
       description: "BOA FLOORPLAN",
     });
     expect(result.transactions[0].raw_data.column_3).toBe("0");
+    stderr.mockRestore();
+  });
+
+  test("parses Dealertrack Hiley control export with VIN in Description", () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const result = normalizeTransactionsFromCsv(
+      [
+        "Control,Description,2100,2110",
+        "BOA,BANK OF AMERICA,0,-250000",
+        "M20450,BOA FLOORPLAN,-32558,0",
+        "M20552,JM3KFBCM9S0716259,-34050,0",
+        "M20557,JM3KFBCM8S0715538,-32028,0",
+      ].join("\n"),
+      "dealertrack",
+    );
+
+    expect(result.validationErrors).toEqual([]);
+    expect(result.transactions).toHaveLength(3);
+    expect(result.transactions[0]).toMatchObject({
+      amount_cents: -3255800,
+      stock_number: "M20450",
+      description: "BOA FLOORPLAN",
+      vin: null,
+    });
+    expect(result.transactions[1]).toMatchObject({
+      amount_cents: -3405000,
+      stock_number: "M20552",
+      description: "JM3KFBCM9S0716259",
+      vin: "JM3KFBCM9S0716259",
+    });
+    expect(result.transactions[1].raw_data).toMatchObject({
+      Control: "M20552",
+      Description: "JM3KFBCM9S0716259",
+      "2100": "-34050",
+      "2110": "0",
+    });
+    expect(stderr.mock.calls[0][0]).toContain("rows_scanned=5");
+    expect(stderr.mock.calls[0][0]).toContain("rows_accepted=3");
+    expect(stderr.mock.calls[0][0]).toContain("rows_skipped=2");
     stderr.mockRestore();
   });
 });

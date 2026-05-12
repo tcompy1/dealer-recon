@@ -594,6 +594,40 @@ describe("app", () => {
     expect(response.text).not.toContain("M30202");
   });
 
+  test("GET /reconciliation-runs/:id/exceptions.csv includes Dealertrack VIN from Hiley export", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const boaUpload = await uploadCsv(
+      app,
+      "boa",
+      boaUploadCsv("M99999", "1HGCM82633A004352", "$1.00", "99999"),
+      "boa-hiley-regression.csv",
+    );
+    const dealertrackUpload = await uploadCsv(
+      app,
+      "dealertrack",
+      [
+        "Control,Description,2100,2110",
+        "BOA,BANK OF AMERICA,0,-250000",
+        "M20552,JM3KFBCM9S0716259,-34050,0",
+      ].join("\n"),
+      "dealertrack-hiley-regression.csv",
+    );
+    const reconciliation = await request(app).post("/reconcile").send({
+      boa_source_file_id: boaUpload.source_file_id,
+      dealertrack_source_file_id: dealertrackUpload.source_file_id,
+    });
+
+    const response = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.body.reconciliation_run_id}/exceptions.csv`)
+      .query({ exception_type: "missing_in_boa" });
+
+    expect(reconciliation.status).toBe(200);
+    expect(response.status).toBe(200);
+    expect(response.text).toContain("M20552");
+    expect(response.text).toContain("JM3KFBCM9S0716259");
+    expect(response.text).not.toContain("BANK OF AMERICA");
+  });
+
   test("GET /accounts/summary aggregates integer cents and unresolved exceptions", async () => {
     const app = createApp(new MemoryTransactionRepository());
     await createReconciliation(app);

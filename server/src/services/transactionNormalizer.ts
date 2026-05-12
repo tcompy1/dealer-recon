@@ -14,6 +14,7 @@ const referencePattern = /^\d{5,9}$/;
 const stockPattern = /\bM\d{4,6}\b/i;
 const stockFullPattern = /^M\d+$/i;
 const vinPattern = /\b(?=[A-Z0-9]{17}\b)(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{17}\b/i;
+const vinFullPattern = /^(?=[A-Z0-9]{17}$)(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{17}$/i;
 
 const columnAliases: Record<
   keyof Omit<NewTransaction, "source_file_id" | "source_type" | "raw_data">,
@@ -21,7 +22,15 @@ const columnAliases: Record<
 > = {
   transaction_date: ["transaction_date", "transaction date", "date", "trans date"],
   post_date: ["post_date", "post date", "posted date", "posting date"],
-  amount_cents: ["amount", "transaction amount", "payment amount", "deposit amount"],
+  amount_cents: [
+    "amount",
+    "transaction amount",
+    "payment amount",
+    "deposit amount",
+    "original amount",
+    "beginning balance",
+    "ending balance",
+  ],
   reference_number: [
     "reference_number",
     "reference number",
@@ -43,8 +52,8 @@ const columnAliases: Record<
     "account number",
     "account",
   ],
-  stock_number: ["stock_number", "stock number", "stock #", "stock"],
-  vin: ["vin", "vehicle identification number"],
+  stock_number: ["stock_number", "stock number", "stock #", "stock", "stock/lease no"],
+  vin: ["vin", "vehicle identification number", "serial no/vin"],
 };
 
 export class CsvNormalizationError extends Error {
@@ -135,7 +144,7 @@ function normalizeBoaTransactionsFromCsv(text: string, sourceType: SourceType): 
     }
 
     const cleanedRow = row.map(cleanCell);
-    if (!isBoaTransactionRow(cleanedRow)) {
+    if (!isBoaTransactionRow(cleanedRow, header)) {
       rowsSkipped += 1;
       return;
     }
@@ -161,16 +170,25 @@ function normalizeDealertrackTransactionsFromCsv(
   sourceType: SourceType,
 ): NormalizationResult {
   const rows = parseCsv(text);
+  const header = looksLikeDealertrackHeader(rows[0] ?? []) ? rows[0] : null;
   const transactions: NewTransaction[] = [];
   let rowsScanned = 0;
   let rowsAccepted = 0;
   let rowsSkipped = 0;
   const sampleAcceptedRows: string[][] = [];
 
-  rows.forEach((row) => {
+  rows.forEach((row, index) => {
     rowsScanned += 1;
+    if (header && index === 0) {
+      rowsSkipped += 1;
+      return;
+    }
+
     const cleanedRow = row.map(cleanCell);
-    if (!isDealertrackTransactionRow(cleanedRow)) {
+    const normalized = header
+      ? normalizeDealertrackHeaderRow(cleanedRow, header, sourceType)
+      : normalizeDealertrackPositionalRow(cleanedRow, sourceType);
+    if (!normalized) {
       rowsSkipped += 1;
       return;
     }
@@ -180,25 +198,90 @@ function normalizeDealertrackTransactionsFromCsv(
       sampleAcceptedRows.push(cleanedRow);
     }
 
-    transactions.push({
-      source_file_id: null,
-      source_type: sourceType,
-      transaction_date: null,
-      post_date: null,
-      amount_cents: parseAmountToCents(cleanedRow[2])!,
-      reference_number: null,
-      description: cleanedRow[1] || null,
-      account: null,
-      account_type: defaultAccountType(sourceType),
-      account_identifier: defaultAccountIdentifier(sourceType),
-      stock_number: cleanedRow[0].toUpperCase(),
-      vin: null,
-      raw_data: buildRawData(cleanedRow, null),
-    });
+    transactions.push(normalized);
   });
 
   printParserDebug("Dealertrack", rowsScanned, rowsAccepted, rowsSkipped, sampleAcceptedRows);
   return { transactions, validationErrors: [] };
+}
+
+function normalizeDealertrackPositionalRow(
+  row: string[],
+  sourceType: SourceType,
+): NewTransaction | null {
+  if (!isDealertrackTransactionRow(row)) {
+    return null;
+  }
+
+  return buildDealertrackTransaction({
+    sourceType,
+    amountCents: parseAmountToCents(row[2]) as number,
+    stockNumber: row[0],
+    description: row[1],
+    vin: null,
+    rawData: buildRawData(row, null),
+  });
+}
+
+function normalizeDealertrackHeaderRow(
+  row: string[],
+  header: string[],
+  sourceType: SourceType,
+): NewTransaction | null {
+  const headerLookup = new Map(header.map((name, index) => [normalizeHeader(name), index]));
+  const control = cleanCell(row[headerLookup.get("control") ?? -1]);
+  if (!control || !stockFullPattern.test(control)) {
+    return null;
+  }
+
+  const amountCents = findDealertrackAccountAmountCents(row, header);
+  if (amountCents === null || amountCents === 0) {
+    return null;
+  }
+
+  const description = cleanCell(row[headerLookup.get("description") ?? -1]);
+  const vin = description.match(vinFullPattern) ? description.toUpperCase() : null;
+
+  return buildDealertrackTransaction({
+    sourceType,
+    amountCents,
+    stockNumber: control,
+    description,
+    vin,
+    rawData: buildRawData(row, header),
+  });
+}
+
+function buildDealertrackTransaction({
+  sourceType,
+  amountCents,
+  stockNumber,
+  description,
+  vin,
+  rawData,
+}: {
+  sourceType: SourceType;
+  amountCents: number;
+  stockNumber: string;
+  description: string;
+  vin: string | null;
+  rawData: Record<string, string>;
+}): NewTransaction {
+  return {
+    source_file_id: null,
+    source_type: sourceType,
+    transaction_date: null,
+    post_date: null,
+    amount_cents: amountCents,
+    reference_number: null,
+    description: description || null,
+    account: null,
+    account_type: defaultAccountType(sourceType),
+    account_identifier: defaultAccountIdentifier(sourceType),
+    stock_number: stockNumber.toUpperCase(),
+    vin,
+    raw_data: rawData,
+  };
 }
 
 function normalizeHeaderRow(
@@ -274,13 +357,6 @@ function normalizeBoaRow(
   const vin = findPatternValue(row, vinPattern);
   const validationErrors: ValidationError[] = [];
 
-  if (!transactionDate) {
-    validationErrors.push({
-      row: rowNumber,
-      field: "transaction_date",
-      message: "BOA transaction date is missing or invalid.",
-    });
-  }
   if (amountCents === null) {
     validationErrors.push({
       row: rowNumber,
@@ -354,7 +430,7 @@ function getValue(
   return null;
 }
 
-function isBoaTransactionRow(values: string[]): boolean {
+function isBoaTransactionRow(values: string[], header: string[] | null): boolean {
   if (!values.some(Boolean)) {
     return false;
   }
@@ -369,12 +445,12 @@ function isBoaTransactionRow(values: string[]): boolean {
 
   const hasVin = findPatternValue(values, vinPattern) !== null;
   const stockNumber = findPatternValue(values, stockPattern);
-  const currencyAmountCents = findCurrencyAmountCents(values);
+  const amountCents = header ? findBoaAmountCents(values, header) : findCurrencyAmountCents(values);
 
-  if (currencyAmountCents === null) {
+  if (amountCents === null) {
     return false;
   }
-  if (currencyAmountCents === 0) {
+  if (amountCents === 0) {
     return false;
   }
   return hasVin || stockNumber !== null;
@@ -388,6 +464,31 @@ function isDealertrackTransactionRow(values: string[]): boolean {
   return Boolean(
     values[0] && stockFullPattern.test(values[0]) && amountCents !== null && amountCents !== 0,
   );
+}
+
+function looksLikeDealertrackHeader(row: string[]): boolean {
+  const normalizedValues = row.map(normalizeHeader);
+  return (
+    normalizedValues.includes("control") &&
+    normalizedValues.includes("description") &&
+    normalizedValues.some((value) => /^\d{4}$/.test(value))
+  );
+}
+
+function findDealertrackAccountAmountCents(values: string[], header: string[]): number | null {
+  const accountColumnIndexes = header
+    .map((name, index) => ({ name: normalizeHeader(name), index }))
+    .filter(({ name }) => /^\d{4}$/.test(name))
+    .map(({ index }) => index);
+
+  for (const index of accountColumnIndexes) {
+    const amountCents = parseAmountToCents(values[index]);
+    if (amountCents !== null && amountCents !== 0) {
+      return amountCents;
+    }
+  }
+
+  return null;
 }
 
 function findPostDate(values: string[], transactionDate: string | null): string | null {
