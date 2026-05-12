@@ -160,7 +160,8 @@ export function WorkflowDashboard() {
     <div className="grid gap-6">
       <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-1">
-          <h2 className="text-lg font-semibold text-slate-950">Upload source files</h2>
+          <p className="text-xs font-semibold uppercase text-cyan-700">Step 1</p>
+          <h2 className="text-lg font-semibold text-slate-950">Upload BOA and Dealertrack CSVs</h2>
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
@@ -189,6 +190,7 @@ export function WorkflowDashboard() {
 
       <section className="flex flex-col gap-3 rounded-md border border-slate-200 bg-white p-5 shadow-sm md:flex-row md:items-center md:justify-between">
         <div>
+          <p className="text-xs font-semibold uppercase text-cyan-700">Step 2</p>
           <h2 className="text-lg font-semibold text-slate-950">Run reconciliation</h2>
           <p className="mt-1 text-sm text-slate-600">
             Selected BOA #{boaUpload.upload?.source_file_id ?? "none"} and Dealertrack #
@@ -389,14 +391,28 @@ function ResultsSection({
     return null;
   }
 
+  const exportUrl = run ? getReconciliationExceptionsCsvUrl(run.reconciliation_run_id) : null;
+
   return (
     <section className="grid gap-5 rounded-md border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-slate-950">Results</h2>
-        {run ? (
-          <p className="text-sm text-slate-600">
-            Run #{run.reconciliation_run_id} from {formatDateTime(run.created_at)}
-          </p>
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex flex-col gap-1">
+          <p className="text-xs font-semibold uppercase text-cyan-700">Step 3</p>
+          <h2 className="text-lg font-semibold text-slate-950">View reconciliation results</h2>
+          {run ? (
+            <p className="text-sm text-slate-600">
+              Run #{run.reconciliation_run_id} from {formatDateTime(run.created_at)}
+            </p>
+          ) : null}
+        </div>
+        {exportUrl ? (
+          <a
+            className="inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-700"
+            download
+            href={exportUrl}
+          >
+            Export Exceptions CSV
+          </a>
         ) : null}
       </div>
 
@@ -415,6 +431,7 @@ function ResultsSection({
             <Metric label="Run ID" value={run.reconciliation_run_id} />
           </div>
 
+          <ExceptionBreakdown run={run} />
           <MatchGroupsTable run={run} />
           <ExceptionsTable
             filters={filters}
@@ -426,6 +443,26 @@ function ResultsSection({
         </>
       ) : null}
     </section>
+  );
+}
+
+function ExceptionBreakdown({ run }: { run: ReconciliationRunDetail }) {
+  const breakdown = getExceptionBreakdown(run);
+
+  return (
+    <div className="grid gap-2">
+      <div>
+        <h3 className="text-base font-semibold text-slate-950">Exception breakdown</h3>
+        <p className="mt-1 text-sm text-slate-600">
+          BOA-only rows are missing in Dealertrack; Dealertrack-only rows are missing in BOA.
+        </p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Metric label="BOA-only exceptions" value={breakdown.boaOnly} />
+        <Metric label="Dealertrack-only exceptions" value={breakdown.dealertrackOnly} />
+        <Metric label="Duplicate exceptions" value={breakdown.duplicates} />
+      </div>
+    </div>
   );
 }
 
@@ -576,7 +613,7 @@ function ExceptionsTable({
             download
             href={exportUrl}
           >
-            Export CSV
+            Export Exceptions CSV
           </a>
         </div>
       </div>
@@ -805,4 +842,23 @@ function statusBadgeClassName(status: string) {
 
 function isDuplicateException(reason: string) {
   return reason.toLowerCase().includes("duplicate");
+}
+
+function getExceptionBreakdown(run: ReconciliationRunDetail) {
+  return run.exceptions.reduce(
+    (totals, exception) => {
+      if (exception.exception_type === "missing_in_dealertrack") {
+        totals.boaOnly += 1;
+      } else if (exception.exception_type === "missing_in_boa") {
+        totals.dealertrackOnly += 1;
+      } else if (
+        exception.exception_type === "duplicate_transaction" ||
+        isDuplicateException(exception.reason)
+      ) {
+        totals.duplicates += 1;
+      }
+      return totals;
+    },
+    { boaOnly: 0, dealertrackOnly: 0, duplicates: 0 },
+  );
 }

@@ -84,7 +84,7 @@ export default function App() {
             />
             <NavButton
               active={section === "reports"}
-              label="Reports"
+              label="Month-end"
               onClick={() => setSection("reports")}
             />
           </nav>

@@ -9,6 +9,7 @@ export function ReportsPage() {
   const [report, setReport] = useState<MonthEndReport | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dateError = getDateError(startDate, endDate);
 
   const csvUrl = useMemo(
     () => getMonthEndReportCsvUrl({ startDate, endDate }),
@@ -16,6 +17,11 @@ export function ReportsPage() {
   );
 
   async function handleGenerateReport() {
+    if (dateError) {
+      setError(dateError);
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
     try {
@@ -31,7 +37,11 @@ export function ReportsPage() {
     <section className="grid gap-6">
       <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-1">
-          <h2 className="text-lg font-semibold text-slate-950">Month-end reports</h2>
+          <h2 className="text-lg font-semibold text-slate-950">Month-end close report</h2>
+          <p className="text-sm text-slate-600">
+            This report summarizes account activity and exception status by transaction/post date.
+            Reconciliation run results and exception exports live on the Reconciliation tab.
+          </p>
         </div>
 
         <div className="grid gap-3 md:grid-cols-[180px_180px_auto_auto] md:items-end">
@@ -55,22 +65,28 @@ export function ReportsPage() {
           </label>
           <button
             className="inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-            disabled={isLoading || !startDate || !endDate}
+            disabled={isLoading || Boolean(dateError)}
             type="button"
             onClick={() => void handleGenerateReport()}
           >
             {isLoading ? "Generating..." : "Generate report"}
           </button>
-          <a
-            className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
-            download
-            href={csvUrl}
-          >
-            Download CSV
-          </a>
+          {report && !dateError ? (
+            <a
+              className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+              download
+              href={csvUrl}
+            >
+              Download report CSV
+            </a>
+          ) : null}
         </div>
 
+        {dateError ? <InfoBanner message={dateError} /> : null}
         {error ? <ErrorBanner message={error} /> : null}
+        {!report ? (
+          <InfoBanner message="Choose a start and end date that cover the transaction dates in the uploaded BOA and Dealertrack CSVs, then generate the month-end report." />
+        ) : null}
       </section>
 
       {report ? <ReportResult report={report} /> : null}
@@ -79,6 +95,9 @@ export function ReportsPage() {
 }
 
 function ReportResult({ report }: { report: MonthEndReport }) {
+  const hasReportData =
+    report.account_summaries.length > 0 || report.reconciliation_runs_included.length > 0;
+
   return (
     <section className="grid gap-5 rounded-md border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-1">
@@ -96,6 +115,10 @@ function ReportResult({ report }: { report: MonthEndReport }) {
         <Metric label="Unresolved" value={sumStatus(report.account_summaries, "unresolved")} />
         <Metric label="Net difference" value={formatCurrency(sumNetDifference(report.account_summaries))} />
       </div>
+
+      {!hasReportData ? (
+        <InfoBanner message="No account activity or reconciliation runs matched this date range. Adjust the dates to cover the transaction/post dates from the uploaded CSVs." />
+      ) : null}
 
       <ReportTable accounts={report.account_summaries} />
       <IncludedRuns runs={report.reconciliation_runs_included} />
@@ -219,6 +242,14 @@ function ErrorBanner({ message }: { message: string }) {
   );
 }
 
+function InfoBanner({ message }: { message: string }) {
+  return (
+    <div className="rounded-md border border-cyan-200 bg-cyan-50 p-3 text-sm font-medium text-cyan-950">
+      {message}
+    </div>
+  );
+}
+
 function sourceTotal(account: MonthEndReportAccount, sourceType: "boa" | "dealertrack") {
   return account.source_totals.find((total) => total.source_type === sourceType)?.amount_cents ?? 0;
 }
@@ -265,4 +296,14 @@ function defaultStartDate() {
 function defaultEndDate() {
   const now = new Date();
   return new Date(Date.UTC(now.getFullYear(), now.getMonth() + 1, 0)).toISOString().slice(0, 10);
+}
+
+function getDateError(startDate: string, endDate: string) {
+  if (!startDate || !endDate) {
+    return "Start date and end date are required.";
+  }
+  if (startDate > endDate) {
+    return "Start date must be on or before end date.";
+  }
+  return null;
 }
