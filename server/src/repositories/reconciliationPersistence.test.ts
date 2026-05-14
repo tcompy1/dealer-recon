@@ -114,17 +114,32 @@ describeIfDatabase("reconciliation persistence", () => {
         expect(runDetailResponse.body.exceptions[0]).toMatchObject({
           status: "unresolved",
           note: "",
+          review_status: "unreviewed",
+          assigned_to: null,
+          review_notes: "",
+          reviewed_at: null,
+          reviewed_by: null,
         });
 
         const exceptionId = runDetailResponse.body.exceptions[0].exception_id as number;
         const reviewUpdateResponse = await request(app)
           .patch(`/reconciliation-runs/${runId}/exceptions/${exceptionId}`)
-          .send({ status: "ignored", note: "Accepted timing difference." });
+          .send({
+            review_status: "ignored",
+            assigned_to: "Alex",
+            review_notes: "Accepted timing difference.",
+            reviewed_by: "Alex",
+          });
         expect(reviewUpdateResponse.status).toBe(200);
         expect(reviewUpdateResponse.body).toMatchObject({
           exception_id: exceptionId,
           status: "ignored",
+          review_status: "ignored",
+          assigned_to: "Alex",
           note: "Accepted timing difference.",
+          review_notes: "Accepted timing difference.",
+          reviewed_by: "Alex",
+          reviewed_at: expect.any(String),
         });
 
         const statusFilterResponse = await request(app)
@@ -135,6 +150,8 @@ describeIfDatabase("reconciliation persistence", () => {
           expect.objectContaining({
             exception_id: exceptionId,
             status: "ignored",
+            review_status: "ignored",
+            assigned_to: "Alex",
             note: "Accepted timing difference.",
           }),
         ]);
@@ -176,8 +193,16 @@ describeIfDatabase("reconciliation persistence", () => {
           "reconciliation_run_id",
           runId,
         );
-        const exceptionReviewResult = await pool.query<{ status: string; note: string }>(
-          `SELECT status, note
+        const exceptionReviewResult = await pool.query<{
+          status: string;
+          note: string;
+          review_status: string;
+          assigned_to: string | null;
+          review_notes: string;
+          reviewed_at: Date | null;
+          reviewed_by: string | null;
+        }>(
+          `SELECT status, note, review_status, assigned_to, review_notes, reviewed_at, reviewed_by
            FROM reconciliation_exceptions
            WHERE id = $1`,
           [exceptionId],
@@ -189,6 +214,11 @@ describeIfDatabase("reconciliation persistence", () => {
         expect(exceptionReviewResult.rows[0]).toEqual({
           status: "ignored",
           note: "Accepted timing difference.",
+          review_status: "ignored",
+          assigned_to: "Alex",
+          review_notes: "Accepted timing difference.",
+          reviewed_at: expect.any(Date),
+          reviewed_by: "Alex",
         });
       } finally {
         stderr.mockRestore();

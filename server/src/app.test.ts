@@ -502,13 +502,30 @@ describe("app", () => {
 
     const updateResponse = await request(app)
       .patch(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions/${exceptionId}`)
-      .send({ status: "resolved", note: "Cleared by warranty credit." });
+      .send({
+        review_status: "investigating",
+        assigned_to: "Maria",
+        review_notes: "Checking payoff timing.",
+      });
 
     expect(updateResponse.status).toBe(200);
     expect(updateResponse.body).toMatchObject({
       exception_id: exceptionId,
+      status: "unresolved",
+      review_status: "investigating",
+      assigned_to: "Maria",
+      review_notes: "Checking payoff timing.",
+      note: "Checking payoff timing.",
+    });
+
+    const resolvedResponse = await request(app)
+      .patch(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions/${exceptionId}`)
+      .send({ review_status: "resolved", reviewed_by: "Maria" });
+    expect(resolvedResponse.body).toMatchObject({
       status: "resolved",
-      note: "Cleared by warranty credit.",
+      review_status: "resolved",
+      reviewed_by: "Maria",
+      reviewed_at: expect.any(String),
     });
 
     const refreshedResponse = await request(app).get(
@@ -519,7 +536,10 @@ describe("app", () => {
         expect.objectContaining({
           exception_id: exceptionId,
           status: "resolved",
-          note: "Cleared by warranty credit.",
+          review_status: "resolved",
+          assigned_to: "Maria",
+          review_notes: "Checking payoff timing.",
+          reviewed_by: "Maria",
         }),
       ]),
     );
@@ -555,6 +575,42 @@ describe("app", () => {
     ]);
   });
 
+  test("GET /reconciliation-runs/:id filters exceptions by workflow review fields", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+    const detailResponse = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
+    );
+    const [investigatingException, otherException] = detailResponse.body.exceptions as Array<{
+      exception_id: number;
+    }>;
+
+    await request(app)
+      .patch(
+        `/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions/${investigatingException.exception_id}`,
+      )
+      .send({ review_status: "investigating", assigned_to: "Tara" })
+      .expect(200);
+
+    const response = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}`)
+      .query({ review_status: "investigating", assigned_to: "tar" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.exceptions).toEqual([
+      expect.objectContaining({
+        exception_id: investigatingException.exception_id,
+        review_status: "investigating",
+        assigned_to: "Tara",
+      }),
+    ]);
+    expect(response.body.exceptions).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ exception_id: otherException.exception_id }),
+      ]),
+    );
+  });
+
   test("GET /reconciliation-runs/:id/exceptions.csv exports filtered exceptions", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const reconciliation = await createReconciliation(app);
@@ -576,6 +632,11 @@ describe("app", () => {
         "exception_category",
         "status",
         "note",
+        "review_status",
+        "assigned_to",
+        "review_notes",
+        "reviewed_at",
+        "reviewed_by",
         "source_type",
         "transaction_id",
         "transaction_date",
@@ -590,7 +651,9 @@ describe("app", () => {
         "created_at",
       ].join(","),
     );
-    expect(response.text).toContain("missing_in_boa,missing_in_boa,unresolved,,dealertrack");
+    expect(response.text).toContain(
+      "missing_in_boa,missing_in_boa,unresolved,,unreviewed,,,,,dealertrack",
+    );
     expect(response.text).toContain("M30303");
     expect(response.text).not.toContain("M30202");
   });

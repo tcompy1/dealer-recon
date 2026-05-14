@@ -239,6 +239,8 @@ export type ReconciliationRunDetailFilters = {
   exceptionSourceType?: SourceType;
   exceptionType?: ReconciliationExceptionType;
   exceptionStatus?: ReconciliationExceptionStatus;
+  exceptionReviewStatus?: ReconciliationExceptionReviewStatus;
+  assignedTo?: string;
   search?: string;
 };
 
@@ -246,9 +248,23 @@ export const reconciliationExceptionStatuses = ["unresolved", "ignored", "resolv
 
 export type ReconciliationExceptionStatus = (typeof reconciliationExceptionStatuses)[number];
 
+export const reconciliationExceptionReviewStatuses = [
+  "unreviewed",
+  "investigating",
+  "resolved",
+  "ignored",
+] as const;
+
+export type ReconciliationExceptionReviewStatus =
+  (typeof reconciliationExceptionReviewStatuses)[number];
+
 export type ReconciliationExceptionReviewUpdate = {
   status?: ReconciliationExceptionStatus;
   note?: string;
+  review_status?: ReconciliationExceptionReviewStatus;
+  assigned_to?: string | null;
+  review_notes?: string;
+  reviewed_by?: string | null;
 };
 
 export type ReconciliationRunDetail = ReconciliationRunListItem & {
@@ -273,6 +289,11 @@ export type ReconciliationRunDetail = ReconciliationRunListItem & {
     exception_category: ReconciliationExceptionCategory;
     status: ReconciliationExceptionStatus;
     note: string;
+    review_status: ReconciliationExceptionReviewStatus;
+    assigned_to: string | null;
+    review_notes: string;
+    reviewed_at: string | null;
+    reviewed_by: string | null;
     source_type: SourceType;
     reason: string;
     created_at: string;
@@ -305,5 +326,14 @@ export function isReconciliationExceptionStatus(
   return (
     typeof value === "string" &&
     reconciliationExceptionStatuses.includes(value as ReconciliationExceptionStatus)
+  );
+}
+
+export function isReconciliationExceptionReviewStatus(
+  value: unknown,
+): value is ReconciliationExceptionReviewStatus {
+  return (
+    typeof value === "string" &&
+    reconciliationExceptionReviewStatuses.includes(value as ReconciliationExceptionReviewStatus)
   );
 }

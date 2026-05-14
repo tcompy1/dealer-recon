@@ -16,6 +16,7 @@ import {
 } from "./auth.js";
 import {
   isReconciliationExceptionStatus,
+  isReconciliationExceptionReviewStatus,
   isReconciliationExceptionType,
   isSourceType,
   type ReconciliationRequest,
@@ -685,11 +686,21 @@ function parseReconciliationRunDetailFilters(
   if (exceptionStatus === false) {
     return false;
   }
+  const exceptionReviewStatus = parseExceptionReviewStatusQuery(query.review_status);
+  if (exceptionReviewStatus === false) {
+    return false;
+  }
+  const assignedTo = parseSearchQuery(query.assigned_to);
+  if (assignedTo === false) {
+    return false;
+  }
 
   return {
     ...(exceptionSourceType ? { exceptionSourceType } : {}),
     ...(exceptionType ? { exceptionType } : {}),
     ...(exceptionStatus ? { exceptionStatus } : {}),
+    ...(exceptionReviewStatus ? { exceptionReviewStatus } : {}),
+    ...(assignedTo ? { assignedTo } : {}),
     ...(search ? { search } : {}),
   };
 }
@@ -725,14 +736,35 @@ function parseExceptionStatusQuery(value: unknown) {
   return false;
 }
 
+function parseExceptionReviewStatusQuery(value: unknown) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (isReconciliationExceptionReviewStatus(value)) {
+    return value;
+  }
+  return false;
+}
+
 function parseExceptionReviewUpdate(value: unknown): ReconciliationExceptionReviewUpdate | false {
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  const body = value as { status?: unknown; note?: unknown };
+  const body = value as {
+    status?: unknown;
+    note?: unknown;
+    review_status?: unknown;
+    assigned_to?: unknown;
+    review_notes?: unknown;
+    reviewed_by?: unknown;
+  };
   const hasStatus = Object.hasOwn(body, "status");
   const hasNote = Object.hasOwn(body, "note");
-  if (!hasStatus && !hasNote) {
+  const hasReviewStatus = Object.hasOwn(body, "review_status");
+  const hasAssignedTo = Object.hasOwn(body, "assigned_to");
+  const hasReviewNotes = Object.hasOwn(body, "review_notes");
+  const hasReviewedBy = Object.hasOwn(body, "reviewed_by");
+  if (!hasStatus && !hasNote && !hasReviewStatus && !hasAssignedTo && !hasReviewNotes && !hasReviewedBy) {
     return false;
   }
   if (hasStatus && !isReconciliationExceptionStatus(body.status)) {
@@ -741,9 +773,33 @@ function parseExceptionReviewUpdate(value: unknown): ReconciliationExceptionRevi
   if (hasNote && typeof body.note !== "string") {
     return false;
   }
+  if (hasReviewStatus && !isReconciliationExceptionReviewStatus(body.review_status)) {
+    return false;
+  }
+  if (hasAssignedTo && body.assigned_to !== null && typeof body.assigned_to !== "string") {
+    return false;
+  }
+  if (hasReviewNotes && typeof body.review_notes !== "string") {
+    return false;
+  }
+  if (hasReviewedBy && body.reviewed_by !== null && typeof body.reviewed_by !== "string") {
+    return false;
+  }
   return {
     ...(hasStatus && isReconciliationExceptionStatus(body.status) ? { status: body.status } : {}),
     ...(hasNote && typeof body.note === "string" ? { note: body.note.trim() } : {}),
+    ...(hasReviewStatus && isReconciliationExceptionReviewStatus(body.review_status)
+      ? { review_status: body.review_status }
+      : {}),
+    ...(hasAssignedTo
+      ? { assigned_to: typeof body.assigned_to === "string" ? body.assigned_to.trim() || null : null }
+      : {}),
+    ...(hasReviewNotes && typeof body.review_notes === "string"
+      ? { review_notes: body.review_notes.trim() }
+      : {}),
+    ...(hasReviewedBy
+      ? { reviewed_by: typeof body.reviewed_by === "string" ? body.reviewed_by.trim() || null : null }
+      : {}),
   };
 }
 
@@ -783,6 +839,11 @@ function toExceptionsCsv(detail: ReconciliationRunDetail): string {
     "exception_category",
     "status",
     "note",
+    "review_status",
+    "assigned_to",
+    "review_notes",
+    "reviewed_at",
+    "reviewed_by",
     "source_type",
     "transaction_id",
     "transaction_date",
@@ -805,6 +866,11 @@ function toExceptionsCsv(detail: ReconciliationRunDetail): string {
       exception.exception_category,
       exception.status,
       exception.note,
+      exception.review_status,
+      exception.assigned_to,
+      exception.review_notes,
+      exception.reviewed_at,
+      exception.reviewed_by,
       exception.source_type,
       transaction.id,
       transaction.transaction_date,

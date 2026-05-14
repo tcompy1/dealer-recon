@@ -11,7 +11,9 @@ import { listSourceFiles, uploadSourceFile } from "../api/uploads";
 import { VinPresenceDiagnosticsPanel } from "./VinPresenceDiagnosticsPanel";
 import type {
   ReconciledTransaction,
+  ReconciliationExceptionStatus,
   ReconciliationExceptionReviewUpdate,
+  ReconciliationExceptionReviewStatus,
   ReconciliationRunFilters,
   ReconciliationRunDetail,
   ReconciliationRunListItem,
@@ -553,6 +555,7 @@ function ExceptionsTable({
 }) {
   const exportUrl = getReconciliationExceptionsCsvUrl(run.reconciliation_run_id, filters);
   const categoryCounts = getExceptionCategoryCounts(run);
+  const reviewStatusCounts = getReviewStatusCounts(run);
 
   return (
     <div className="grid gap-2">
@@ -562,6 +565,13 @@ function ExceptionsTable({
           <p className="mt-1 text-sm text-slate-600">
             Showing {run.exceptions.length} of {run.exception_count}
           </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {reviewStatusCounts.map(([status, count]) => (
+              <span className={reviewStatusBadgeClassName(status)} key={status}>
+                {formatReason(status)}: {count}
+              </span>
+            ))}
+          </div>
           <div className="mt-2 flex flex-wrap gap-2">
             {categoryCounts.length === 0 ? (
               <span className="text-sm text-slate-600">No unresolved exception categories.</span>
@@ -574,7 +584,7 @@ function ExceptionsTable({
             )}
           </div>
         </div>
-        <div className="grid gap-3 md:grid-cols-[150px_180px_150px_minmax(180px,1fr)_auto]">
+        <div className="grid gap-3 md:grid-cols-[140px_170px_150px_160px_160px_minmax(180px,1fr)_auto]">
           <label className="grid gap-1 text-sm font-medium text-slate-700">
             Source
             <select
@@ -620,14 +630,46 @@ function ExceptionsTable({
               className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
               value={filters.status ?? ""}
               onChange={(event) =>
-                onFiltersChange({ ...filters, status: event.target.value as never })
+                onFiltersChange({
+                  ...filters,
+                  status: event.target.value as ReconciliationExceptionStatus | "",
+                })
               }
             >
               <option value="">All statuses</option>
-              <option value="unresolved">Unresolved</option>
+              <option value="unresolved">Only unresolved</option>
               <option value="resolved">Resolved</option>
               <option value="ignored">Ignored</option>
             </select>
+          </label>
+          <label className="grid gap-1 text-sm font-medium text-slate-700">
+            Review
+            <select
+              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+              value={filters.reviewStatus ?? ""}
+              onChange={(event) =>
+                onFiltersChange({
+                  ...filters,
+                  reviewStatus: event.target.value as ReconciliationExceptionReviewStatus | "",
+                })
+              }
+            >
+              <option value="">All review states</option>
+              <option value="unreviewed">Unreviewed</option>
+              <option value="investigating">Investigating</option>
+              <option value="resolved">Resolved</option>
+              <option value="ignored">Ignored</option>
+            </select>
+          </label>
+          <label className="grid gap-1 text-sm font-medium text-slate-700">
+            Assigned
+            <input
+              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+              placeholder="Reviewer"
+              type="search"
+              value={filters.assignedTo ?? ""}
+              onChange={(event) => onFiltersChange({ ...filters, assignedTo: event.target.value })}
+            />
           </label>
           <a
             className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
@@ -644,6 +686,8 @@ function ExceptionsTable({
             <tr>
               <th className="px-3 py-2 font-semibold">Type</th>
               <th className="px-3 py-2 font-semibold">Status</th>
+              <th className="px-3 py-2 font-semibold">Review</th>
+              <th className="px-3 py-2 font-semibold">Assigned</th>
               <th className="px-3 py-2 font-semibold">Source</th>
               <th className="px-3 py-2 font-semibold">Stock</th>
               <th className="px-3 py-2 font-semibold">VIN</th>
@@ -656,7 +700,7 @@ function ExceptionsTable({
           <tbody className="divide-y divide-slate-200 bg-white">
             {run.exceptions.length === 0 ? (
               <tr>
-                <td className="px-3 py-3 text-slate-600" colSpan={9}>
+                <td className="px-3 py-3 text-slate-600" colSpan={11}>
                   No exceptions.
                 </td>
               </tr>
@@ -681,6 +725,40 @@ function ExceptionsTable({
                       {formatReason(exception.status)}
                     </span>
                   </td>
+                  <td className="px-3 py-2">
+                    <select
+                      className="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
+                      disabled={reviewUpdatingId === exception.exception_id}
+                      value={exception.review_status}
+                      onChange={(event) =>
+                        onReviewUpdate(exception.exception_id, {
+                          review_status: event.target.value as ReconciliationExceptionReviewStatus,
+                        })
+                      }
+                    >
+                      <option value="unreviewed">Unreviewed</option>
+                      <option value="investigating">Investigating</option>
+                      <option value="resolved">Resolved</option>
+                      <option value="ignored">Ignored</option>
+                    </select>
+                  </td>
+                  <td className="min-w-40 px-3 py-2">
+                    <input
+                      className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
+                      defaultValue={exception.assigned_to ?? ""}
+                      disabled={reviewUpdatingId === exception.exception_id}
+                      placeholder="Assign reviewer"
+                      type="text"
+                      onBlur={(event) => {
+                        const nextValue = event.currentTarget.value.trim();
+                        if (nextValue !== (exception.assigned_to ?? "")) {
+                          onReviewUpdate(exception.exception_id, {
+                            assigned_to: nextValue || null,
+                          });
+                        }
+                      }}
+                    />
+                  </td>
                   <td className="px-3 py-2">{exception.source_type.toUpperCase()}</td>
                   <td className="px-3 py-2">{exception.transaction.stock_number ?? "n/a"}</td>
                   <td className="px-3 py-2">{exception.transaction.vin ?? "n/a"}</td>
@@ -689,14 +767,14 @@ function ExceptionsTable({
                   <td className="min-w-56 px-3 py-2">
                     <input
                       className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
-                      defaultValue={exception.note}
+                      defaultValue={exception.review_notes}
                       disabled={reviewUpdatingId === exception.exception_id}
-                      placeholder="Add review note"
+                      placeholder="Add review notes"
                       type="text"
                       onBlur={(event) => {
-                        if (event.currentTarget.value !== exception.note) {
+                        if (event.currentTarget.value !== exception.review_notes) {
                           onReviewUpdate(exception.exception_id, {
-                            note: event.currentTarget.value,
+                            review_notes: event.currentTarget.value,
                           });
                         }
                       }}
@@ -707,12 +785,12 @@ function ExceptionsTable({
                       <button
                         className="inline-flex h-8 items-center justify-center rounded-md border border-emerald-300 bg-white px-3 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:text-slate-400"
                         disabled={
-                          exception.status === "resolved" ||
+                          exception.review_status === "resolved" ||
                           reviewUpdatingId === exception.exception_id
                         }
                         type="button"
                         onClick={() =>
-                          onReviewUpdate(exception.exception_id, { status: "resolved" })
+                          onReviewUpdate(exception.exception_id, { review_status: "resolved" })
                         }
                       >
                         Resolve
@@ -720,12 +798,12 @@ function ExceptionsTable({
                       <button
                         className="inline-flex h-8 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
                         disabled={
-                          exception.status === "ignored" ||
+                          exception.review_status === "ignored" ||
                           reviewUpdatingId === exception.exception_id
                         }
                         type="button"
                         onClick={() =>
-                          onReviewUpdate(exception.exception_id, { status: "ignored" })
+                          onReviewUpdate(exception.exception_id, { review_status: "ignored" })
                         }
                       >
                         Ignore
@@ -870,6 +948,20 @@ function statusBadgeClassName(status: string) {
   return `${base} bg-amber-100 text-amber-900`;
 }
 
+function reviewStatusBadgeClassName(status: string) {
+  const base = "inline-flex rounded-md px-2 py-1 text-xs font-semibold";
+  if (status === "resolved") {
+    return `${base} bg-emerald-100 text-emerald-900`;
+  }
+  if (status === "ignored") {
+    return `${base} bg-slate-200 text-slate-700`;
+  }
+  if (status === "investigating") {
+    return `${base} bg-cyan-100 text-cyan-900`;
+  }
+  return `${base} bg-amber-100 text-amber-900`;
+}
+
 function categoryBadgeClassName(category: string) {
   const base = "inline-flex w-fit rounded-md px-2 py-1 text-xs font-semibold";
   if (category === "amount_mismatch" || category === "sign_mismatch") {
@@ -913,10 +1005,20 @@ function getExceptionBreakdown(run: ReconciliationRunDetail) {
 function getExceptionCategoryCounts(run: ReconciliationRunDetail) {
   const counts = new Map<string, number>();
   for (const exception of run.exceptions) {
-    if (exception.status !== "unresolved") {
+    if (exception.review_status === "resolved" || exception.review_status === "ignored") {
       continue;
     }
     counts.set(exception.exception_category, (counts.get(exception.exception_category) ?? 0) + 1);
   }
   return [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
+}
+
+function getReviewStatusCounts(run: ReconciliationRunDetail) {
+  const counts = new Map<string, number>();
+  for (const exception of run.exceptions) {
+    counts.set(exception.review_status, (counts.get(exception.review_status) ?? 0) + 1);
+  }
+  return ["unreviewed", "investigating", "resolved", "ignored"]
+    .map((status) => [status, counts.get(status) ?? 0] as const)
+    .filter(([, count]) => count > 0);
 }

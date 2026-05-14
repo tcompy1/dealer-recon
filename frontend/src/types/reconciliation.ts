@@ -134,6 +134,11 @@ export type ReconciliationRunDetailException = {
   exception_category: ReconciliationExceptionCategory;
   status: ReconciliationExceptionStatus;
   note: string;
+  review_status: ReconciliationExceptionReviewStatus;
+  assigned_to: string | null;
+  review_notes: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
   source_type: SourceType;
   reason: string;
   created_at: string;
@@ -151,12 +156,24 @@ export type ReconciliationRunFilters = {
   sourceType?: SourceType | "";
   exceptionType?: ReconciliationException["exception_type"] | "";
   status?: ReconciliationExceptionStatus | "";
+  reviewStatus?: ReconciliationExceptionReviewStatus | "";
+  assignedTo?: string;
   search?: string;
 };
 
 export type ReconciliationExceptionStatus = "unresolved" | "ignored" | "resolved";
 
+export type ReconciliationExceptionReviewStatus =
+  | "unreviewed"
+  | "investigating"
+  | "resolved"
+  | "ignored";
+
 export type ReconciliationExceptionReviewUpdate = {
   status?: ReconciliationExceptionStatus;
   note?: string;
+  review_status?: ReconciliationExceptionReviewStatus;
+  assigned_to?: string | null;
+  review_notes?: string;
+  reviewed_by?: string | null;
 };

@@ -12,6 +12,7 @@ import type {
   NewTransaction,
   PersistReconciliationRunInput,
   ReconciliationExceptionReviewUpdate,
+  ReconciliationExceptionReviewStatus,
   ReconciliationExceptionStatus,
   ReconciliationExceptionType,
   ReconciliationRunDetail,
@@ -97,6 +98,11 @@ type ReconciliationExceptionRow = TransactionRow & {
   reason: string;
   status: ReconciliationExceptionStatus;
   note: string;
+  review_status: ReconciliationExceptionReviewStatus;
+  assigned_to: string | null;
+  review_notes: string;
+  reviewed_at: Date | string | null;
+  reviewed_by: string | null;
   exception_created_at: Date | string;
 };
 
@@ -280,9 +286,14 @@ export class PostgresTransactionRepository implements TransactionRepository {
         re.dealership_id,
         re.source_type AS exception_source_type,
         re.reason,
-        re.status,
-        re.note,
-        re.created_at AS exception_created_at,
+       re.status,
+       re.note,
+       re.review_status,
+       re.assigned_to,
+       re.review_notes,
+       re.reviewed_at,
+       re.reviewed_by,
+       re.created_at AS exception_created_at,
         t.*
       FROM reconciliation_exceptions re
       JOIN transactions t ON t.id = re.transaction_id
@@ -621,9 +632,14 @@ export class PostgresTransactionRepository implements TransactionRepository {
         re.dealership_id,
         re.source_type AS exception_source_type,
         re.reason,
-        re.status,
-        re.note,
-        re.created_at AS exception_created_at,
+       re.status,
+       re.note,
+       re.review_status,
+       re.assigned_to,
+       re.review_notes,
+       re.reviewed_at,
+       re.reviewed_by,
+       re.created_at AS exception_created_at,
         t.*
       FROM reconciliation_exceptions re
       JOIN transactions t ON t.id = re.transaction_id
@@ -662,6 +678,11 @@ export class PostgresTransactionRepository implements TransactionRepository {
       exception_category: "unclassified" as const,
       status: row.status,
       note: row.note,
+      review_status: row.review_status,
+      assigned_to: row.assigned_to,
+      review_notes: row.review_notes,
+      reviewed_at: row.reviewed_at ? toDateTimeString(row.reviewed_at) : null,
+      reviewed_by: row.reviewed_by,
       source_type: row.exception_source_type,
       reason: row.reason,
       created_at: toDateTimeString(row.exception_created_at),
@@ -726,12 +747,22 @@ export class PostgresTransactionRepository implements TransactionRepository {
     const result = await this.pool.query<ReconciliationExceptionRow>(
       `UPDATE reconciliation_exceptions
        SET
-         status = COALESCE($3, status),
-         note = COALESCE($4, note)
+         review_status = COALESCE($3, review_status),
+         status = COALESCE($4, status),
+         assigned_to = CASE WHEN $5::boolean THEN $6 ELSE assigned_to END,
+         review_notes = COALESCE($7, review_notes),
+         note = COALESCE($8, note),
+         reviewed_by = CASE WHEN $9::boolean THEN $10 ELSE reviewed_by END,
+         reviewed_at = CASE
+           WHEN COALESCE($3, review_status) IN ('resolved', 'ignored')
+            AND (reviewed_at IS NULL OR $3 IS NOT NULL OR $10 IS NOT NULL)
+           THEN NOW()
+           ELSE reviewed_at
+         END
        FROM transactions t
        WHERE reconciliation_exceptions.reconciliation_run_id = $1
          AND reconciliation_exceptions.id = $2
-         AND reconciliation_exceptions.dealership_id = $5
+         AND reconciliation_exceptions.dealership_id = $11
          AND t.id = reconciliation_exceptions.transaction_id
        RETURNING
          reconciliation_exceptions.id AS exception_id,
@@ -739,9 +770,26 @@ export class PostgresTransactionRepository implements TransactionRepository {
          reconciliation_exceptions.reason,
          reconciliation_exceptions.status,
          reconciliation_exceptions.note,
+         reconciliation_exceptions.review_status,
+         reconciliation_exceptions.assigned_to,
+         reconciliation_exceptions.review_notes,
+         reconciliation_exceptions.reviewed_at,
+         reconciliation_exceptions.reviewed_by,
          reconciliation_exceptions.created_at AS exception_created_at,
          t.*`,
-      [reconciliationRunId, exceptionId, update.status ?? null, update.note ?? null, dealershipId],
+      [
+        reconciliationRunId,
+        exceptionId,
+        update.review_status ?? (update.status ? reviewStatusFromLegacyStatus(update.status) : null),
+        update.review_status ? legacyStatusFromReviewStatus(update.review_status) : update.status ?? null,
+        update.assigned_to !== undefined,
+        normalizeNullableText(update.assigned_to ?? null),
+        update.review_notes ?? update.note ?? null,
+        update.review_notes ?? update.note ?? null,
+        update.reviewed_by !== undefined,
+        normalizeNullableText(update.reviewed_by ?? null),
+        dealershipId,
+      ],
     );
 
     const row = result.rows[0];
@@ -753,6 +801,11 @@ export class PostgresTransactionRepository implements TransactionRepository {
       exception_category: "unclassified",
       status: row.status,
       note: row.note,
+      review_status: row.review_status,
+      assigned_to: row.assigned_to,
+      review_notes: row.review_notes,
+      reviewed_at: row.reviewed_at ? toDateTimeString(row.reviewed_at) : null,
+      reviewed_by: row.reviewed_by,
       source_type: row.exception_source_type,
       reason: row.reason,
       created_at: toDateTimeString(row.exception_created_at),
@@ -885,6 +938,11 @@ function toReconciliationExceptionDetail(
     exception_category: "unclassified",
     status: row.status,
     note: row.note,
+    review_status: row.review_status,
+    assigned_to: row.assigned_to,
+    review_notes: row.review_notes,
+    reviewed_at: row.reviewed_at ? toDateTimeString(row.reviewed_at) : null,
+    reviewed_by: row.reviewed_by,
     source_type: row.exception_source_type,
     reason: row.reason,
     created_at: toDateTimeString(row.exception_created_at),
@@ -1168,6 +1226,18 @@ function matchesExceptionFilters(
   if (filters.exceptionStatus !== undefined && exception.status !== filters.exceptionStatus) {
     return false;
   }
+  if (
+    filters.exceptionReviewStatus !== undefined &&
+    exception.review_status !== filters.exceptionReviewStatus
+  ) {
+    return false;
+  }
+  if (filters.assignedTo !== undefined) {
+    const assignedTo = exception.assigned_to?.toLowerCase() ?? "";
+    if (!assignedTo.includes(filters.assignedTo.toLowerCase())) {
+      return false;
+    }
+  }
   if (filters.search !== undefined) {
     const search = filters.search.toLowerCase();
     const transaction = exception.transaction;
@@ -1177,6 +1247,10 @@ function matchesExceptionFilters(
       exception.exception_category,
       exception.status,
       exception.note,
+      exception.review_status,
+      exception.assigned_to,
+      exception.review_notes,
+      exception.reviewed_by,
       exception.source_type,
       transaction.reference_number,
       transaction.description,
@@ -1192,4 +1266,30 @@ function matchesExceptionFilters(
     return searchable.includes(search);
   }
   return true;
+}
+
+function legacyStatusFromReviewStatus(
+  reviewStatus: ReconciliationExceptionReviewStatus,
+): ReconciliationExceptionStatus {
+  if (reviewStatus === "resolved" || reviewStatus === "ignored") {
+    return reviewStatus;
+  }
+  return "unresolved";
+}
+
+function reviewStatusFromLegacyStatus(
+  status: ReconciliationExceptionStatus,
+): ReconciliationExceptionReviewStatus {
+  if (status === "resolved" || status === "ignored") {
+    return status;
+  }
+  return "unreviewed";
+}
+
+function normalizeNullableText(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
 }

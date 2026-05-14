@@ -105,6 +105,11 @@ exports.up = (pgm) => {
       reason TEXT NOT NULL,
       status VARCHAR(20) NOT NULL DEFAULT 'unresolved',
       note TEXT NOT NULL DEFAULT '',
+      review_status VARCHAR(30) NOT NULL DEFAULT 'unreviewed',
+      assigned_to TEXT NULL,
+      review_notes TEXT NOT NULL DEFAULT '',
+      reviewed_at TIMESTAMPTZ NULL,
+      reviewed_by TEXT NULL,
       dealership_id INTEGER NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -113,6 +118,16 @@ exports.up = (pgm) => {
       ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'unresolved';
     ALTER TABLE reconciliation_exceptions
       ADD COLUMN IF NOT EXISTS note TEXT NOT NULL DEFAULT '';
+    ALTER TABLE reconciliation_exceptions
+      ADD COLUMN IF NOT EXISTS review_status VARCHAR(30) NOT NULL DEFAULT 'unreviewed';
+    ALTER TABLE reconciliation_exceptions
+      ADD COLUMN IF NOT EXISTS assigned_to TEXT NULL;
+    ALTER TABLE reconciliation_exceptions
+      ADD COLUMN IF NOT EXISTS review_notes TEXT NOT NULL DEFAULT '';
+    ALTER TABLE reconciliation_exceptions
+      ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ NULL;
+    ALTER TABLE reconciliation_exceptions
+      ADD COLUMN IF NOT EXISTS reviewed_by TEXT NULL;
     ALTER TABLE reconciliation_runs ADD COLUMN IF NOT EXISTS dealership_id INTEGER NULL;
     ALTER TABLE reconciliation_exceptions ADD COLUMN IF NOT EXISTS dealership_id INTEGER NULL;
 
@@ -217,6 +232,17 @@ exports.up = (pgm) => {
     UPDATE reconciliation_exceptions
     SET dealership_id = 1
     WHERE dealership_id IS NULL;
+
+    UPDATE reconciliation_exceptions
+    SET review_status = CASE
+      WHEN status = 'resolved' THEN 'resolved'
+      WHEN status = 'ignored' THEN 'ignored'
+      ELSE review_status
+    END;
+
+    UPDATE reconciliation_exceptions
+    SET review_notes = note
+    WHERE review_notes = '' AND note <> '';
   `);
 
   addConstraint(
@@ -294,6 +320,11 @@ exports.up = (pgm) => {
     "reconciliation_exceptions_status_check",
     "ALTER TABLE reconciliation_exceptions ADD CONSTRAINT reconciliation_exceptions_status_check CHECK (status IN ('unresolved', 'ignored', 'resolved'))",
   );
+  addConstraint(
+    pgm,
+    "reconciliation_exceptions_review_status_check",
+    "ALTER TABLE reconciliation_exceptions ADD CONSTRAINT reconciliation_exceptions_review_status_check CHECK (review_status IN ('unreviewed', 'investigating', 'resolved', 'ignored'))",
+  );
 
   pgm.sql(`
     CREATE INDEX IF NOT EXISTS ix_source_files_source_type ON source_files (source_type);
@@ -320,6 +351,10 @@ exports.up = (pgm) => {
       ON reconciliation_exceptions (transaction_id);
     CREATE INDEX IF NOT EXISTS ix_reconciliation_exceptions_status
       ON reconciliation_exceptions (status);
+    CREATE INDEX IF NOT EXISTS ix_reconciliation_exceptions_review_status
+      ON reconciliation_exceptions (review_status);
+    CREATE INDEX IF NOT EXISTS ix_reconciliation_exceptions_assigned_to
+      ON reconciliation_exceptions (assigned_to);
     CREATE INDEX IF NOT EXISTS ix_transactions_source_type ON transactions (source_type);
     CREATE INDEX IF NOT EXISTS ix_transactions_transaction_date ON transactions (transaction_date);
     CREATE INDEX IF NOT EXISTS ix_transactions_amount_cents ON transactions (amount_cents);

@@ -129,9 +129,17 @@ describeIfDatabase("migrate", () => {
            FROM information_schema.columns
            WHERE table_schema = 'public'
              AND table_name = 'reconciliation_exceptions'
-             AND column_name IN ('status', 'note')`,
+             AND column_name IN (
+               'status',
+               'note',
+               'review_status',
+               'assigned_to',
+               'review_notes',
+               'reviewed_at',
+               'reviewed_by'
+             )`,
         );
-        expect(exceptionColumnResult.rows).toHaveLength(2);
+        expect(exceptionColumnResult.rows).toHaveLength(7);
       } finally {
         await pool.end();
       }

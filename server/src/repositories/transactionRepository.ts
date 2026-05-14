@@ -6,6 +6,7 @@ import type {
   NewSourceFile,
   NewTransaction,
   ReconciliationExceptionReviewUpdate,
+  ReconciliationExceptionReviewStatus,
   ReconciliationExceptionStatus,
   PersistReconciliationRunInput,
   ReconciliationExceptionType,
@@ -104,6 +105,11 @@ export class MemoryTransactionRepository implements TransactionRepository {
     reason: string;
     status: ReconciliationExceptionStatus;
     note: string;
+    review_status: ReconciliationExceptionReviewStatus;
+    assigned_to: string | null;
+    review_notes: string;
+    reviewed_at: string | null;
+    reviewed_by: string | null;
     created_at: string;
   }> = [];
   private nextSourceFileId = 1;
@@ -355,6 +361,11 @@ export class MemoryTransactionRepository implements TransactionRepository {
         reason: exception.description,
         status: "unresolved",
         note: "",
+        review_status: "unreviewed",
+        assigned_to: null,
+        review_notes: "",
+        reviewed_at: null,
+        reviewed_by: null,
         created_at: createdAt,
       });
     }
@@ -470,9 +481,34 @@ export class MemoryTransactionRepository implements TransactionRepository {
 
     if (update.status !== undefined) {
       exception.status = update.status;
+      exception.review_status = reviewStatusFromLegacyStatus(update.status);
+      if (exception.review_status === "resolved" || exception.review_status === "ignored") {
+        exception.reviewed_at = new Date().toISOString();
+      }
     }
     if (update.note !== undefined) {
       exception.note = update.note;
+      exception.review_notes = update.note;
+    }
+    if (update.review_status !== undefined) {
+      exception.review_status = update.review_status;
+      exception.status = legacyStatusFromReviewStatus(update.review_status);
+      if (update.review_status === "resolved" || update.review_status === "ignored") {
+        exception.reviewed_at = new Date().toISOString();
+      }
+    }
+    if (update.assigned_to !== undefined) {
+      exception.assigned_to = normalizeNullableText(update.assigned_to);
+    }
+    if (update.review_notes !== undefined) {
+      exception.review_notes = update.review_notes;
+      exception.note = update.review_notes;
+    }
+    if (update.reviewed_by !== undefined) {
+      exception.reviewed_by = normalizeNullableText(update.reviewed_by);
+      if (exception.reviewed_by && (exception.review_status === "resolved" || exception.review_status === "ignored")) {
+        exception.reviewed_at = exception.reviewed_at ?? new Date().toISOString();
+      }
     }
 
     return this.toRunDetailException(exception);
@@ -537,6 +573,11 @@ export class MemoryTransactionRepository implements TransactionRepository {
     reason: string;
     status: ReconciliationExceptionStatus;
     note: string;
+    review_status: ReconciliationExceptionReviewStatus;
+    assigned_to: string | null;
+    review_notes: string;
+    reviewed_at: string | null;
+    reviewed_by: string | null;
     created_at: string;
     transaction_id: number;
   }): ReconciliationRunDetail["exceptions"][number] {
@@ -547,6 +588,11 @@ export class MemoryTransactionRepository implements TransactionRepository {
       exception_category: "unclassified",
       status: exception.status,
       note: exception.note,
+      review_status: exception.review_status,
+      assigned_to: exception.assigned_to,
+      review_notes: exception.review_notes,
+      reviewed_at: exception.reviewed_at,
+      reviewed_by: exception.reviewed_by,
       source_type: exception.source_type,
       reason: exception.reason,
       created_at: exception.created_at,
@@ -801,6 +847,18 @@ function matchesExceptionFilters(
   if (filters.exceptionStatus !== undefined && exception.status !== filters.exceptionStatus) {
     return false;
   }
+  if (
+    filters.exceptionReviewStatus !== undefined &&
+    exception.review_status !== filters.exceptionReviewStatus
+  ) {
+    return false;
+  }
+  if (filters.assignedTo !== undefined) {
+    const assignedTo = exception.assigned_to?.toLowerCase() ?? "";
+    if (!assignedTo.includes(filters.assignedTo.toLowerCase())) {
+      return false;
+    }
+  }
   if (filters.search !== undefined) {
     const search = filters.search.toLowerCase();
     const transaction = exception.transaction;
@@ -810,6 +868,10 @@ function matchesExceptionFilters(
       exception.exception_category,
       exception.status,
       exception.note,
+      exception.review_status,
+      exception.assigned_to,
+      exception.review_notes,
+      exception.reviewed_by,
       exception.source_type,
       transaction.reference_number,
       transaction.description,
@@ -825,4 +887,30 @@ function matchesExceptionFilters(
     return searchable.includes(search);
   }
   return true;
+}
+
+function legacyStatusFromReviewStatus(
+  reviewStatus: ReconciliationExceptionReviewStatus,
+): ReconciliationExceptionStatus {
+  if (reviewStatus === "resolved" || reviewStatus === "ignored") {
+    return reviewStatus;
+  }
+  return "unresolved";
+}
+
+function reviewStatusFromLegacyStatus(
+  status: ReconciliationExceptionStatus,
+): ReconciliationExceptionReviewStatus {
+  if (status === "resolved" || status === "ignored") {
+    return status;
+  }
+  return "unreviewed";
+}
+
+function normalizeNullableText(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
 }

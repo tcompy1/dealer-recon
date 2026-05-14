@@ -71,6 +71,13 @@ function toRunFilterQuery(filters: ReconciliationRunFilters): string {
   if (filters.status) {
     params.set("status", filters.status);
   }
+  if (filters.reviewStatus) {
+    params.set("review_status", filters.reviewStatus);
+  }
+  const assignedTo = filters.assignedTo?.trim();
+  if (assignedTo) {
+    params.set("assigned_to", assignedTo);
+  }
   const search = filters.search?.trim();
   if (search) {
     params.set("search", search);
