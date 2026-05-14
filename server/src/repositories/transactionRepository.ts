@@ -20,6 +20,7 @@ import type {
   TransactionSummary,
 } from "../domain/types.js";
 import { formatCents } from "../domain/money.js";
+import { categorizeRunDetailExceptions } from "../services/exceptionCategorizer.js";
 
 export type SourceFileImport = {
   sourceFile: SourceFile;
@@ -425,15 +426,29 @@ export class MemoryTransactionRepository implements TransactionRepository {
     const exceptions = this.reconciliationExceptions
       .filter((exception) => exception.reconciliation_run_id === run.id)
       .sort((left, right) => left.id - right.id)
-      .map((exception) => this.toRunDetailException(exception))
-      .filter((exception) => matchesExceptionFilters(exception, filters));
+      .map((exception) => this.toRunDetailException(exception));
+    const boaTransactions = this.transactions.filter(
+      (transaction) =>
+        transaction.dealership_id === dealershipId &&
+        transaction.source_file_id === run.boa_source_file_id,
+    );
+    const dealertrackTransactions = this.transactions.filter(
+      (transaction) =>
+        transaction.dealership_id === dealershipId &&
+        transaction.source_file_id === run.dealertrack_source_file_id,
+    );
+    const categorizedExceptions = categorizeRunDetailExceptions(
+      { exceptions, match_groups: matchGroups },
+      boaTransactions,
+      dealertrackTransactions,
+    ).filter((exception) => matchesExceptionFilters(exception, filters));
 
     return {
       ...listItem,
       boa_source_file: toSourceFileSummary(boaSourceFile),
       dealertrack_source_file: toSourceFileSummary(dealertrackSourceFile),
       match_groups: matchGroups,
-      exceptions,
+      exceptions: categorizedExceptions,
     };
   }
 
@@ -529,6 +544,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
       exception_id: exception.id,
       dealership_id: exception.dealership_id,
       exception_type: exceptionTypeFromReason(exception.reason),
+      exception_category: "unclassified",
       status: exception.status,
       note: exception.note,
       source_type: exception.source_type,
@@ -791,6 +807,7 @@ function matchesExceptionFilters(
     const searchable = [
       exception.reason,
       exception.exception_type,
+      exception.exception_category,
       exception.status,
       exception.note,
       exception.source_type,

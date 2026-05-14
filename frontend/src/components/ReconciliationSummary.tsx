@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { runReconciliation } from "../api/reconciliation";
+import { VinPresenceDiagnosticsPanel } from "./VinPresenceDiagnosticsPanel";
 import type { ReconciliationResponse } from "../types/reconciliation";
 
 export function ReconciliationSummary() {
@@ -56,6 +57,8 @@ export function ReconciliationSummary() {
             <Metric label="Duplicates" value={result.duplicate_count} />
           </div>
 
+          <VinPresenceDiagnosticsPanel diagnostics={result.vin_presence_diagnostics} />
+
           <div>
             <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
               Matched items
@@ -94,7 +97,12 @@ export function ReconciliationSummary() {
                   className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950"
                   key={`${exception.exception_type}-${exception.transaction.id}-${index}`}
                 >
-                  <p className="font-semibold">{formatReason(exception.exception_type)}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="font-semibold">{formatReason(exception.exception_type)}</p>
+                    <span className="rounded-md bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900">
+                      {formatReason(exception.exception_category)}
+                    </span>
+                  </div>
                   <p className="mt-1 text-amber-900">{exception.description}</p>
                   <p className="mt-2 text-amber-900">
                     {exception.source_type.toUpperCase()} stock{" "}

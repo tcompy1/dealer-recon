@@ -10,6 +10,7 @@ import type {
 } from "../domain/types.js";
 import { formatCents } from "../domain/money.js";
 import type { TransactionRepository } from "../repositories/transactionRepository.js";
+import { categorizeEngineExceptions } from "./exceptionCategorizer.js";
 
 export const VIN_EXACT_REASON = "vin_exact";
 export const VIN_AMOUNT_REASON = "vin_abs_amount";
@@ -152,17 +153,22 @@ export async function reconcileTransactions(
     );
   }
 
+  const categorizedExceptions = categorizeEngineExceptions(
+    exceptions,
+    leftTransactions,
+    rightTransactions,
+  );
   const result = {
     matched_count: matchGroups.length,
-    exception_count: exceptions.length,
+    exception_count: categorizedExceptions.length,
     duplicate_count: duplicateRightIds.size,
     match_groups: matchGroups,
-    exceptions,
+    exceptions: categorizedExceptions,
     vin_presence_diagnostics: buildVinPresenceDiagnostics(
       leftTransactions,
       rightTransactions,
       matchGroups,
-      exceptions,
+      categorizedExceptions,
       leftSourceType,
       rightSourceType,
     ),
@@ -499,6 +505,7 @@ function buildException(
 ): ReconciliationException {
   return {
     exception_type: exceptionType,
+    exception_category: "unclassified",
     source_type: transaction.source_type,
     transaction: toSummary(transaction),
     description,

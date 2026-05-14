@@ -573,6 +573,7 @@ describe("app", () => {
         "reconciliation_run_id",
         "exception_id",
         "exception_type",
+        "exception_category",
         "status",
         "note",
         "source_type",
@@ -589,7 +590,7 @@ describe("app", () => {
         "created_at",
       ].join(","),
     );
-    expect(response.text).toContain("missing_in_boa,unresolved,,dealertrack");
+    expect(response.text).toContain("missing_in_boa,missing_in_boa,unresolved,,dealertrack");
     expect(response.text).toContain("M30303");
     expect(response.text).not.toContain("M30202");
   });

@@ -125,10 +125,26 @@ export type MatchGroup = {
 
 export type ReconciliationException = {
   exception_type: string;
+  exception_category: ReconciliationExceptionCategory;
   source_type: SourceType;
   transaction: TransactionSummary;
   description: string;
 };
+
+export const reconciliationExceptionCategories = [
+  "missing_in_boa",
+  "missing_in_dealertrack",
+  "amount_mismatch",
+  "sign_mismatch",
+  "duplicate_or_one_to_many",
+  "stock_number_mismatch",
+  "vin_missing_but_reference_match",
+  "possible_timing_issue",
+  "unclassified",
+] as const;
+
+export type ReconciliationExceptionCategory =
+  (typeof reconciliationExceptionCategories)[number];
 
 export type VinPresenceDiagnosticReason =
   | "amount_mismatch"
@@ -254,6 +270,7 @@ export type ReconciliationRunDetail = ReconciliationRunListItem & {
     exception_id: number;
     dealership_id: number;
     exception_type: ReconciliationExceptionType;
+    exception_category: ReconciliationExceptionCategory;
     status: ReconciliationExceptionStatus;
     note: string;
     source_type: SourceType;

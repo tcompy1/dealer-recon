@@ -1,6 +1,7 @@
 import pg from "pg";
 
 import { formatCents } from "../domain/money.js";
+import { categorizeRunDetailExceptions } from "../services/exceptionCategorizer.js";
 import type {
   AccountDetail,
   AccountSourceTotal,
@@ -631,6 +632,49 @@ export class PostgresTransactionRepository implements TransactionRepository {
       ORDER BY re.id`,
       [reconciliationRunId, dealershipId],
     );
+    const runTransactionRows = await this.pool.query<TransactionRow>(
+      `SELECT *
+       FROM transactions
+       WHERE dealership_id = $1
+         AND source_file_id IN ($2, $3)
+       ORDER BY id`,
+      [dealershipId, runRow.boa_source_file_id, runRow.dealertrack_source_file_id],
+    );
+
+    const matchGroups = matchGroupRows.rows.map((matchGroup) => ({
+      match_group_id: matchGroup.id,
+      match_type: matchGroup.match_type,
+      confidence: Number(matchGroup.confidence),
+      reason: matchGroup.reason,
+      created_at: toDateTimeString(matchGroup.created_at),
+      transactions: matchGroupTransactionRows.rows
+        .filter((row) => row.match_group_id === matchGroup.id)
+        .map((row) => ({
+          side: row.side,
+          source_type: row.linked_source_type,
+          transaction: toTransactionSummary(toTransaction(row)),
+        })),
+    }));
+    const exceptions = exceptionRows.rows.map((row) => ({
+      exception_id: row.exception_id,
+      dealership_id: row.dealership_id,
+      exception_type: exceptionTypeFromReason(row.reason),
+      exception_category: "unclassified" as const,
+      status: row.status,
+      note: row.note,
+      source_type: row.exception_source_type,
+      reason: row.reason,
+      created_at: toDateTimeString(row.exception_created_at),
+      transaction: toTransactionSummary(toTransaction(row)),
+    }));
+    const runTransactions = runTransactionRows.rows.map(toTransaction);
+    const categorizedExceptions = categorizeRunDetailExceptions(
+      { exceptions, match_groups: matchGroups },
+      runTransactions.filter((transaction) => transaction.source_file_id === runRow.boa_source_file_id),
+      runTransactions.filter(
+        (transaction) => transaction.source_file_id === runRow.dealertrack_source_file_id,
+      ),
+    ).filter((exception) => matchesExceptionFilters(exception, filters));
 
     return {
       ...toReconciliationRunListItem(runRow),
@@ -656,31 +700,8 @@ export class PostgresTransactionRepository implements TransactionRepository {
         validation_error_count: Number(runRow.dealertrack_validation_error_count),
         created_at: toDateTimeString(runRow.dealertrack_created_at),
       }),
-      match_groups: matchGroupRows.rows.map((matchGroup) => ({
-        match_group_id: matchGroup.id,
-        match_type: matchGroup.match_type,
-        confidence: Number(matchGroup.confidence),
-        reason: matchGroup.reason,
-        created_at: toDateTimeString(matchGroup.created_at),
-        transactions: matchGroupTransactionRows.rows
-          .filter((row) => row.match_group_id === matchGroup.id)
-          .map((row) => ({
-            side: row.side,
-            source_type: row.linked_source_type,
-            transaction: toTransactionSummary(toTransaction(row)),
-          })),
-      })),
-      exceptions: exceptionRows.rows.map((row) => ({
-        exception_id: row.exception_id,
-        dealership_id: row.dealership_id,
-        exception_type: exceptionTypeFromReason(row.reason),
-        status: row.status,
-        note: row.note,
-        source_type: row.exception_source_type,
-        reason: row.reason,
-        created_at: toDateTimeString(row.exception_created_at),
-        transaction: toTransactionSummary(toTransaction(row)),
-      })).filter((exception) => matchesExceptionFilters(exception, filters)),
+      match_groups: matchGroups,
+      exceptions: categorizedExceptions,
     };
   }
 
@@ -729,6 +750,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
       exception_id: row.exception_id,
       dealership_id: row.dealership_id,
       exception_type: exceptionTypeFromReason(row.reason),
+      exception_category: "unclassified",
       status: row.status,
       note: row.note,
       source_type: row.exception_source_type,
@@ -860,6 +882,7 @@ function toReconciliationExceptionDetail(
     exception_id: row.exception_id,
     dealership_id: row.dealership_id,
     exception_type: exceptionTypeFromReason(row.reason),
+    exception_category: "unclassified",
     status: row.status,
     note: row.note,
     source_type: row.exception_source_type,
@@ -1151,6 +1174,7 @@ function matchesExceptionFilters(
     const searchable = [
       exception.reason,
       exception.exception_type,
+      exception.exception_category,
       exception.status,
       exception.note,
       exception.source_type,

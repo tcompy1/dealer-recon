@@ -24,10 +24,22 @@ export type MatchGroup = {
 
 export type ReconciliationException = {
   exception_type: string;
+  exception_category: ReconciliationExceptionCategory;
   source_type: SourceType;
   transaction: ReconciledTransaction;
   description: string;
 };
+
+export type ReconciliationExceptionCategory =
+  | "missing_in_boa"
+  | "missing_in_dealertrack"
+  | "amount_mismatch"
+  | "sign_mismatch"
+  | "duplicate_or_one_to_many"
+  | "stock_number_mismatch"
+  | "vin_missing_but_reference_match"
+  | "possible_timing_issue"
+  | "unclassified";
 
 export type VinPresenceDiagnosticReason =
   | "amount_mismatch"
@@ -119,6 +131,7 @@ export type ReconciliationRunDetailMatchGroup = {
 export type ReconciliationRunDetailException = {
   exception_id: number;
   exception_type: ReconciliationException["exception_type"];
+  exception_category: ReconciliationExceptionCategory;
   status: ReconciliationExceptionStatus;
   note: string;
   source_type: SourceType;

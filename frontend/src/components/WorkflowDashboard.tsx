@@ -8,12 +8,14 @@ import {
   updateReconciliationExceptionReview,
 } from "../api/reconciliation";
 import { listSourceFiles, uploadSourceFile } from "../api/uploads";
+import { VinPresenceDiagnosticsPanel } from "./VinPresenceDiagnosticsPanel";
 import type {
   ReconciledTransaction,
   ReconciliationExceptionReviewUpdate,
   ReconciliationRunFilters,
   ReconciliationRunDetail,
   ReconciliationRunListItem,
+  VinPresenceDiagnostics,
 } from "../types/reconciliation";
 import type { SourceFileSummary, UploadResponse, UploadValidationError } from "../types/sourceFile";
 
@@ -39,6 +41,7 @@ export function WorkflowDashboard() {
   const [sourceFiles, setSourceFiles] = useState<SourceFileSummary[]>([]);
   const [reconciliationRuns, setReconciliationRuns] = useState<ReconciliationRunListItem[]>([]);
   const [activeRun, setActiveRun] = useState<ReconciliationRunDetail | null>(null);
+  const [activeRunDiagnostics, setActiveRunDiagnostics] = useState<VinPresenceDiagnostics | null>(null);
   const [isReconciling, setIsReconciling] = useState(false);
   const [historyLoadingId, setHistoryLoadingId] = useState<number | null>(null);
   const [exceptionFilters, setExceptionFilters] = useState<ReconciliationRunFilters>({});
@@ -97,6 +100,7 @@ export function WorkflowDashboard() {
       });
       const detail = await getReconciliationRun(result.reconciliation_run_id, exceptionFilters);
       setActiveRun(detail);
+      setActiveRunDiagnostics(result.vin_presence_diagnostics);
       setReconciliationRuns(await listReconciliationRuns());
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Reconciliation failed.");
@@ -111,6 +115,7 @@ export function WorkflowDashboard() {
 
     try {
       setActiveRun(await getReconciliationRun(reconciliationRunId, exceptionFilters));
+      setActiveRunDiagnostics(null);
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Run detail could not be loaded.");
     } finally {
@@ -210,6 +215,7 @@ export function WorkflowDashboard() {
       {workflowError ? <ErrorBanner message={workflowError} /> : null}
 
       <ResultsSection
+        diagnostics={activeRunDiagnostics}
         filters={exceptionFilters}
         run={activeRun}
         isReconciling={isReconciling}
@@ -373,6 +379,7 @@ function RecentUploads({ sourceFiles }: { sourceFiles: SourceFileSummary[] }) {
 }
 
 function ResultsSection({
+  diagnostics,
   filters,
   run,
   isReconciling,
@@ -380,6 +387,7 @@ function ResultsSection({
   onReviewUpdate,
   reviewUpdatingId,
 }: {
+  diagnostics: VinPresenceDiagnostics | null;
   filters: ReconciliationRunFilters;
   run: ReconciliationRunDetail | null;
   isReconciling: boolean;
@@ -432,6 +440,7 @@ function ResultsSection({
           </div>
 
           <ExceptionBreakdown run={run} />
+          <VinPresenceDiagnosticsPanel diagnostics={diagnostics} />
           <MatchGroupsTable run={run} />
           <ExceptionsTable
             filters={filters}
@@ -543,6 +552,7 @@ function ExceptionsTable({
   reviewUpdatingId: number | null;
 }) {
   const exportUrl = getReconciliationExceptionsCsvUrl(run.reconciliation_run_id, filters);
+  const categoryCounts = getExceptionCategoryCounts(run);
 
   return (
     <div className="grid gap-2">
@@ -552,6 +562,17 @@ function ExceptionsTable({
           <p className="mt-1 text-sm text-slate-600">
             Showing {run.exceptions.length} of {run.exception_count}
           </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {categoryCounts.length === 0 ? (
+              <span className="text-sm text-slate-600">No unresolved exception categories.</span>
+            ) : (
+              categoryCounts.map(([category, count]) => (
+                <span className={categoryBadgeClassName(category)} key={category}>
+                  {formatReason(category)}: {count}
+                </span>
+              ))
+            )}
+          </div>
         </div>
         <div className="grid gap-3 md:grid-cols-[150px_180px_150px_minmax(180px,1fr)_auto]">
           <label className="grid gap-1 text-sm font-medium text-slate-700">
@@ -645,7 +666,16 @@ function ExceptionsTable({
                   className={exceptionRowClassName(exception.status, exception.reason)}
                   key={exception.exception_id}
                 >
-                  <td className="px-3 py-2 font-medium">{formatReason(exception.exception_type)}</td>
+                  <td className="px-3 py-2 font-medium">
+                    <div className="flex flex-col gap-1">
+                      <span>{formatReason(exception.exception_type)}</span>
+                      {exception.status === "unresolved" ? (
+                        <span className={categoryBadgeClassName(exception.exception_category)}>
+                          {formatReason(exception.exception_category)}
+                        </span>
+                      ) : null}
+                    </div>
+                  </td>
                   <td className="px-3 py-2">
                     <span className={statusBadgeClassName(exception.status)}>
                       {formatReason(exception.status)}
@@ -840,6 +870,23 @@ function statusBadgeClassName(status: string) {
   return `${base} bg-amber-100 text-amber-900`;
 }
 
+function categoryBadgeClassName(category: string) {
+  const base = "inline-flex w-fit rounded-md px-2 py-1 text-xs font-semibold";
+  if (category === "amount_mismatch" || category === "sign_mismatch") {
+    return `${base} bg-red-100 text-red-900`;
+  }
+  if (category === "possible_timing_issue") {
+    return `${base} bg-cyan-100 text-cyan-900`;
+  }
+  if (category === "duplicate_or_one_to_many") {
+    return `${base} bg-amber-100 text-amber-900`;
+  }
+  if (category === "unclassified") {
+    return `${base} bg-slate-200 text-slate-700`;
+  }
+  return `${base} bg-violet-100 text-violet-900`;
+}
+
 function isDuplicateException(reason: string) {
   return reason.toLowerCase().includes("duplicate");
 }
@@ -861,4 +908,15 @@ function getExceptionBreakdown(run: ReconciliationRunDetail) {
     },
     { boaOnly: 0, dealertrackOnly: 0, duplicates: 0 },
   );
+}
+
+function getExceptionCategoryCounts(run: ReconciliationRunDetail) {
+  const counts = new Map<string, number>();
+  for (const exception of run.exceptions) {
+    if (exception.status !== "unresolved") {
+      continue;
+    }
+    counts.set(exception.exception_category, (counts.get(exception.exception_category) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
 }
