@@ -30,6 +30,7 @@ import {
   type TransactionRepository,
 } from "./repositories/transactionRepository.js";
 import { reconcileTransactions } from "./services/reconciliationEngine.js";
+import { buildReconciliationRunComparison } from "./services/runComparisonAnalytics.js";
 import {
   CsvNormalizationError,
   normalizeTransactionsFromCsv,
@@ -419,6 +420,36 @@ export function createApp(
       }
 
       response.json(detail);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/reconciliation-runs/:id/analytics", async (request, response, next) => {
+    try {
+      const reconciliationRunId = parsePositiveInteger(request.params.id);
+      if (reconciliationRunId === null) {
+        response.status(404).json({ detail: "Reconciliation run was not found." });
+        return;
+      }
+
+      const comparison = await buildReconciliationRunComparison(
+        repository,
+        getRequestDealershipId(response),
+        reconciliationRunId,
+      );
+      if (!comparison) {
+        const ownerDealershipId =
+          await repository.getReconciliationRunDealershipId(reconciliationRunId);
+        if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
+          response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
+          return;
+        }
+        response.status(404).json({ detail: "Reconciliation run was not found." });
+        return;
+      }
+
+      response.json(comparison);
     } catch (error) {
       next(error);
     }

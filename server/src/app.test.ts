@@ -611,6 +611,74 @@ describe("app", () => {
     );
   });
 
+  test("GET /reconciliation-runs/:id/analytics compares current run with previous run", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const previous = await createReconciliation(app);
+    const current = await createReconciliationWithRows(app, {
+      boaRows: [
+        boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30109"),
+        boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30209"),
+      ],
+      dealertrackRows: [
+        dealertrackUploadCsv("M30101", "-301"),
+        dealertrackUploadCsv("M40404", "-404"),
+      ],
+      boaFilename: "boa-current-trend.csv",
+      dealertrackFilename: "dealertrack-current-trend.csv",
+    });
+
+    const currentDetail = await request(app).get(
+      `/reconciliation-runs/${current.reconciliation_run_id}`,
+    );
+    const assignedException = currentDetail.body.exceptions[0].exception_id as number;
+    await request(app)
+      .patch(`/reconciliation-runs/${current.reconciliation_run_id}/exceptions/${assignedException}`)
+      .send({ review_status: "investigating", assigned_to: "Tara" })
+      .expect(200);
+
+    const response = await request(app).get(
+      `/reconciliation-runs/${current.reconciliation_run_id}/analytics`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      current_run_id: current.reconciliation_run_id,
+      previous_run_id: previous.reconciliation_run_id,
+      run_comparison_summary: {
+        current: {
+          total_matched_transactions: 1,
+          total_exception_count: 2,
+          unresolved_count: 2,
+          match_rate_percent: expect.any(Number),
+        },
+        newly_resolved_count: 1,
+        newly_created_count: 1,
+        recurring_count: 1,
+      },
+    });
+    expect(response.body.newly_created_exception_ids).toHaveLength(1);
+    expect(response.body.newly_resolved_exception_ids).toHaveLength(1);
+    expect(response.body.recurring_exception_ids).toHaveLength(1);
+    expect(response.body.category_delta_summary).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          exception_category: "missing_in_boa",
+          current_count: 1,
+          previous_count: 1,
+          delta: 0,
+        }),
+      ]),
+    );
+    expect(response.body.reviewer_workload_trends).toEqual([
+      {
+        reviewer: "Tara",
+        current_count: 1,
+        previous_count: 0,
+        delta: 1,
+      },
+    ]);
+  });
+
   test("GET /reconciliation-runs/:id/exceptions.csv exports filtered exceptions", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const reconciliation = await createReconciliation(app);
@@ -1172,20 +1240,40 @@ async function uploadCsv(
 }
 
 async function createReconciliation(app: ReturnType<typeof createApp>) {
-  const boaUpload = await uploadCsv(
-    app,
-    "boa",
-    [
+  return createReconciliationWithRows(app, {
+    boaRows: [
       boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"),
       boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30202"),
-    ].join("\n"),
-    "boa-run.csv",
-  );
+    ],
+    dealertrackRows: [
+      dealertrackUploadCsv("M30101", "-301"),
+      dealertrackUploadCsv("M30303", "-303"),
+    ],
+    boaFilename: "boa-run.csv",
+    dealertrackFilename: "dealertrack-run.csv",
+  });
+}
+
+async function createReconciliationWithRows(
+  app: ReturnType<typeof createApp>,
+  {
+    boaRows,
+    dealertrackRows,
+    boaFilename,
+    dealertrackFilename,
+  }: {
+    boaRows: string[];
+    dealertrackRows: string[];
+    boaFilename: string;
+    dealertrackFilename: string;
+  },
+) {
+  const boaUpload = await uploadCsv(app, "boa", boaRows.join("\n"), boaFilename);
   const dealertrackUpload = await uploadCsv(
     app,
     "dealertrack",
-    [dealertrackUploadCsv("M30101", "-301"), dealertrackUploadCsv("M30303", "-303")].join("\n"),
-    "dealertrack-run.csv",
+    dealertrackRows.join("\n"),
+    dealertrackFilename,
   );
 
   const response = await request(app).post("/reconcile").send({

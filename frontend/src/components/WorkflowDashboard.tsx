@@ -3,6 +3,7 @@ import { type ChangeEvent, useEffect, useMemo, useState } from "react";
 import {
   getReconciliationExceptionsCsvUrl,
   getReconciliationRun,
+  getReconciliationRunAnalytics,
   listReconciliationRuns,
   reconcileSourceFiles,
   updateReconciliationExceptionReview,
@@ -14,6 +15,7 @@ import type {
   ReconciliationExceptionStatus,
   ReconciliationExceptionReviewUpdate,
   ReconciliationExceptionReviewStatus,
+  ReconciliationRunComparison,
   ReconciliationRunFilters,
   ReconciliationRunDetail,
   ReconciliationRunListItem,
@@ -44,6 +46,7 @@ export function WorkflowDashboard() {
   const [reconciliationRuns, setReconciliationRuns] = useState<ReconciliationRunListItem[]>([]);
   const [activeRun, setActiveRun] = useState<ReconciliationRunDetail | null>(null);
   const [activeRunDiagnostics, setActiveRunDiagnostics] = useState<VinPresenceDiagnostics | null>(null);
+  const [activeRunAnalytics, setActiveRunAnalytics] = useState<ReconciliationRunComparison | null>(null);
   const [isReconciling, setIsReconciling] = useState(false);
   const [historyLoadingId, setHistoryLoadingId] = useState<number | null>(null);
   const [exceptionFilters, setExceptionFilters] = useState<ReconciliationRunFilters>({});
@@ -101,8 +104,10 @@ export function WorkflowDashboard() {
         dealertrackSourceFileId: dealertrackUpload.upload.source_file_id,
       });
       const detail = await getReconciliationRun(result.reconciliation_run_id, exceptionFilters);
+      const analytics = await getReconciliationRunAnalytics(result.reconciliation_run_id);
       setActiveRun(detail);
       setActiveRunDiagnostics(result.vin_presence_diagnostics);
+      setActiveRunAnalytics(analytics);
       setReconciliationRuns(await listReconciliationRuns());
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Reconciliation failed.");
@@ -116,8 +121,13 @@ export function WorkflowDashboard() {
     setWorkflowError(null);
 
     try {
-      setActiveRun(await getReconciliationRun(reconciliationRunId, exceptionFilters));
+      const [detail, analytics] = await Promise.all([
+        getReconciliationRun(reconciliationRunId, exceptionFilters),
+        getReconciliationRunAnalytics(reconciliationRunId),
+      ]);
+      setActiveRun(detail);
       setActiveRunDiagnostics(null);
+      setActiveRunAnalytics(analytics);
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Run detail could not be loaded.");
     } finally {
@@ -155,7 +165,12 @@ export function WorkflowDashboard() {
         exceptionId,
         update,
       });
-      setActiveRun(await getReconciliationRun(activeRun.reconciliation_run_id, exceptionFilters));
+      const [detail, analytics] = await Promise.all([
+        getReconciliationRun(activeRun.reconciliation_run_id, exceptionFilters),
+        getReconciliationRunAnalytics(activeRun.reconciliation_run_id),
+      ]);
+      setActiveRun(detail);
+      setActiveRunAnalytics(analytics);
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Exception review could not be saved.");
     } finally {
@@ -217,6 +232,7 @@ export function WorkflowDashboard() {
       {workflowError ? <ErrorBanner message={workflowError} /> : null}
 
       <ResultsSection
+        analytics={activeRunAnalytics}
         diagnostics={activeRunDiagnostics}
         filters={exceptionFilters}
         run={activeRun}
@@ -381,6 +397,7 @@ function RecentUploads({ sourceFiles }: { sourceFiles: SourceFileSummary[] }) {
 }
 
 function ResultsSection({
+  analytics,
   diagnostics,
   filters,
   run,
@@ -389,6 +406,7 @@ function ResultsSection({
   onReviewUpdate,
   reviewUpdatingId,
 }: {
+  analytics: ReconciliationRunComparison | null;
   diagnostics: VinPresenceDiagnostics | null;
   filters: ReconciliationRunFilters;
   run: ReconciliationRunDetail | null;
@@ -442,6 +460,7 @@ function ResultsSection({
           </div>
 
           <ExceptionBreakdown run={run} />
+          <RunTrendAnalyticsPanel analytics={analytics} />
           <VinPresenceDiagnosticsPanel diagnostics={diagnostics} />
           <MatchGroupsTable run={run} />
           <ExceptionsTable
@@ -473,6 +492,178 @@ function ExceptionBreakdown({ run }: { run: ReconciliationRunDetail }) {
         <Metric label="Dealertrack-only exceptions" value={breakdown.dealertrackOnly} />
         <Metric label="Duplicate exceptions" value={breakdown.duplicates} />
       </div>
+    </div>
+  );
+}
+
+function RunTrendAnalyticsPanel({ analytics }: { analytics: ReconciliationRunComparison | null }) {
+  if (!analytics) {
+    return null;
+  }
+
+  const summary = analytics.run_comparison_summary;
+  const current = summary.current;
+
+  return (
+    <div className="grid gap-3">
+      <div>
+        <h3 className="text-base font-semibold text-slate-950">Run trend analytics</h3>
+        <p className="mt-1 text-sm text-slate-600">
+          Compared with {analytics.previous_run_id ? `run #${analytics.previous_run_id}` : "no previous run"}.
+        </p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Metric label="Match rate" value={`${current.match_rate_percent.toFixed(2)}%`} />
+        <Metric label="Unresolved" value={current.unresolved_count} />
+        <Metric
+          label="Match rate change"
+          value={formatNullablePercentDelta(summary.match_rate_delta_percent)}
+        />
+        <Metric
+          label="Avg resolution"
+          value={formatHours(current.average_time_to_resolution_hours)}
+        />
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-3">
+        <TrendSummaryCard
+          label="Improved Since Last Run"
+          value={summary.newly_resolved_count}
+          detail="Prior exceptions absent from this run"
+          tone="positive"
+        />
+        <TrendSummaryCard
+          label="New Exceptions"
+          value={summary.newly_created_count}
+          detail="Current exceptions absent from the prior run"
+          tone={summary.newly_created_count > 0 ? "attention" : "neutral"}
+        />
+        <TrendSummaryCard
+          label="Recurring Operational Problems"
+          value={summary.recurring_count}
+          detail="Same VIN or reference and category across runs"
+          tone={summary.recurring_count > 0 ? "attention" : "neutral"}
+        />
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-2">
+        <CategoryTrendTable rows={analytics.category_delta_summary} />
+        <ReviewerWorkloadTable rows={analytics.reviewer_workload_trends} />
+      </div>
+    </div>
+  );
+}
+
+function TrendSummaryCard({
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  label: string;
+  value: number;
+  detail: string;
+  tone: "positive" | "attention" | "neutral";
+}) {
+  const toneClass =
+    tone === "positive"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-950"
+      : tone === "attention"
+        ? "border-amber-200 bg-amber-50 text-amber-950"
+        : "border-slate-200 bg-slate-50 text-slate-950";
+
+  return (
+    <div className={`rounded-md border p-4 ${toneClass}`}>
+      <p className="text-sm font-semibold">{label}</p>
+      <p className="mt-1 text-2xl font-semibold">{value}</p>
+      <p className="mt-1 text-sm">{detail}</p>
+    </div>
+  );
+}
+
+function CategoryTrendTable({
+  rows,
+}: {
+  rows: ReconciliationRunComparison["category_delta_summary"];
+}) {
+  return (
+    <div className="overflow-hidden rounded-md border border-slate-200">
+      <div className="border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <h4 className="text-sm font-semibold text-slate-950">Category trend</h4>
+      </div>
+      <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+        <thead className="bg-white text-slate-600">
+          <tr>
+            <th className="px-3 py-2 font-semibold">Category</th>
+            <th className="px-3 py-2 font-semibold">Previous</th>
+            <th className="px-3 py-2 font-semibold">Current</th>
+            <th className="px-3 py-2 font-semibold">Delta</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200 bg-white">
+          {rows.length === 0 ? (
+            <tr>
+              <td className="px-3 py-3 text-slate-600" colSpan={4}>
+                No category movement.
+              </td>
+            </tr>
+          ) : (
+            rows.map((row) => (
+              <tr key={row.exception_category}>
+                <td className="px-3 py-2 font-medium text-slate-950">
+                  {formatReason(row.exception_category)}
+                </td>
+                <td className="px-3 py-2 text-slate-700">{row.previous_count}</td>
+                <td className="px-3 py-2 text-slate-700">{row.current_count}</td>
+                <td className="px-3 py-2 text-slate-700">{formatSignedDelta(row.delta)}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ReviewerWorkloadTable({
+  rows,
+}: {
+  rows: ReconciliationRunComparison["reviewer_workload_trends"];
+}) {
+  return (
+    <div className="overflow-hidden rounded-md border border-slate-200">
+      <div className="border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <h4 className="text-sm font-semibold text-slate-950">Reviewer workload</h4>
+      </div>
+      <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+        <thead className="bg-white text-slate-600">
+          <tr>
+            <th className="px-3 py-2 font-semibold">Reviewer</th>
+            <th className="px-3 py-2 font-semibold">Previous</th>
+            <th className="px-3 py-2 font-semibold">Current</th>
+            <th className="px-3 py-2 font-semibold">Delta</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200 bg-white">
+          {rows.length === 0 ? (
+            <tr>
+              <td className="px-3 py-3 text-slate-600" colSpan={4}>
+                No assigned reviewer workload yet.
+              </td>
+            </tr>
+          ) : (
+            rows.map((row) => (
+              <tr key={row.reviewer}>
+                <td className="px-3 py-2 font-medium text-slate-950">{row.reviewer}</td>
+                <td className="px-3 py-2 text-slate-700">{row.previous_count}</td>
+                <td className="px-3 py-2 text-slate-700">{row.current_count}</td>
+                <td className="px-3 py-2 text-slate-700">{formatSignedDelta(row.delta)}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -892,7 +1083,7 @@ function HistorySection({
   );
 }
 
-function Metric({ label, value }: { label: string; value: number }) {
+function Metric({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
       <p className="text-sm font-medium text-slate-600">{label}</p>
@@ -925,6 +1116,24 @@ function formatDateTime(value: string) {
     dateStyle: "short",
     timeStyle: "short",
   });
+}
+
+function formatSignedDelta(value: number) {
+  return value > 0 ? `+${value}` : `${value}`;
+}
+
+function formatNullablePercentDelta(value: number | null) {
+  if (value === null) {
+    return "n/a";
+  }
+  return `${formatSignedDelta(value)}%`;
+}
+
+function formatHours(value: number | null) {
+  if (value === null) {
+    return "n/a";
+  }
+  return `${value.toFixed(2)}h`;
 }
 
 function exceptionRowClassName(status: string, reason: string) {

@@ -5,6 +5,7 @@ import type {
   ReconciliationRunDetailException,
   ReconciliationRunFilters,
   ReconciliationResponse,
+  ReconciliationRunComparison,
   ReconciliationRunDetail,
   ReconciliationRunListItem,
 } from "../types/reconciliation";
@@ -30,6 +31,12 @@ export async function getReconciliationRun(
   return apiGet<ReconciliationRunDetail>(
     `/reconciliation-runs/${reconciliationRunId}${toRunFilterQuery(filters)}`,
   );
+}
+
+export async function getReconciliationRunAnalytics(
+  reconciliationRunId: number,
+): Promise<ReconciliationRunComparison> {
+  return apiGet<ReconciliationRunComparison>(`/reconciliation-runs/${reconciliationRunId}/analytics`);
 }
 
 export function getReconciliationExceptionsCsvUrl(
