@@ -142,6 +142,29 @@ exports.up = (pgm) => {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS reconciliation_run_inputs (
+      id SERIAL PRIMARY KEY,
+      reconciliation_run_id INTEGER NOT NULL REFERENCES reconciliation_runs(id) ON DELETE CASCADE,
+      side VARCHAR(20) NOT NULL,
+      source_type VARCHAR(20) NOT NULL,
+      source_file_id INTEGER NOT NULL REFERENCES source_files(id) ON DELETE RESTRICT,
+      parser_version TEXT NOT NULL,
+      parser_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      engine_version TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (reconciliation_run_id, side)
+    );
+
+    CREATE TABLE IF NOT EXISTS reconciliation_run_input_transactions (
+      id SERIAL PRIMARY KEY,
+      reconciliation_run_input_id INTEGER NOT NULL REFERENCES reconciliation_run_inputs(id) ON DELETE CASCADE,
+      original_transaction_id INTEGER NOT NULL,
+      transaction_order INTEGER NOT NULL,
+      transaction_data JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (reconciliation_run_input_id, original_transaction_id)
+    );
+
     ALTER TABLE reconciliation_exceptions
       ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'unresolved';
     ALTER TABLE reconciliation_exceptions
@@ -413,6 +436,10 @@ exports.up = (pgm) => {
       ON reconciliation_exceptions (review_status);
     CREATE INDEX IF NOT EXISTS ix_reconciliation_exceptions_assigned_to
       ON reconciliation_exceptions (assigned_to);
+    CREATE INDEX IF NOT EXISTS ix_reconciliation_run_inputs_run_id
+      ON reconciliation_run_inputs (reconciliation_run_id);
+    CREATE INDEX IF NOT EXISTS ix_reconciliation_run_input_transactions_input_id
+      ON reconciliation_run_input_transactions (reconciliation_run_input_id);
     CREATE INDEX IF NOT EXISTS ix_transactions_source_type ON transactions (source_type);
     CREATE INDEX IF NOT EXISTS ix_transactions_transaction_date ON transactions (transaction_date);
     CREATE INDEX IF NOT EXISTS ix_transactions_amount_cents ON transactions (amount_cents);
@@ -425,6 +452,25 @@ exports.up = (pgm) => {
     DROP INDEX IF EXISTS ix_transactions_amount;
     ALTER TABLE transactions DROP COLUMN IF EXISTS amount;
   `);
+
+  pgm.sql(`
+    CREATE OR REPLACE FUNCTION prevent_reconciliation_snapshot_mutation()
+    RETURNS trigger AS $$
+    BEGIN
+      RAISE EXCEPTION 'reconciliation input snapshots are immutable';
+    END;
+    $$ LANGUAGE plpgsql;
+
+    DROP TRIGGER IF EXISTS reconciliation_run_inputs_immutable ON reconciliation_run_inputs;
+    CREATE TRIGGER reconciliation_run_inputs_immutable
+      BEFORE UPDATE OR DELETE ON reconciliation_run_inputs
+      FOR EACH ROW EXECUTE FUNCTION prevent_reconciliation_snapshot_mutation();
+
+    DROP TRIGGER IF EXISTS reconciliation_run_input_transactions_immutable ON reconciliation_run_input_transactions;
+    CREATE TRIGGER reconciliation_run_input_transactions_immutable
+      BEFORE UPDATE OR DELETE ON reconciliation_run_input_transactions
+      FOR EACH ROW EXECUTE FUNCTION prevent_reconciliation_snapshot_mutation();
+  `);
 };
 
 exports.down = (pgm) => {
@@ -432,11 +478,14 @@ exports.down = (pgm) => {
     DROP TABLE IF EXISTS reconciliation_match_group_transactions;
     DROP TABLE IF EXISTS reconciliation_match_groups;
     DROP TABLE IF EXISTS reconciliation_exceptions;
+    DROP TABLE IF EXISTS reconciliation_run_input_transactions;
+    DROP TABLE IF EXISTS reconciliation_run_inputs;
     DROP TABLE IF EXISTS reconciliation_runs;
     DROP TABLE IF EXISTS transactions;
     DROP TABLE IF EXISTS source_files;
     DROP TABLE IF EXISTS users;
     DROP TABLE IF EXISTS dealerships;
+    DROP FUNCTION IF EXISTS prevent_reconciliation_snapshot_mutation();
   `);
 };
 

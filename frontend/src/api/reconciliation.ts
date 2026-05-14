@@ -5,6 +5,7 @@ import type {
   ReconciliationRunDetailException,
   ReconciliationRunFilters,
   ReconciliationResponse,
+  ReconciliationReplayResponse,
   ReconciliationRunComparison,
   ReconciliationRunDetail,
   ReconciliationRunListItem,
@@ -42,6 +43,12 @@ export async function getReconciliationRunAnalytics(
   reconciliationRunId: number,
 ): Promise<ReconciliationRunComparison> {
   return apiGet<ReconciliationRunComparison>(`/reconciliation-runs/${reconciliationRunId}/analytics`);
+}
+
+export async function replayReconciliationRun(
+  reconciliationRunId: number,
+): Promise<ReconciliationReplayResponse> {
+  return apiGet<ReconciliationReplayResponse>(`/reconciliation-runs/${reconciliationRunId}/replay`);
 }
 
 export function getReconciliationExceptionsCsvUrl(

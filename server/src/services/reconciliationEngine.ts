@@ -17,6 +17,7 @@ export const VIN_AMOUNT_REASON = "vin_abs_amount";
 export const DERIVED_VIN_AMOUNT_REASON = "derived_vin_abs_amount";
 export const STOCK_AMOUNT_REASON = "stock_number_amount";
 export const AMOUNT_CONTEXT_REASON = "amount_reference_context";
+export const RECONCILIATION_ENGINE_VERSION = "reconciliation-engine-v1";
 
 type ReconciliationScope = {
   dealershipId?: number;
@@ -81,6 +82,15 @@ export async function reconcileTransactions(
       ? await repository.listBySource(dealershipId, rightSourceType)
       : await repository.listBySourceFile(dealershipId, scope.rightSourceFileId);
 
+  return reconcileTransactionSets(leftTransactions, rightTransactions, leftSourceType, rightSourceType);
+}
+
+export function reconcileTransactionSets(
+  leftTransactions: Transaction[],
+  rightTransactions: Transaction[],
+  leftSourceType: SourceType = "boa",
+  rightSourceType: SourceType = "dealertrack",
+): ReconciliationResponse {
   const matchedRightIds = new Set<number>();
   const matchedLeftIds = new Set<number>();
   const duplicateRightIds = new Set<number>();

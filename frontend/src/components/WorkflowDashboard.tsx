@@ -6,6 +6,7 @@ import {
   getReconciliationRunAnalytics,
   listReconciliationRuns,
   reconcileSourceFiles,
+  replayReconciliationRun,
   updateReconciliationExceptionReview,
 } from "../api/reconciliation";
 import {
@@ -25,6 +26,7 @@ import type {
   ReconciliationRunFilters,
   ReconciliationRunDetail,
   ReconciliationRunListItem,
+  ReconciliationReplayResponse,
   VinPresenceDiagnostics,
 } from "../types/reconciliation";
 import type { SourceFileSummary, UploadResponse, UploadValidationError } from "../types/sourceFile";
@@ -59,7 +61,9 @@ export function WorkflowDashboard() {
   const [activeRun, setActiveRun] = useState<ReconciliationRunDetail | null>(null);
   const [activeRunDiagnostics, setActiveRunDiagnostics] = useState<VinPresenceDiagnostics | null>(null);
   const [activeRunAnalytics, setActiveRunAnalytics] = useState<ReconciliationRunComparison | null>(null);
+  const [activeRunReplay, setActiveRunReplay] = useState<ReconciliationReplayResponse | null>(null);
   const [isReconciling, setIsReconciling] = useState(false);
+  const [isReplaying, setIsReplaying] = useState(false);
   const [historyLoadingId, setHistoryLoadingId] = useState<number | null>(null);
   const [exceptionFilters, setExceptionFilters] = useState<ReconciliationRunFilters>({});
   const [reviewUpdatingId, setReviewUpdatingId] = useState<number | null>(null);
@@ -139,6 +143,7 @@ export function WorkflowDashboard() {
       setActiveRun(detail);
       setActiveRunDiagnostics(result.vin_presence_diagnostics);
       setActiveRunAnalytics(analytics);
+      setActiveRunReplay(null);
       setReconciliationRuns(await listReconciliationRuns(selectedStoreId));
       setGroupAnalytics(await getDealerGroupAnalytics());
     } catch (error) {
@@ -153,6 +158,7 @@ export function WorkflowDashboard() {
     setActiveRun(null);
     setActiveRunDiagnostics(null);
     setActiveRunAnalytics(null);
+    setActiveRunReplay(null);
     setBoaUpload(initialUploadSlot);
     setDealertrackUpload(initialUploadSlot);
     const [uploads, runs, analytics] = await Promise.all([
@@ -196,6 +202,7 @@ export function WorkflowDashboard() {
       setActiveRun(detail);
       setActiveRunDiagnostics(null);
       setActiveRunAnalytics(analytics);
+      setActiveRunReplay(null);
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Run detail could not be loaded.");
     } finally {
@@ -243,6 +250,21 @@ export function WorkflowDashboard() {
       setWorkflowError(error instanceof Error ? error.message : "Exception review could not be saved.");
     } finally {
       setReviewUpdatingId(null);
+    }
+  }
+
+  async function handleReplayRun() {
+    if (!activeRun) {
+      return;
+    }
+    setIsReplaying(true);
+    setWorkflowError(null);
+    try {
+      setActiveRunReplay(await replayReconciliationRun(activeRun.reconciliation_run_id));
+    } catch (error) {
+      setWorkflowError(error instanceof Error ? error.message : "Historical replay could not be run.");
+    } finally {
+      setIsReplaying(false);
     }
   }
 
@@ -313,9 +335,12 @@ export function WorkflowDashboard() {
         analytics={activeRunAnalytics}
         diagnostics={activeRunDiagnostics}
         filters={exceptionFilters}
+        replay={activeRunReplay}
         run={activeRun}
         isReconciling={isReconciling}
+        isReplaying={isReplaying}
         onFiltersChange={(filters) => void handleFilterChange(filters)}
+        onReplay={() => void handleReplayRun()}
         onReviewUpdate={(exceptionId, update) =>
           void handleExceptionReviewUpdate(exceptionId, update)
         }
@@ -568,18 +593,24 @@ function ResultsSection({
   analytics,
   diagnostics,
   filters,
+  replay,
   run,
   isReconciling,
+  isReplaying,
   onFiltersChange,
+  onReplay,
   onReviewUpdate,
   reviewUpdatingId,
 }: {
   analytics: ReconciliationRunComparison | null;
   diagnostics: VinPresenceDiagnostics | null;
   filters: ReconciliationRunFilters;
+  replay: ReconciliationReplayResponse | null;
   run: ReconciliationRunDetail | null;
   isReconciling: boolean;
+  isReplaying: boolean;
   onFiltersChange: (filters: ReconciliationRunFilters) => void;
+  onReplay: () => void;
   onReviewUpdate: (exceptionId: number, update: ReconciliationExceptionReviewUpdate) => void;
   reviewUpdatingId: number | null;
 }) {
@@ -630,6 +661,11 @@ function ResultsSection({
 
           <ExceptionBreakdown run={run} />
           <RunTrendAnalyticsPanel analytics={analytics} />
+          <HistoricalReplayPanel
+            replay={replay}
+            isReplaying={isReplaying}
+            onReplay={onReplay}
+          />
           <VinPresenceDiagnosticsPanel diagnostics={diagnostics} />
           <MatchGroupsTable run={run} />
           <ExceptionsTable
@@ -721,6 +757,147 @@ function RunTrendAnalyticsPanel({ analytics }: { analytics: ReconciliationRunCom
         <ReviewerWorkloadTable rows={analytics.reviewer_workload_trends} />
       </div>
     </div>
+  );
+}
+
+function HistoricalReplayPanel({
+  replay,
+  isReplaying,
+  onReplay,
+}: {
+  replay: ReconciliationReplayResponse | null;
+  isReplaying: boolean;
+  onReplay: () => void;
+}) {
+  return (
+    <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-slate-950">Historical Replay</h3>
+          <p className="mt-1 text-sm text-slate-600">
+            Reruns this reconciliation from its saved normalized inputs for audit checks.
+          </p>
+        </div>
+        <button
+          className="inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          disabled={isReplaying}
+          type="button"
+          onClick={onReplay}
+        >
+          {isReplaying ? "Replaying..." : "Replay Snapshot"}
+        </button>
+      </div>
+
+      {replay ? (
+        <>
+          <div
+            className={`rounded-md border p-3 text-sm font-semibold ${
+              replay.results_changed
+                ? "border-amber-200 bg-amber-50 text-amber-950"
+                : "border-emerald-200 bg-emerald-50 text-emerald-950"
+            }`}
+          >
+            {replay.results_changed ? "Results changed" : "Results unchanged"}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Metric label="Matched delta" value={formatSignedDelta(replay.matched_count_delta)} />
+            <Metric label="Exception delta" value={formatSignedDelta(replay.exception_count_delta)} />
+            <Metric label="Newly matched" value={replay.newly_matched.length} />
+            <Metric label="Newly unmatched" value={replay.newly_unmatched.length} />
+          </div>
+          <div className="grid gap-3 lg:grid-cols-2">
+            <ReplayVersionPanel replay={replay} />
+            <ReplayDiffList replay={replay} />
+          </div>
+        </>
+      ) : (
+        <p className="text-sm text-slate-600">No replay has been run for this result yet.</p>
+      )}
+    </div>
+  );
+}
+
+function ReplayVersionPanel({ replay }: { replay: ReconciliationReplayResponse }) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-3 text-sm">
+      <h4 className="font-semibold text-slate-950">Version check</h4>
+      <div className="mt-2 grid gap-2">
+        <VersionRow
+          label="Engine"
+          original={replay.engine_version_difference.original}
+          current={replay.engine_version_difference.current}
+          differs={replay.engine_version_difference.differs}
+        />
+        {replay.parser_version_difference.map((version) => (
+          <VersionRow
+            current={version.current}
+            differs={version.differs}
+            key={version.side}
+            label={`${formatReason(version.side)} parser`}
+            original={version.original}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function VersionRow({
+  label,
+  original,
+  current,
+  differs,
+}: {
+  label: string;
+  original: string;
+  current: string;
+  differs: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-1 border-t border-slate-100 pt-2 first:border-t-0 first:pt-0">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-medium text-slate-700">{label}</span>
+        <span className={differs ? "text-amber-700" : "text-emerald-700"}>
+          {differs ? "Changed" : "Same"}
+        </span>
+      </div>
+      <p className="break-all text-xs text-slate-500">
+        Original {original} / Current {current}
+      </p>
+    </div>
+  );
+}
+
+function ReplayDiffList({ replay }: { replay: ReconciliationReplayResponse }) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-3 text-sm">
+      <h4 className="font-semibold text-slate-950">Deterministic diff</h4>
+      <div className="mt-2 grid gap-3">
+        <ReplayKeyList label="Newly matched" rows={replay.newly_matched} />
+        <ReplayKeyList label="Newly unmatched" rows={replay.newly_unmatched} />
+      </div>
+    </div>
+  );
+}
+
+function ReplayKeyList({ label, rows }: { label: string; rows: string[] }) {
+  return (
+    <details className="rounded-md border border-slate-200 bg-slate-50 p-2">
+      <summary className="cursor-pointer text-sm font-semibold text-slate-800">
+        {label} ({rows.length})
+      </summary>
+      {rows.length === 0 ? (
+        <p className="mt-2 text-slate-600">None</p>
+      ) : (
+        <ul className="mt-2 grid gap-1 text-xs text-slate-700">
+          {rows.map((row) => (
+            <li className="break-all rounded bg-white px-2 py-1" key={row}>
+              {row}
+            </li>
+          ))}
+        </ul>
+      )}
+    </details>
   );
 }
 

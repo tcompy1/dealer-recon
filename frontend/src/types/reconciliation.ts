@@ -198,6 +198,34 @@ export type ReconciliationRunComparison = {
   };
 };
 
+export type ReconciliationReplayResponse = {
+  reconciliation_run_id: number;
+  results_changed: boolean;
+  original: {
+    matched_count: number;
+    exception_count: number;
+  };
+  replayed: {
+    matched_count: number;
+    exception_count: number;
+  };
+  matched_count_delta: number;
+  exception_count_delta: number;
+  newly_matched: string[];
+  newly_unmatched: string[];
+  engine_version_difference: {
+    original: string;
+    current: string;
+    differs: boolean;
+  };
+  parser_version_difference: Array<{
+    side: "boa" | "dealertrack";
+    original: string;
+    current: string;
+    differs: boolean;
+  }>;
+};
+
 export type ReconciliationRunFilters = {
   sourceType?: SourceType | "";
   exceptionType?: ReconciliationException["exception_type"] | "";

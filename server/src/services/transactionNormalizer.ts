@@ -8,6 +8,8 @@ type NormalizationResult = {
   validationErrors: ValidationError[];
 };
 
+export const TRANSACTION_NORMALIZER_VERSION = "transaction-normalizer-v1";
+
 const moneyPattern = /^\(?\$?\s*-?\d{1,3}(?:,\d{3})*(?:\.\d{2})?\)?$/;
 export const MAX_CSV_ROWS = 10_000;
 const referencePattern = /^\d{5,9}$/;

@@ -30,13 +30,18 @@ import {
   DuplicateSourceFileError,
   type TransactionRepository,
 } from "./repositories/transactionRepository.js";
-import { reconcileTransactions } from "./services/reconciliationEngine.js";
+import {
+  RECONCILIATION_ENGINE_VERSION,
+  reconcileTransactionSets,
+} from "./services/reconciliationEngine.js";
+import { buildReconciliationReplay } from "./services/reconciliationReplay.js";
 import {
   buildDealerGroupAnalytics,
   buildReconciliationRunComparison,
 } from "./services/runComparisonAnalytics.js";
 import {
   CsvNormalizationError,
+  TRANSACTION_NORMALIZER_VERSION,
   normalizeTransactionsFromCsv,
 } from "./services/transactionNormalizer.js";
 import { logError, logInfo, serializeError } from "./logger.js";
@@ -428,17 +433,51 @@ export function createApp(
         return;
       }
 
-      const result = await reconcileTransactions(repository, "boa", "dealertrack", {
-        dealershipId: requestDealershipId,
-        leftSourceFileId: boaSourceFileId,
-        rightSourceFileId: dealertrackSourceFileId,
-      });
+      const [boaTransactions, dealertrackTransactions] = await Promise.all([
+        repository.listBySourceFile(requestDealershipId, boaSourceFileId),
+        repository.listBySourceFile(requestDealershipId, dealertrackSourceFileId),
+      ]);
+      const result = reconcileTransactionSets(
+        boaTransactions,
+        dealertrackTransactions,
+        "boa",
+        "dealertrack",
+      );
       const run = await repository.createReconciliationRun({
         dealership_id: requestDealershipId,
         dealership_store_id: reconciliationStoreId,
         boa_source_file_id: boaSourceFileId,
         dealertrack_source_file_id: dealertrackSourceFileId,
         result,
+        input_snapshot: {
+          engine_version: RECONCILIATION_ENGINE_VERSION,
+          inputs: [
+            {
+              side: "boa",
+              source_type: "boa",
+              source_file_id: boaSourceFileId,
+              parser_version: TRANSACTION_NORMALIZER_VERSION,
+              parser_metadata: {
+                source_type: "boa",
+                source_file_id: boaSourceFileId,
+                normalizer: "normalizeTransactionsFromCsv",
+              },
+              transactions: boaTransactions,
+            },
+            {
+              side: "dealertrack",
+              source_type: "dealertrack",
+              source_file_id: dealertrackSourceFileId,
+              parser_version: TRANSACTION_NORMALIZER_VERSION,
+              parser_metadata: {
+                source_type: "dealertrack",
+                source_file_id: dealertrackSourceFileId,
+                normalizer: "normalizeTransactionsFromCsv",
+              },
+              transactions: dealertrackTransactions,
+            },
+          ],
+        },
       });
       logInfo("reconciliation_run_created", {
         request_id: response.locals.requestId,
@@ -538,6 +577,65 @@ export function createApp(
       }
 
       response.json(comparison);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/reconciliation-runs/:id/snapshot", async (request, response, next) => {
+    try {
+      const reconciliationRunId = parsePositiveInteger(request.params.id);
+      if (reconciliationRunId === null) {
+        response.status(404).json({ detail: "Reconciliation run was not found." });
+        return;
+      }
+
+      const snapshot = await repository.getReconciliationRunSnapshot(
+        getRequestDealershipId(response),
+        reconciliationRunId,
+      );
+      if (!snapshot) {
+        const ownerDealershipId =
+          await repository.getReconciliationRunDealershipId(reconciliationRunId);
+        if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
+          response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
+          return;
+        }
+        response.status(404).json({ detail: "Reconciliation snapshot was not found." });
+        return;
+      }
+
+      response.json(snapshot);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/reconciliation-runs/:id/replay", async (request, response, next) => {
+    try {
+      const reconciliationRunId = parsePositiveInteger(request.params.id);
+      if (reconciliationRunId === null) {
+        response.status(404).json({ detail: "Reconciliation run was not found." });
+        return;
+      }
+
+      const replay = await buildReconciliationReplay(
+        repository,
+        getRequestDealershipId(response),
+        reconciliationRunId,
+      );
+      if (!replay) {
+        const ownerDealershipId =
+          await repository.getReconciliationRunDealershipId(reconciliationRunId);
+        if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
+          response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
+          return;
+        }
+        response.status(404).json({ detail: "Reconciliation snapshot was not found." });
+        return;
+      }
+
+      response.json(replay);
     } catch (error) {
       next(error);
     }

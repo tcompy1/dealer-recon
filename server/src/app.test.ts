@@ -505,6 +505,93 @@ describe("app", () => {
     );
   });
 
+  test("GET /reconciliation-runs/:id/snapshot returns immutable normalized inputs", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+
+    const response = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}/snapshot`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      reconciliation_run_id: reconciliation.reconciliation_run_id,
+      engine_version: expect.any(String),
+      inputs: [
+        expect.objectContaining({
+          side: "boa",
+          source_type: "boa",
+          parser_version: expect.any(String),
+          parser_metadata: expect.objectContaining({ normalizer: "normalizeTransactionsFromCsv" }),
+        }),
+        expect.objectContaining({
+          side: "dealertrack",
+          source_type: "dealertrack",
+          parser_version: expect.any(String),
+          parser_metadata: expect.objectContaining({ normalizer: "normalizeTransactionsFromCsv" }),
+        }),
+      ],
+    });
+    expect(response.body.inputs[0].transactions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source_type: "boa",
+          stock_number: "M30101",
+          amount_cents: 30100,
+        }),
+      ]),
+    );
+  });
+
+  test("GET /reconciliation-runs/:id/replay uses persisted snapshots and reports unchanged results", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+
+    const response = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}/replay`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      reconciliation_run_id: reconciliation.reconciliation_run_id,
+      results_changed: false,
+      original: { matched_count: 1, exception_count: 2 },
+      replayed: { matched_count: 1, exception_count: 2 },
+      matched_count_delta: 0,
+      exception_count_delta: 0,
+      newly_matched: [],
+      newly_unmatched: [],
+      engine_version_difference: expect.objectContaining({ differs: false }),
+    });
+    expect(response.body.parser_version_difference).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ side: "boa", differs: false }),
+        expect.objectContaining({ side: "dealertrack", differs: false }),
+      ]),
+    );
+  });
+
+  test("snapshot records are returned as immutable copies", async () => {
+    const repository = new MemoryTransactionRepository();
+    const app = createApp(repository);
+    const reconciliation = await createReconciliation(app);
+    const firstSnapshot = await repository.getReconciliationRunSnapshot(
+      1,
+      reconciliation.reconciliation_run_id,
+    );
+    expect(firstSnapshot).not.toBeNull();
+    firstSnapshot!.inputs[0].transactions[0].stock_number = "MUTATED";
+    firstSnapshot!.inputs[0].parser_metadata.mutated = true;
+
+    const secondSnapshot = await repository.getReconciliationRunSnapshot(
+      1,
+      reconciliation.reconciliation_run_id,
+    );
+
+    expect(secondSnapshot?.inputs[0].transactions[0].stock_number).toBe("M30101");
+    expect(secondSnapshot?.inputs[0].parser_metadata).not.toHaveProperty("mutated");
+  });
+
   test("GET /reconciliation-runs/:id returns 404 for missing run", async () => {
     const app = createApp(new MemoryTransactionRepository());
 

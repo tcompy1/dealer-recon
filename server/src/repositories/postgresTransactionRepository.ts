@@ -20,6 +20,7 @@ import type {
   ReconciliationExceptionType,
   ReconciliationRunDetail,
   ReconciliationRunDetailFilters,
+  ReconciliationRunInputSnapshot,
   ReconciliationRunListFilters,
   ReconciliationRunListItem,
   ReconciliationRun,
@@ -129,6 +130,23 @@ type ReconciliationExceptionRow = TransactionRow & {
   reviewed_at: Date | string | null;
   reviewed_by: string | null;
   exception_created_at: Date | string;
+};
+
+type ReconciliationRunInputRow = {
+  id: number;
+  reconciliation_run_id: number;
+  side: ReconciliationRunInputSnapshot["inputs"][number]["side"];
+  source_type: SourceType;
+  source_file_id: number;
+  parser_version: string;
+  parser_metadata: Record<string, unknown>;
+  engine_version: string;
+  created_at: Date | string;
+};
+
+type ReconciliationRunInputTransactionRow = {
+  reconciliation_run_input_id: number;
+  transaction_data: Transaction;
 };
 
 type AccountSourceTotalRow = {
@@ -605,6 +623,45 @@ export class PostgresTransactionRepository implements TransactionRepository {
         );
       }
 
+      if (input.input_snapshot) {
+        for (const snapshotInput of input.input_snapshot.inputs) {
+          const inputResult = await client.query<{ id: number }>(
+            `INSERT INTO reconciliation_run_inputs (
+              reconciliation_run_id,
+              side,
+              source_type,
+              source_file_id,
+              parser_version,
+              parser_metadata,
+              engine_version
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id`,
+            [
+              run.id,
+              snapshotInput.side,
+              snapshotInput.source_type,
+              snapshotInput.source_file_id,
+              snapshotInput.parser_version,
+              snapshotInput.parser_metadata,
+              input.input_snapshot.engine_version,
+            ],
+          );
+          const snapshotInputId = inputResult.rows[0].id;
+
+          for (const [index, transaction] of snapshotInput.transactions.entries()) {
+            await client.query(
+              `INSERT INTO reconciliation_run_input_transactions (
+                reconciliation_run_input_id,
+                original_transaction_id,
+                transaction_order,
+                transaction_data
+              ) VALUES ($1, $2, $3, $4)`,
+              [snapshotInputId, transaction.id, index, transaction],
+            );
+          }
+        }
+      }
+
       await client.query("COMMIT");
       return run;
     } catch (error) {
@@ -613,6 +670,58 @@ export class PostgresTransactionRepository implements TransactionRepository {
     } finally {
       client.release();
     }
+  }
+
+  async getReconciliationRunSnapshot(
+    dealershipId: number,
+    reconciliationRunId: number,
+  ): Promise<ReconciliationRunInputSnapshot | null> {
+    const runResult = await this.pool.query<{ id: number }>(
+      "SELECT id FROM reconciliation_runs WHERE id = $1 AND dealership_id = $2",
+      [reconciliationRunId, dealershipId],
+    );
+    if (!runResult.rows[0]) {
+      return null;
+    }
+
+    const inputResult = await this.pool.query<ReconciliationRunInputRow>(
+      `SELECT *
+       FROM reconciliation_run_inputs
+       WHERE reconciliation_run_id = $1
+       ORDER BY CASE side WHEN 'boa' THEN 0 ELSE 1 END, id`,
+      [reconciliationRunId],
+    );
+    if (inputResult.rows.length === 0) {
+      return null;
+    }
+
+    const transactionResult = await this.pool.query<ReconciliationRunInputTransactionRow>(
+      `SELECT reconciliation_run_input_id, transaction_data
+       FROM reconciliation_run_input_transactions
+       WHERE reconciliation_run_input_id = ANY($1::int[])
+       ORDER BY reconciliation_run_input_id, transaction_order`,
+      [inputResult.rows.map((row) => row.id)],
+    );
+    const transactionsByInputId = new Map<number, Transaction[]>();
+    for (const row of transactionResult.rows) {
+      transactionsByInputId.set(row.reconciliation_run_input_id, [
+        ...(transactionsByInputId.get(row.reconciliation_run_input_id) ?? []),
+        normalizeSnapshotTransaction(row.transaction_data),
+      ]);
+    }
+
+    return {
+      reconciliation_run_id: reconciliationRunId,
+      engine_version: inputResult.rows[0].engine_version,
+      inputs: inputResult.rows.map((row) => ({
+        side: row.side,
+        source_type: row.source_type,
+        source_file_id: row.source_file_id,
+        parser_version: row.parser_version,
+        parser_metadata: row.parser_metadata,
+        transactions: transactionsByInputId.get(row.id) ?? [],
+      })),
+    };
   }
 
   async listReconciliationRuns(
@@ -1282,6 +1391,13 @@ function toTransaction(row: TransactionRow): Transaction {
     stock_number: row.stock_number,
     vin: row.vin,
     raw_data: row.raw_data,
+  };
+}
+
+function normalizeSnapshotTransaction(transaction: Transaction): Transaction {
+  return {
+    ...transaction,
+    amount_cents: Number(transaction.amount_cents),
   };
 }
 

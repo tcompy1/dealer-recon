@@ -12,6 +12,7 @@ import type {
   ReconciliationExceptionReviewStatus,
   ReconciliationExceptionStatus,
   PersistReconciliationRunInput,
+  ReconciliationRunInputSnapshot,
   ReconciliationExceptionType,
   ReconciliationRunDetail,
   ReconciliationRunDetailFilters,
@@ -73,6 +74,10 @@ export interface TransactionRepository {
     endDate: string,
   ): Promise<MonthEndReport>;
   createReconciliationRun(input: PersistReconciliationRunInput): Promise<ReconciliationRun>;
+  getReconciliationRunSnapshot(
+    dealershipId: number,
+    reconciliationRunId: number,
+  ): Promise<ReconciliationRunInputSnapshot | null>;
   listReconciliationRuns(
     dealershipId: number,
     filters?: ReconciliationRunListFilters,
@@ -154,6 +159,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     reviewed_by: string | null;
     created_at: string;
   }> = [];
+  private reconciliationRunSnapshots: ReconciliationRunInputSnapshot[] = [];
   private nextSourceFileId = 1;
   private nextId = 1;
   private nextReconciliationRunId = 1;
@@ -404,6 +410,17 @@ export class MemoryTransactionRepository implements TransactionRepository {
       created_at: createdAt,
     };
     this.reconciliationRuns.push(run);
+    if (input.input_snapshot) {
+      this.reconciliationRunSnapshots.push({
+        reconciliation_run_id: run.id,
+        engine_version: input.input_snapshot.engine_version,
+        inputs: input.input_snapshot.inputs.map((snapshotInput) => ({
+          ...snapshotInput,
+          parser_metadata: cloneJson(snapshotInput.parser_metadata),
+          transactions: snapshotInput.transactions.map(cloneTransaction),
+        })),
+      });
+    }
 
     for (const matchGroup of input.result.match_groups) {
       const groupId = this.nextReconciliationMatchGroupId++;
@@ -446,6 +463,33 @@ export class MemoryTransactionRepository implements TransactionRepository {
     }
 
     return run;
+  }
+
+  async getReconciliationRunSnapshot(
+    dealershipId: number,
+    reconciliationRunId: number,
+  ): Promise<ReconciliationRunInputSnapshot | null> {
+    const run = this.reconciliationRuns.find(
+      (candidate) => candidate.id === reconciliationRunId && candidate.dealership_id === dealershipId,
+    );
+    if (!run) {
+      return null;
+    }
+    const snapshot = this.reconciliationRunSnapshots.find(
+      (candidate) => candidate.reconciliation_run_id === reconciliationRunId,
+    );
+    if (!snapshot) {
+      return null;
+    }
+    return {
+      reconciliation_run_id: snapshot.reconciliation_run_id,
+      engine_version: snapshot.engine_version,
+      inputs: snapshot.inputs.map((snapshotInput) => ({
+        ...snapshotInput,
+        parser_metadata: cloneJson(snapshotInput.parser_metadata),
+        transactions: snapshotInput.transactions.map(cloneTransaction),
+      })),
+    };
   }
 
   async listReconciliationRuns(
@@ -616,6 +660,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     this.reconciliationMatchGroups = [];
     this.reconciliationMatchGroupTransactions = [];
     this.reconciliationExceptions = [];
+    this.reconciliationRunSnapshots = [];
     this.nextSourceFileId = 1;
     this.nextId = 1;
     this.nextReconciliationRunId = 1;
@@ -1034,4 +1079,15 @@ function normalizeNullableText(value: string | null): string | null {
   }
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function cloneTransaction(transaction: Transaction): Transaction {
+  return {
+    ...transaction,
+    raw_data: cloneJson(transaction.raw_data),
+  };
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
