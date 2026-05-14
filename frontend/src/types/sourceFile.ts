@@ -8,6 +8,8 @@ export type UploadValidationError = {
 
 export type UploadResponse = {
   source_file_id: number;
+  dealership_store_id: number | null;
+  store_name: string | null;
   source_type: SourceType;
   filename: string;
   transaction_count: number;
@@ -16,6 +18,8 @@ export type UploadResponse = {
 
 export type SourceFileSummary = {
   source_file_id: number;
+  dealership_store_id: number | null;
+  store_name: string | null;
   source_type: SourceType;
   filename: string;
   row_count: number;

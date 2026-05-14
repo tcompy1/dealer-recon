@@ -1,4 +1,5 @@
 import type {
+  DealerGroupAnalytics,
   ReconciliationExceptionCategory,
   ReconciliationRunComparison,
   ReconciliationRunDetail,
@@ -20,6 +21,42 @@ export async function buildReconciliationRunComparison(
 
   const previous = await findPreviousRun(repository, dealershipId, current);
   return compareReconciliationRuns(current, previous);
+}
+
+export async function buildDealerGroupAnalytics(
+  repository: TransactionRepository,
+  dealershipId: number,
+): Promise<DealerGroupAnalytics[]> {
+  const [groups, stores] = await Promise.all([
+    repository.listDealerGroups(dealershipId),
+    repository.listDealershipStores(dealershipId),
+  ]);
+  const groupNames = new Map(groups.map((group) => [group.id, group.name]));
+  const grouped = new Map<number | null, DealerGroupAnalytics>();
+
+  for (const store of stores) {
+    const runs = await repository.listReconciliationRuns(dealershipId, {
+      dealershipStoreId: store.id,
+    });
+    const details = (
+      await Promise.all(
+        runs.map((run) => repository.getReconciliationRunDetail(dealershipId, run.reconciliation_run_id)),
+      )
+    ).filter((detail): detail is ReconciliationRunDetail => detail !== null);
+    const storeAnalytics = buildStoreAnalytics(store.id, store.name, details);
+    const groupId = store.dealer_group_id;
+    const group = grouped.get(groupId) ?? {
+      dealer_group_id: groupId,
+      dealer_group_name: groupNames.get(groupId ?? -1) ?? "Ungrouped stores",
+      stores: [],
+    };
+    group.stores.push(storeAnalytics);
+    grouped.set(groupId, group);
+  }
+
+  return [...grouped.values()].sort((left, right) =>
+    left.dealer_group_name.localeCompare(right.dealer_group_name),
+  );
 }
 
 export function compareReconciliationRuns(
@@ -149,6 +186,39 @@ function buildReviewerWorkloadDelta(
       };
     })
     .sort((left, right) => Math.abs(right.delta) - Math.abs(left.delta) || left.reviewer.localeCompare(right.reviewer));
+}
+
+function buildStoreAnalytics(
+  storeId: number | null,
+  storeName: string,
+  details: ReconciliationRunDetail[],
+): DealerGroupAnalytics["stores"][number] {
+  const latest = details[0] ?? null;
+  const reviewerCounts = new Map<string, number>();
+  for (const detail of details) {
+    for (const exception of detail.exceptions) {
+      if (!exception.assigned_to) {
+        continue;
+      }
+      reviewerCounts.set(exception.assigned_to, (reviewerCounts.get(exception.assigned_to) ?? 0) + 1);
+    }
+  }
+  const recurringExceptionCount = details.length > 0
+    ? compareReconciliationRuns(details[0], details[1] ?? null).run_comparison_summary.recurring_count
+    : 0;
+  const latestMetrics = latest ? buildRunMetrics(latest) : null;
+
+  return {
+    dealership_store_id: storeId,
+    store_name: storeName,
+    run_count: details.length,
+    unresolved_count: latestMetrics?.unresolved_count ?? 0,
+    match_rate_percent: latestMetrics?.match_rate_percent ?? 100,
+    recurring_exception_count: recurringExceptionCount,
+    reviewer_workload: [...reviewerCounts.entries()]
+      .map(([reviewer, exception_count]) => ({ reviewer, exception_count }))
+      .sort((left, right) => right.exception_count - left.exception_count || left.reviewer.localeCompare(right.reviewer)),
+  };
 }
 
 function toExceptionKeyMap(exceptions: DetailException[]): Map<string, DetailException[]> {

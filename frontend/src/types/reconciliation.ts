@@ -91,10 +91,15 @@ export type ReconciliationResponse = {
 export type ReconcileSourceFilesInput = {
   boaSourceFileId: number;
   dealertrackSourceFileId: number;
+  dealershipStoreId?: number | null;
 };
 
 export type ReconciliationRunListItem = {
   reconciliation_run_id: number;
+  dealership_store_id: number | null;
+  store_name: string | null;
+  dealer_group_id: number | null;
+  dealer_group_name: string | null;
   boa_source_file_id: number;
   dealertrack_source_file_id: number;
   boa_filename: string;
@@ -108,6 +113,8 @@ export type ReconciliationRunListItem = {
 
 export type SourceFileSummary = {
   source_file_id: number;
+  dealership_store_id: number | null;
+  store_name: string | null;
   source_type: SourceType;
   filename: string;
   row_count: number;

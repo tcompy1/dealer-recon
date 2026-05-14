@@ -26,6 +26,26 @@ export type Transaction = {
   raw_data: Record<string, unknown>;
 };
 
+export type DealerGroup = {
+  id: number;
+  dealership_id: number;
+  name: string;
+  created_at: string;
+};
+
+export type DealershipStore = {
+  id: number;
+  dealership_id: number;
+  dealer_group_id: number | null;
+  name: string;
+  created_at: string;
+};
+
+export type NewDealershipStore = {
+  name: string;
+  dealer_group_id?: number | null;
+};
+
 export type NewTransaction = Omit<
   Transaction,
   "id" | "dealership_id" | "account_type" | "account_identifier"
@@ -35,6 +55,8 @@ export type NewTransaction = Omit<
 export type SourceFile = {
   id: number;
   dealership_id: number;
+  dealership_store_id: number | null;
+  store_name?: string | null;
   source_type: SourceType;
   original_filename: string;
   stored_filename: string | null;
@@ -44,11 +66,17 @@ export type SourceFile = {
   created_at: string;
 };
 
-export type NewSourceFile = Omit<SourceFile, "id" | "dealership_id" | "created_at">;
+export type NewSourceFile = Omit<
+  SourceFile,
+  "id" | "dealership_id" | "dealership_store_id" | "created_at"
+> &
+  Partial<Pick<SourceFile, "dealership_store_id">>;
 
 export type SourceFileSummary = {
   source_file_id: number;
   dealership_id: number;
+  dealership_store_id: number | null;
+  store_name: string | null;
   source_type: SourceType;
   filename: string;
   row_count: number;
@@ -58,6 +86,8 @@ export type SourceFileSummary = {
 
 export type UploadResponse = {
   source_file_id: number;
+  dealership_store_id: number | null;
+  store_name: string | null;
   source_type: SourceType;
   filename: string;
   transaction_count: number;
@@ -67,6 +97,7 @@ export type UploadResponse = {
 export type ReconciliationRequest = {
   boa_source_file_id?: unknown;
   dealertrack_source_file_id?: unknown;
+  dealership_store_id?: unknown;
 };
 
 export type TransactionSummary = {
@@ -196,6 +227,7 @@ export type ReconciliationResponse = {
 export type ReconciliationRun = {
   id: number;
   dealership_id: number;
+  dealership_store_id: number | null;
   boa_source_file_id: number;
   dealertrack_source_file_id: number;
   matched_count: number;
@@ -207,6 +239,7 @@ export type ReconciliationRun = {
 
 export type PersistReconciliationRunInput = {
   dealership_id: number;
+  dealership_store_id?: number | null;
   boa_source_file_id: number;
   dealertrack_source_file_id: number;
   result: ReconciliationResponse;
@@ -216,6 +249,10 @@ export type PersistReconciliationRunInput = {
 export type ReconciliationRunListItem = {
   reconciliation_run_id: number;
   dealership_id: number;
+  dealership_store_id: number | null;
+  store_name: string | null;
+  dealer_group_id: number | null;
+  dealer_group_name: string | null;
   boa_source_file_id: number;
   dealertrack_source_file_id: number;
   boa_filename: string;
@@ -225,6 +262,10 @@ export type ReconciliationRunListItem = {
   duplicate_count: number;
   status: string;
   created_at: string;
+};
+
+export type ReconciliationRunListFilters = {
+  dealershipStoreId?: number;
 };
 
 export const reconciliationExceptionTypes = [
@@ -338,6 +379,23 @@ export type ReconciliationRunComparison = {
     newly_created_count: number;
     recurring_count: number;
   };
+};
+
+export type DealerGroupAnalytics = {
+  dealer_group_id: number | null;
+  dealer_group_name: string;
+  stores: Array<{
+    dealership_store_id: number | null;
+    store_name: string;
+    run_count: number;
+    unresolved_count: number;
+    match_rate_percent: number;
+    recurring_exception_count: number;
+    reviewer_workload: Array<{
+      reviewer: string;
+      exception_count: number;
+    }>;
+  }>;
 };
 
 export type AccountDetail = AccountSummary & {

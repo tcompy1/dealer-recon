@@ -8,6 +8,12 @@ import {
   reconcileSourceFiles,
   updateReconciliationExceptionReview,
 } from "../api/reconciliation";
+import {
+  createDealershipStore,
+  getDealerGroupAnalytics,
+  listDealerGroups,
+  listDealershipStores,
+} from "../api/stores";
 import { listSourceFiles, uploadSourceFile } from "../api/uploads";
 import { VinPresenceDiagnosticsPanel } from "./VinPresenceDiagnosticsPanel";
 import type {
@@ -22,6 +28,7 @@ import type {
   VinPresenceDiagnostics,
 } from "../types/reconciliation";
 import type { SourceFileSummary, UploadResponse, UploadValidationError } from "../types/sourceFile";
+import type { DealerGroup, DealerGroupAnalytics, DealershipStore } from "../types/store";
 
 type UploadSlot = {
   file: File | null;
@@ -44,6 +51,11 @@ export function WorkflowDashboard() {
   const [dealertrackUpload, setDealertrackUpload] = useState<UploadSlot>(initialUploadSlot);
   const [sourceFiles, setSourceFiles] = useState<SourceFileSummary[]>([]);
   const [reconciliationRuns, setReconciliationRuns] = useState<ReconciliationRunListItem[]>([]);
+  const [dealerGroups, setDealerGroups] = useState<DealerGroup[]>([]);
+  const [stores, setStores] = useState<DealershipStore[]>([]);
+  const [selectedStoreId, setSelectedStoreId] = useState<number | null>(null);
+  const [newStoreName, setNewStoreName] = useState("");
+  const [groupAnalytics, setGroupAnalytics] = useState<DealerGroupAnalytics[]>([]);
   const [activeRun, setActiveRun] = useState<ReconciliationRunDetail | null>(null);
   const [activeRunDiagnostics, setActiveRunDiagnostics] = useState<VinPresenceDiagnostics | null>(null);
   const [activeRunAnalytics, setActiveRunAnalytics] = useState<ReconciliationRunComparison | null>(null);
@@ -57,12 +69,26 @@ export function WorkflowDashboard() {
 
   useEffect(() => {
     void refreshLists();
+    // Initial load only; store changes are handled explicitly in handleStoreChange.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function refreshLists() {
-    const [uploads, runs] = await Promise.all([listSourceFiles(), listReconciliationRuns()]);
+    const [groups, storeList] = await Promise.all([listDealerGroups(), listDealershipStores()]);
+    const activeStoreId = selectedStoreId ?? storeList[0]?.id ?? null;
+    if (selectedStoreId === null && activeStoreId !== null) {
+      setSelectedStoreId(activeStoreId);
+    }
+    const [uploads, runs, analytics] = await Promise.all([
+      listSourceFiles(undefined, activeStoreId),
+      listReconciliationRuns(activeStoreId),
+      getDealerGroupAnalytics(),
+    ]);
+    setDealerGroups(groups);
+    setStores(storeList);
     setSourceFiles(uploads);
     setReconciliationRuns(runs);
+    setGroupAnalytics(analytics);
   }
 
   async function handleUpload(kind: SourceKind) {
@@ -78,9 +104,13 @@ export function WorkflowDashboard() {
     setSlot((current) => ({ ...current, isUploading: true, error: null, upload: null }));
 
     try {
-      const upload = await uploadSourceFile({ sourceType: kind, file: slot.file });
+      const upload = await uploadSourceFile({
+        sourceType: kind,
+        file: slot.file,
+        dealershipStoreId: selectedStoreId,
+      });
       setSlot((current) => ({ ...current, upload, isUploading: false }));
-      setSourceFiles(await listSourceFiles());
+      setSourceFiles(await listSourceFiles(undefined, selectedStoreId));
     } catch (error) {
       setSlot((current) => ({
         ...current,
@@ -102,17 +132,55 @@ export function WorkflowDashboard() {
       const result = await reconcileSourceFiles({
         boaSourceFileId: boaUpload.upload.source_file_id,
         dealertrackSourceFileId: dealertrackUpload.upload.source_file_id,
+        dealershipStoreId: selectedStoreId,
       });
       const detail = await getReconciliationRun(result.reconciliation_run_id, exceptionFilters);
       const analytics = await getReconciliationRunAnalytics(result.reconciliation_run_id);
       setActiveRun(detail);
       setActiveRunDiagnostics(result.vin_presence_diagnostics);
       setActiveRunAnalytics(analytics);
-      setReconciliationRuns(await listReconciliationRuns());
+      setReconciliationRuns(await listReconciliationRuns(selectedStoreId));
+      setGroupAnalytics(await getDealerGroupAnalytics());
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Reconciliation failed.");
     } finally {
       setIsReconciling(false);
+    }
+  }
+
+  async function handleStoreChange(storeId: number | null) {
+    setSelectedStoreId(storeId);
+    setActiveRun(null);
+    setActiveRunDiagnostics(null);
+    setActiveRunAnalytics(null);
+    setBoaUpload(initialUploadSlot);
+    setDealertrackUpload(initialUploadSlot);
+    const [uploads, runs, analytics] = await Promise.all([
+      listSourceFiles(undefined, storeId),
+      listReconciliationRuns(storeId),
+      getDealerGroupAnalytics(),
+    ]);
+    setSourceFiles(uploads);
+    setReconciliationRuns(runs);
+    setGroupAnalytics(analytics);
+  }
+
+  async function handleCreateStore() {
+    const name = newStoreName.trim();
+    if (!name) {
+      return;
+    }
+    setWorkflowError(null);
+    try {
+      const store = await createDealershipStore({
+        name,
+        dealer_group_id: dealerGroups[0]?.id ?? null,
+      });
+      setNewStoreName("");
+      setStores(await listDealershipStores());
+      await handleStoreChange(store.id);
+    } catch (error) {
+      setWorkflowError(error instanceof Error ? error.message : "Store could not be created.");
     }
   }
 
@@ -181,6 +249,16 @@ export function WorkflowDashboard() {
   return (
     <div className="grid gap-6">
       <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-5 shadow-sm">
+        <StoreManagementPanel
+          analytics={groupAnalytics}
+          newStoreName={newStoreName}
+          selectedStoreId={selectedStoreId}
+          stores={stores}
+          onCreateStore={() => void handleCreateStore()}
+          onNewStoreNameChange={setNewStoreName}
+          onStoreChange={(storeId) => void handleStoreChange(storeId)}
+        />
+
         <div className="flex flex-col gap-1">
           <p className="text-xs font-semibold uppercase text-cyan-700">Step 1</p>
           <h2 className="text-lg font-semibold text-slate-950">Upload BOA and Dealertrack CSVs</h2>
@@ -254,6 +332,91 @@ export function WorkflowDashboard() {
   );
 }
 
+function StoreManagementPanel({
+  analytics,
+  newStoreName,
+  selectedStoreId,
+  stores,
+  onCreateStore,
+  onNewStoreNameChange,
+  onStoreChange,
+}: {
+  analytics: DealerGroupAnalytics[];
+  newStoreName: string;
+  selectedStoreId: number | null;
+  stores: DealershipStore[];
+  onCreateStore: () => void;
+  onNewStoreNameChange: (name: string) => void;
+  onStoreChange: (storeId: number | null) => void;
+}) {
+  return (
+    <div className="grid gap-4 rounded-md border border-slate-200 bg-slate-50 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <label className="grid gap-1 text-sm font-medium text-slate-700">
+          Store
+          <select
+            className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+            value={selectedStoreId ?? ""}
+            onChange={(event) => onStoreChange(event.target.value ? Number(event.target.value) : null)}
+          >
+            {stores.length === 0 ? <option value="">No stores</option> : null}
+            {stores.map((store) => (
+              <option key={store.id} value={store.id}>
+                {store.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+          <label className="grid gap-1 text-sm font-medium text-slate-700">
+            Add store
+            <input
+              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+              placeholder="Store name"
+              type="text"
+              value={newStoreName}
+              onChange={(event) => onNewStoreNameChange(event.target.value)}
+            />
+          </label>
+          <button
+            className="inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            disabled={!newStoreName.trim()}
+            type="button"
+            onClick={onCreateStore}
+          >
+            Create Store
+          </button>
+        </div>
+      </div>
+      <GroupAnalyticsSummary analytics={analytics} selectedStoreId={selectedStoreId} />
+    </div>
+  );
+}
+
+function GroupAnalyticsSummary({
+  analytics,
+  selectedStoreId,
+}: {
+  analytics: DealerGroupAnalytics[];
+  selectedStoreId: number | null;
+}) {
+  const selectedStore = analytics
+    .flatMap((group) => group.stores)
+    .find((store) => store.dealership_store_id === selectedStoreId);
+  if (!selectedStore) {
+    return null;
+  }
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-4">
+      <Metric label="Store runs" value={selectedStore.run_count} />
+      <Metric label="Store unresolved" value={selectedStore.unresolved_count} />
+      <Metric label="Store match rate" value={`${selectedStore.match_rate_percent.toFixed(2)}%`} />
+      <Metric label="Recurring at store" value={selectedStore.recurring_exception_count} />
+    </div>
+  );
+}
+
 function UploadPanel({
   kind,
   label,
@@ -316,6 +479,9 @@ function UploadReceipt({ upload }: { upload: UploadResponse }) {
           <span className="font-medium">filename:</span> {upload.filename}
         </p>
         <p>
+          <span className="font-medium">store:</span> {upload.store_name ?? "n/a"}
+        </p>
+        <p>
           <span className="font-medium">transactions:</span> {upload.transaction_count}
         </p>
         <p>
@@ -374,6 +540,7 @@ function RecentUploads({ sourceFiles }: { sourceFiles: SourceFileSummary[] }) {
         <thead className="bg-slate-50 text-slate-600">
           <tr>
             <th className="px-3 py-2 font-semibold">source_file_id</th>
+            <th className="px-3 py-2 font-semibold">Store</th>
             <th className="px-3 py-2 font-semibold">Source</th>
             <th className="px-3 py-2 font-semibold">Filename</th>
             <th className="px-3 py-2 font-semibold">Rows</th>
@@ -384,6 +551,7 @@ function RecentUploads({ sourceFiles }: { sourceFiles: SourceFileSummary[] }) {
           {recentFloorplanUploads.map((sourceFile) => (
             <tr key={sourceFile.source_file_id}>
               <td className="px-3 py-2 font-medium text-slate-950">{sourceFile.source_file_id}</td>
+              <td className="px-3 py-2 text-slate-700">{sourceFile.store_name ?? "n/a"}</td>
               <td className="px-3 py-2 text-slate-700">{sourceFile.source_type.toUpperCase()}</td>
               <td className="px-3 py-2 text-slate-700">{sourceFile.filename}</td>
               <td className="px-3 py-2 text-slate-700">{sourceFile.row_count}</td>
@@ -429,7 +597,8 @@ function ResultsSection({
           <h2 className="text-lg font-semibold text-slate-950">View reconciliation results</h2>
           {run ? (
             <p className="text-sm text-slate-600">
-              Run #{run.reconciliation_run_id} from {formatDateTime(run.created_at)}
+              Run #{run.reconciliation_run_id} for {run.store_name ?? "Unassigned store"} from{" "}
+              {formatDateTime(run.created_at)}
             </p>
           ) : null}
         </div>
@@ -1030,6 +1199,7 @@ function HistorySection({
           <thead className="bg-slate-50 text-slate-600">
             <tr>
               <th className="px-3 py-2 font-semibold">Run</th>
+              <th className="px-3 py-2 font-semibold">Store</th>
               <th className="px-3 py-2 font-semibold">BOA file</th>
               <th className="px-3 py-2 font-semibold">Dealertrack file</th>
               <th className="px-3 py-2 font-semibold">Matched</th>
@@ -1043,7 +1213,7 @@ function HistorySection({
           <tbody className="divide-y divide-slate-200 bg-white">
             {runs.length === 0 ? (
               <tr>
-                <td className="px-3 py-3 text-slate-600" colSpan={9}>
+                <td className="px-3 py-3 text-slate-600" colSpan={10}>
                   No reconciliation runs.
                 </td>
               </tr>
@@ -1056,6 +1226,7 @@ function HistorySection({
                   <td className="px-3 py-2 font-medium text-slate-950">
                     {run.reconciliation_run_id}
                   </td>
+                  <td className="px-3 py-2 text-slate-700">{run.store_name ?? "n/a"}</td>
                   <td className="px-3 py-2 text-slate-700">{run.boa_filename}</td>
                   <td className="px-3 py-2 text-slate-700">{run.dealertrack_filename}</td>
                   <td className="px-3 py-2 text-slate-700">{run.matched_count}</td>

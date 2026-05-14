@@ -21,6 +21,31 @@ exports.up = (pgm) => {
     VALUES (${defaultDealershipId}, 'Configured Dealership')
     ON CONFLICT (id) DO NOTHING;
 
+    CREATE TABLE IF NOT EXISTS dealer_groups (
+      id SERIAL PRIMARY KEY,
+      dealership_id INTEGER NOT NULL REFERENCES dealerships(id) ON DELETE RESTRICT,
+      name TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS dealership_stores (
+      id SERIAL PRIMARY KEY,
+      dealership_id INTEGER NOT NULL REFERENCES dealerships(id) ON DELETE RESTRICT,
+      dealer_group_id INTEGER NULL REFERENCES dealer_groups(id) ON DELETE SET NULL,
+      name TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    INSERT INTO dealer_groups (id, dealership_id, name)
+    VALUES (1, 1, 'Hiley Mazda Group')
+    ON CONFLICT (id) DO NOTHING;
+
+    INSERT INTO dealership_stores (id, dealership_id, dealer_group_id, name)
+    VALUES
+      (1, 1, 1, 'Hiley Mazda of Hurst'),
+      (2, 1, 1, 'Hiley Mazda of Arlington')
+    ON CONFLICT (id) DO NOTHING;
+
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
       email TEXT NOT NULL,
@@ -37,6 +62,7 @@ exports.up = (pgm) => {
       row_count INTEGER NOT NULL DEFAULT 0,
       validation_error_count INTEGER NOT NULL DEFAULT 0,
       dealership_id INTEGER NULL,
+      dealership_store_id INTEGER NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -60,6 +86,7 @@ exports.up = (pgm) => {
 
     ALTER TABLE source_files ADD COLUMN IF NOT EXISTS file_hash TEXT NULL;
     ALTER TABLE source_files ADD COLUMN IF NOT EXISTS dealership_id INTEGER NULL;
+    ALTER TABLE source_files ADD COLUMN IF NOT EXISTS dealership_store_id INTEGER NULL;
     ALTER TABLE transactions ADD COLUMN IF NOT EXISTS source_file_id INTEGER NULL;
     ALTER TABLE transactions ADD COLUMN IF NOT EXISTS amount_cents BIGINT NULL;
     ALTER TABLE transactions ADD COLUMN IF NOT EXISTS dealership_id INTEGER NULL;
@@ -75,6 +102,7 @@ exports.up = (pgm) => {
       duplicate_count INTEGER NOT NULL DEFAULT 0,
       status VARCHAR(30) NOT NULL,
       dealership_id INTEGER NULL,
+      dealership_store_id INTEGER NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -129,6 +157,7 @@ exports.up = (pgm) => {
     ALTER TABLE reconciliation_exceptions
       ADD COLUMN IF NOT EXISTS reviewed_by TEXT NULL;
     ALTER TABLE reconciliation_runs ADD COLUMN IF NOT EXISTS dealership_id INTEGER NULL;
+    ALTER TABLE reconciliation_runs ADD COLUMN IF NOT EXISTS dealership_store_id INTEGER NULL;
     ALTER TABLE reconciliation_exceptions ADD COLUMN IF NOT EXISTS dealership_id INTEGER NULL;
 
     DO $$
@@ -223,6 +252,20 @@ exports.up = (pgm) => {
     SET dealership_id = 1
     WHERE dealership_id IS NULL;
 
+    UPDATE source_files
+    SET dealership_store_id = 1
+    WHERE dealership_store_id IS NULL;
+
+    UPDATE reconciliation_runs
+    SET dealership_store_id = source_files.dealership_store_id
+    FROM source_files
+    WHERE reconciliation_runs.boa_source_file_id = source_files.id
+      AND reconciliation_runs.dealership_store_id IS NULL;
+
+    UPDATE reconciliation_runs
+    SET dealership_store_id = 1
+    WHERE dealership_store_id IS NULL;
+
     UPDATE reconciliation_exceptions
     SET dealership_id = reconciliation_runs.dealership_id
     FROM reconciliation_runs
@@ -255,6 +298,7 @@ exports.up = (pgm) => {
     ALTER TABLE transactions ALTER COLUMN transaction_date DROP NOT NULL;
     ALTER TABLE source_files ALTER COLUMN file_hash SET NOT NULL;
     ALTER TABLE source_files ALTER COLUMN dealership_id SET NOT NULL;
+    ALTER TABLE source_files ALTER COLUMN dealership_store_id SET NOT NULL;
     ALTER TABLE transactions ALTER COLUMN source_file_id SET NOT NULL;
     ALTER TABLE transactions ALTER COLUMN dealership_id SET NOT NULL;
     ALTER TABLE transactions ALTER COLUMN source_type SET NOT NULL;
@@ -262,6 +306,7 @@ exports.up = (pgm) => {
     ALTER TABLE transactions ALTER COLUMN account_type SET NOT NULL;
     ALTER TABLE transactions ALTER COLUMN account_identifier SET NOT NULL;
     ALTER TABLE reconciliation_runs ALTER COLUMN dealership_id SET NOT NULL;
+    ALTER TABLE reconciliation_runs ALTER COLUMN dealership_store_id SET NOT NULL;
     ALTER TABLE reconciliation_exceptions ALTER COLUMN dealership_id SET NOT NULL;
   `);
 
@@ -272,6 +317,11 @@ exports.up = (pgm) => {
   );
   addConstraint(
     pgm,
+    "source_files_dealership_store_id_fkey",
+    "ALTER TABLE source_files ADD CONSTRAINT source_files_dealership_store_id_fkey FOREIGN KEY (dealership_store_id) REFERENCES dealership_stores(id) ON DELETE RESTRICT",
+  );
+  addConstraint(
+    pgm,
     "transactions_dealership_id_fkey",
     "ALTER TABLE transactions ADD CONSTRAINT transactions_dealership_id_fkey FOREIGN KEY (dealership_id) REFERENCES dealerships(id) ON DELETE RESTRICT",
   );
@@ -279,6 +329,11 @@ exports.up = (pgm) => {
     pgm,
     "reconciliation_runs_dealership_id_fkey",
     "ALTER TABLE reconciliation_runs ADD CONSTRAINT reconciliation_runs_dealership_id_fkey FOREIGN KEY (dealership_id) REFERENCES dealerships(id) ON DELETE RESTRICT",
+  );
+  addConstraint(
+    pgm,
+    "reconciliation_runs_dealership_store_id_fkey",
+    "ALTER TABLE reconciliation_runs ADD CONSTRAINT reconciliation_runs_dealership_store_id_fkey FOREIGN KEY (dealership_store_id) REFERENCES dealership_stores(id) ON DELETE RESTRICT",
   );
   addConstraint(
     pgm,
@@ -329,13 +384,16 @@ exports.up = (pgm) => {
   pgm.sql(`
     CREATE INDEX IF NOT EXISTS ix_source_files_source_type ON source_files (source_type);
     CREATE INDEX IF NOT EXISTS ix_source_files_dealership_id ON source_files (dealership_id);
+    CREATE INDEX IF NOT EXISTS ix_source_files_dealership_store_id ON source_files (dealership_store_id);
     DROP INDEX IF EXISTS ux_source_files_source_type_file_hash;
+    DROP INDEX IF EXISTS ux_source_files_dealership_source_type_file_hash;
     CREATE UNIQUE INDEX IF NOT EXISTS ux_source_files_dealership_source_type_file_hash
-      ON source_files (dealership_id, source_type, file_hash);
+      ON source_files (dealership_id, dealership_store_id, source_type, file_hash);
     CREATE INDEX IF NOT EXISTS ix_source_files_created_at ON source_files (created_at);
     CREATE INDEX IF NOT EXISTS ix_transactions_source_file_id ON transactions (source_file_id);
     CREATE INDEX IF NOT EXISTS ix_transactions_dealership_id ON transactions (dealership_id);
     CREATE INDEX IF NOT EXISTS ix_reconciliation_runs_dealership_id ON reconciliation_runs (dealership_id);
+    CREATE INDEX IF NOT EXISTS ix_reconciliation_runs_dealership_store_id ON reconciliation_runs (dealership_store_id);
     CREATE INDEX IF NOT EXISTS ix_reconciliation_runs_boa_source_file_id ON reconciliation_runs (boa_source_file_id);
     CREATE INDEX IF NOT EXISTS ix_reconciliation_runs_dealertrack_source_file_id ON reconciliation_runs (dealertrack_source_file_id);
     CREATE INDEX IF NOT EXISTS ix_reconciliation_runs_created_at ON reconciliation_runs (created_at);

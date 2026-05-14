@@ -142,6 +142,10 @@ function runDetail(overrides: Partial<ReconciliationRunDetail> = {}): Reconcilia
   return {
     reconciliation_run_id: 1,
     dealership_id: 1,
+    dealership_store_id: 1,
+    store_name: "Hiley Mazda of Hurst",
+    dealer_group_id: 1,
+    dealer_group_name: "Hiley Mazda Group",
     boa_source_file_id: 1,
     dealertrack_source_file_id: 2,
     boa_filename: "boa.csv",
@@ -230,6 +234,8 @@ function sourceFile(source_file_id: number, source_type: SourceType) {
   return {
     source_file_id,
     dealership_id: 1,
+    dealership_store_id: 1,
+    store_name: "Hiley Mazda of Hurst",
     source_type,
     filename: `${source_type}.csv`,
     row_count: 1,

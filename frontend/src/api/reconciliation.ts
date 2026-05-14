@@ -13,15 +13,20 @@ import type {
 export async function reconcileSourceFiles({
   boaSourceFileId,
   dealertrackSourceFileId,
+  dealershipStoreId,
 }: ReconcileSourceFilesInput): Promise<ReconciliationResponse> {
   return apiPost<ReconciliationResponse>("/reconcile", {
     boa_source_file_id: boaSourceFileId,
     dealertrack_source_file_id: dealertrackSourceFileId,
+    ...(dealershipStoreId ? { dealership_store_id: dealershipStoreId } : {}),
   });
 }
 
-export async function listReconciliationRuns(): Promise<ReconciliationRunListItem[]> {
-  return apiGet<ReconciliationRunListItem[]>("/reconciliation-runs");
+export async function listReconciliationRuns(
+  dealershipStoreId?: number | null,
+): Promise<ReconciliationRunListItem[]> {
+  const query = dealershipStoreId ? `?store_id=${dealershipStoreId}` : "";
+  return apiGet<ReconciliationRunListItem[]>(`/reconciliation-runs${query}`);
 }
 
 export async function getReconciliationRun(

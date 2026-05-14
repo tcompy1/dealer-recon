@@ -19,6 +19,7 @@ import {
   isReconciliationExceptionReviewStatus,
   isReconciliationExceptionType,
   isSourceType,
+  type NewDealershipStore,
   type ReconciliationRequest,
   type ReconciliationExceptionReviewUpdate,
   type MonthEndReport,
@@ -30,7 +31,10 @@ import {
   type TransactionRepository,
 } from "./repositories/transactionRepository.js";
 import { reconcileTransactions } from "./services/reconciliationEngine.js";
-import { buildReconciliationRunComparison } from "./services/runComparisonAnalytics.js";
+import {
+  buildDealerGroupAnalytics,
+  buildReconciliationRunComparison,
+} from "./services/runComparisonAnalytics.js";
 import {
   CsvNormalizationError,
   normalizeTransactionsFromCsv,
@@ -175,6 +179,43 @@ export function createApp(
     response.json({ user: getAuthenticatedUser(response) });
   });
 
+  app.get("/dealer-groups", async (_request, response, next) => {
+    try {
+      response.json(await repository.listDealerGroups(getRequestDealershipId(response)));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/stores", async (_request, response, next) => {
+    try {
+      response.json(await repository.listDealershipStores(getRequestDealershipId(response)));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/stores", async (request, response, next) => {
+    try {
+      const store = parseStoreCreateRequest(request.body);
+      if (store === false) {
+        response.status(422).json({ detail: "Invalid store request." });
+        return;
+      }
+      response.status(201).json(await repository.createDealershipStore(getRequestDealershipId(response), store));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/dealer-groups/analytics", async (_request, response, next) => {
+    try {
+      response.json(await buildDealerGroupAnalytics(repository, getRequestDealershipId(response)));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/source-files", async (request, response, next) => {
     try {
       const requestDealershipId = getRequestDealershipId(response);
@@ -183,8 +224,13 @@ export function createApp(
         response.status(422).json({ detail: "Invalid source_type." });
         return;
       }
+      const dealershipStoreId = parseOptionalPositiveInteger(request.query.store_id);
+      if (dealershipStoreId === false) {
+        response.status(422).json({ detail: "Invalid store_id." });
+        return;
+      }
 
-      response.json(await repository.listSourceFiles(requestDealershipId, sourceType));
+      response.json(await repository.listSourceFiles(requestDealershipId, sourceType, dealershipStoreId));
     } catch (error) {
       next(error);
     }
@@ -266,8 +312,18 @@ export function createApp(
 
       const fileHash = createFileHash(request.file.buffer);
       const requestDealershipId = getRequestDealershipId(response);
+      const dealershipStoreId = await resolveStoreIdForRequest(
+        repository,
+        requestDealershipId,
+        request.body.store_id,
+      );
+      if (dealershipStoreId === false) {
+        response.status(422).json({ detail: "Invalid store_id." });
+        return;
+      }
       const duplicateSourceFile = await repository.getSourceFileByHash(
         requestDealershipId,
+        dealershipStoreId,
         sourceType,
         fileHash,
       );
@@ -285,6 +341,7 @@ export function createApp(
         requestDealershipId,
         {
           source_type: sourceType,
+          dealership_store_id: dealershipStoreId,
           original_filename: request.file.originalname || "upload.csv",
           stored_filename: null,
           file_hash: fileHash,
@@ -296,6 +353,10 @@ export function createApp(
 
       response.json({
         source_file_id: importResult.sourceFile.id,
+        dealership_store_id: importResult.sourceFile.dealership_store_id,
+        store_name: (await repository.listDealershipStores(requestDealershipId)).find(
+          (store) => store.id === importResult.sourceFile.dealership_store_id,
+        )?.name ?? null,
         source_type: sourceType,
         filename: importResult.sourceFile.original_filename,
         transaction_count: importResult.transactions.length,
@@ -311,6 +372,7 @@ export function createApp(
       const body = (request.body ?? {}) as ReconciliationRequest;
       const boaSourceFileId = parseSourceFileId(body.boa_source_file_id);
       const dealertrackSourceFileId = parseSourceFileId(body.dealertrack_source_file_id);
+      const requestedStoreId = parseOptionalPositiveInteger(body.dealership_store_id);
 
       if (boaSourceFileId === null) {
         response.status(422).json({ detail: "boa_source_file_id is required." });
@@ -318,6 +380,10 @@ export function createApp(
       }
       if (dealertrackSourceFileId === null) {
         response.status(422).json({ detail: "dealertrack_source_file_id is required." });
+        return;
+      }
+      if (requestedStoreId === false) {
+        response.status(422).json({ detail: "Invalid dealership_store_id." });
         return;
       }
 
@@ -336,6 +402,18 @@ export function createApp(
         dealertrackSourceFile.dealership_id !== requestDealershipId
       ) {
         response.status(403).json({ detail: "Source file belongs to another dealership." });
+        return;
+      }
+      const reconciliationStoreId = requestedStoreId ?? boaSourceFile.dealership_store_id;
+      if (
+        boaSourceFile.dealership_store_id !== dealertrackSourceFile.dealership_store_id ||
+        (reconciliationStoreId !== null &&
+          (boaSourceFile.dealership_store_id !== reconciliationStoreId ||
+            dealertrackSourceFile.dealership_store_id !== reconciliationStoreId))
+      ) {
+        response.status(400).json({
+          detail: "BOA and Dealertrack uploads must belong to the selected store.",
+        });
         return;
       }
 
@@ -357,6 +435,7 @@ export function createApp(
       });
       const run = await repository.createReconciliationRun({
         dealership_id: requestDealershipId,
+        dealership_store_id: reconciliationStoreId,
         boa_source_file_id: boaSourceFileId,
         dealertrack_source_file_id: dealertrackSourceFileId,
         result,
@@ -383,7 +462,16 @@ export function createApp(
 
   app.get("/reconciliation-runs", async (_request, response, next) => {
     try {
-      response.json(await repository.listReconciliationRuns(getRequestDealershipId(response)));
+      const dealershipStoreId = parseOptionalPositiveInteger(_request.query.store_id);
+      if (dealershipStoreId === false) {
+        response.status(422).json({ detail: "Invalid store_id." });
+        return;
+      }
+      response.json(
+        await repository.listReconciliationRuns(getRequestDealershipId(response), {
+          ...(dealershipStoreId ? { dealershipStoreId } : {}),
+        }),
+      );
     } catch (error) {
       next(error);
     }
@@ -683,6 +771,48 @@ function parsePositiveInteger(value: unknown): number | null {
     return Number(value);
   }
   return null;
+}
+
+function parseOptionalPositiveInteger(value: unknown): number | undefined | false {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  const parsed = parsePositiveInteger(value);
+  return parsed ?? false;
+}
+
+function parseStoreCreateRequest(value: unknown): NewDealershipStore | false {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const body = value as { name?: unknown; dealer_group_id?: unknown };
+  if (typeof body.name !== "string" || !body.name.trim()) {
+    return false;
+  }
+  const dealerGroupId = parseOptionalPositiveInteger(body.dealer_group_id);
+  if (dealerGroupId === false) {
+    return false;
+  }
+  return {
+    name: body.name.trim(),
+    ...(dealerGroupId ? { dealer_group_id: dealerGroupId } : {}),
+  };
+}
+
+async function resolveStoreIdForRequest(
+  repository: TransactionRepository,
+  dealershipId: number,
+  value: unknown,
+): Promise<number | null | false> {
+  const parsed = parseOptionalPositiveInteger(value);
+  if (parsed === false) {
+    return false;
+  }
+  const stores = await repository.listDealershipStores(dealershipId);
+  if (parsed !== undefined) {
+    return stores.some((store) => store.id === parsed) ? parsed : false;
+  }
+  return stores[0]?.id ?? null;
 }
 
 function parseSourceTypeQuery(value: unknown) {

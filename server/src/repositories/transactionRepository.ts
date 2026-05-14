@@ -1,8 +1,11 @@
 import type {
   AccountDetail,
   AccountSummary,
+  DealerGroup,
+  DealershipStore,
   MonthEndReport,
   MonthEndReportAccount,
+  NewDealershipStore,
   NewSourceFile,
   NewTransaction,
   ReconciliationExceptionReviewUpdate,
@@ -12,6 +15,7 @@ import type {
   ReconciliationExceptionType,
   ReconciliationRunDetail,
   ReconciliationRunDetailFilters,
+  ReconciliationRunListFilters,
   ReconciliationRunListItem,
   ReconciliationRun,
   SourceFile,
@@ -44,10 +48,21 @@ export interface TransactionRepository {
   getSourceFile(sourceFileId: number): Promise<SourceFile | null>;
   getSourceFileByHash(
     dealershipId: number,
+    dealershipStoreId: number | null,
     sourceType: SourceType,
     fileHash: string,
   ): Promise<SourceFile | null>;
-  listSourceFiles(dealershipId: number, sourceType?: SourceType): Promise<SourceFileSummary[]>;
+  listSourceFiles(
+    dealershipId: number,
+    sourceType?: SourceType,
+    dealershipStoreId?: number,
+  ): Promise<SourceFileSummary[]>;
+  listDealerGroups(dealershipId: number): Promise<DealerGroup[]>;
+  listDealershipStores(dealershipId: number): Promise<DealershipStore[]>;
+  createDealershipStore(
+    dealershipId: number,
+    store: NewDealershipStore,
+  ): Promise<DealershipStore>;
   listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]>;
   listBySourceFile(dealershipId: number, sourceFileId: number): Promise<Transaction[]>;
   listAccountsSummary(dealershipId: number): Promise<AccountSummary[]>;
@@ -58,7 +73,10 @@ export interface TransactionRepository {
     endDate: string,
   ): Promise<MonthEndReport>;
   createReconciliationRun(input: PersistReconciliationRunInput): Promise<ReconciliationRun>;
-  listReconciliationRuns(dealershipId: number): Promise<ReconciliationRunListItem[]>;
+  listReconciliationRuns(
+    dealershipId: number,
+    filters?: ReconciliationRunListFilters,
+  ): Promise<ReconciliationRunListItem[]>;
   getReconciliationRunDealershipId(reconciliationRunId: number): Promise<number | null>;
   getReconciliationRunDetail(
     dealershipId: number,
@@ -79,6 +97,30 @@ export interface TransactionRepository {
 }
 
 export class MemoryTransactionRepository implements TransactionRepository {
+  private dealerGroups: DealerGroup[] = [
+    {
+      id: 1,
+      dealership_id: 1,
+      name: "Hiley Mazda Group",
+      created_at: new Date(0).toISOString(),
+    },
+  ];
+  private dealershipStores: DealershipStore[] = [
+    {
+      id: 1,
+      dealership_id: 1,
+      dealer_group_id: 1,
+      name: "Hiley Mazda of Hurst",
+      created_at: new Date(0).toISOString(),
+    },
+    {
+      id: 2,
+      dealership_id: 1,
+      dealer_group_id: 1,
+      name: "Hiley Mazda of Arlington",
+      created_at: new Date(0).toISOString(),
+    },
+  ];
   private sourceFiles: SourceFile[] = [];
   private transactions: Transaction[] = [];
   private reconciliationRuns: ReconciliationRun[] = [];
@@ -117,6 +159,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
   private nextReconciliationRunId = 1;
   private nextReconciliationMatchGroupId = 1;
   private nextReconciliationExceptionId = 1;
+  private nextDealershipStoreId = 3;
 
   async createSourceFileWithTransactions(
     dealershipId: number,
@@ -127,6 +170,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
       ...sourceFileInput,
       id: this.nextSourceFileId++,
       dealership_id: dealershipId,
+      dealership_store_id: sourceFileInput.dealership_store_id ?? this.getDefaultStoreId(dealershipId),
       created_at: new Date().toISOString(),
     };
     this.sourceFiles.push(sourceFile);
@@ -162,6 +206,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
 
   async getSourceFileByHash(
     dealershipId: number,
+    dealershipStoreId: number | null,
     sourceType: SourceType,
     fileHash: string,
   ): Promise<SourceFile | null> {
@@ -169,21 +214,50 @@ export class MemoryTransactionRepository implements TransactionRepository {
       this.sourceFiles.find(
         (sourceFile) =>
           sourceFile.dealership_id === dealershipId &&
+          sourceFile.dealership_store_id === dealershipStoreId &&
           sourceFile.source_type === sourceType &&
           sourceFile.file_hash === fileHash,
       ) ?? null
     );
   }
 
-  async listSourceFiles(dealershipId: number, sourceType?: SourceType): Promise<SourceFileSummary[]> {
+  async listSourceFiles(
+    dealershipId: number,
+    sourceType?: SourceType,
+    dealershipStoreId?: number,
+  ): Promise<SourceFileSummary[]> {
     return this.sourceFiles
       .filter(
         (sourceFile) =>
           sourceFile.dealership_id === dealershipId &&
+          (dealershipStoreId === undefined || sourceFile.dealership_store_id === dealershipStoreId) &&
           (sourceType === undefined || sourceFile.source_type === sourceType),
       )
       .sort((left, right) => right.id - left.id)
-      .map(toSourceFileSummary);
+      .map((sourceFile) => this.toSourceFileSummary(sourceFile));
+  }
+
+  async listDealerGroups(dealershipId: number): Promise<DealerGroup[]> {
+    return this.dealerGroups.filter((group) => group.dealership_id === dealershipId);
+  }
+
+  async listDealershipStores(dealershipId: number): Promise<DealershipStore[]> {
+    return this.dealershipStores.filter((store) => store.dealership_id === dealershipId);
+  }
+
+  async createDealershipStore(
+    dealershipId: number,
+    storeInput: NewDealershipStore,
+  ): Promise<DealershipStore> {
+    const store: DealershipStore = {
+      id: this.nextDealershipStoreId++,
+      dealership_id: dealershipId,
+      dealer_group_id: storeInput.dealer_group_id ?? this.getDefaultGroupId(dealershipId),
+      name: storeInput.name,
+      created_at: new Date().toISOString(),
+    };
+    this.dealershipStores.push(store);
+    return store;
   }
 
   async listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]> {
@@ -320,6 +394,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     const run: ReconciliationRun = {
       id: this.nextReconciliationRunId++,
       dealership_id: input.dealership_id,
+      dealership_store_id: input.dealership_store_id ?? this.getDefaultStoreId(input.dealership_id),
       boa_source_file_id: input.boa_source_file_id,
       dealertrack_source_file_id: input.dealertrack_source_file_id,
       matched_count: input.result.matched_count,
@@ -373,9 +448,17 @@ export class MemoryTransactionRepository implements TransactionRepository {
     return run;
   }
 
-  async listReconciliationRuns(dealershipId: number): Promise<ReconciliationRunListItem[]> {
+  async listReconciliationRuns(
+    dealershipId: number,
+    filters: ReconciliationRunListFilters = {},
+  ): Promise<ReconciliationRunListItem[]> {
     return this.reconciliationRuns
-      .filter((run) => run.dealership_id === dealershipId)
+      .filter(
+        (run) =>
+          run.dealership_id === dealershipId &&
+          (filters.dealershipStoreId === undefined ||
+            run.dealership_store_id === filters.dealershipStoreId),
+      )
       .slice()
       .sort((left, right) => right.id - left.id)
       .map((run) => this.toReconciliationRunListItem(run))
@@ -456,8 +539,8 @@ export class MemoryTransactionRepository implements TransactionRepository {
 
     return {
       ...listItem,
-      boa_source_file: toSourceFileSummary(boaSourceFile),
-      dealertrack_source_file: toSourceFileSummary(dealertrackSourceFile),
+      boa_source_file: this.toSourceFileSummary(boaSourceFile),
+      dealertrack_source_file: this.toSourceFileSummary(dealertrackSourceFile),
       match_groups: matchGroups,
       exceptions: categorizedExceptions,
     };
@@ -538,6 +621,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     this.nextReconciliationRunId = 1;
     this.nextReconciliationMatchGroupId = 1;
     this.nextReconciliationExceptionId = 1;
+    this.nextDealershipStoreId = 3;
   }
 
   private toReconciliationRunListItem(run: ReconciliationRun): ReconciliationRunListItem | null {
@@ -554,6 +638,11 @@ export class MemoryTransactionRepository implements TransactionRepository {
     return {
       reconciliation_run_id: run.id,
       dealership_id: run.dealership_id,
+      dealership_store_id: run.dealership_store_id,
+      store_name: this.getStore(run.dealership_store_id)?.name ?? null,
+      dealer_group_id: this.getStore(run.dealership_store_id)?.dealer_group_id ?? null,
+      dealer_group_name:
+        this.getGroup(this.getStore(run.dealership_store_id)?.dealer_group_id ?? null)?.name ?? null,
       boa_source_file_id: run.boa_source_file_id,
       dealertrack_source_file_id: run.dealertrack_source_file_id,
       boa_filename: boaSourceFile.original_filename,
@@ -564,6 +653,36 @@ export class MemoryTransactionRepository implements TransactionRepository {
       status: run.status,
       created_at: run.created_at,
     };
+  }
+
+  private toSourceFileSummary(sourceFile: SourceFile): SourceFileSummary {
+    return {
+      source_file_id: sourceFile.id,
+      dealership_id: sourceFile.dealership_id,
+      dealership_store_id: sourceFile.dealership_store_id,
+      store_name: this.getStore(sourceFile.dealership_store_id)?.name ?? null,
+      source_type: sourceFile.source_type,
+      filename: sourceFile.original_filename,
+      row_count: sourceFile.row_count,
+      validation_error_count: sourceFile.validation_error_count,
+      created_at: sourceFile.created_at,
+    };
+  }
+
+  private getDefaultGroupId(dealershipId: number): number | null {
+    return this.dealerGroups.find((group) => group.dealership_id === dealershipId)?.id ?? null;
+  }
+
+  private getDefaultStoreId(dealershipId: number): number | null {
+    return this.dealershipStores.find((store) => store.dealership_id === dealershipId)?.id ?? null;
+  }
+
+  private getStore(storeId: number | null): DealershipStore | null {
+    return this.dealershipStores.find((store) => store.id === storeId) ?? null;
+  }
+
+  private getGroup(groupId: number | null): DealerGroup | null {
+    return this.dealerGroups.find((group) => group.id === groupId) ?? null;
   }
 
   private toRunDetailException(exception: {
@@ -607,6 +726,8 @@ function toSourceFileSummary(sourceFile: SourceFile): SourceFileSummary {
   return {
     source_file_id: sourceFile.id,
     dealership_id: sourceFile.dealership_id,
+    dealership_store_id: sourceFile.dealership_store_id,
+    store_name: null,
     source_type: sourceFile.source_type,
     filename: sourceFile.original_filename,
     row_count: sourceFile.row_count,

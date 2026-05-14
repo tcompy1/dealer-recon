@@ -372,6 +372,52 @@ describe("app", () => {
     });
   });
 
+  test("stores can be created and source files/runs filter by store", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const storesResponse = await request(app).get("/stores");
+    expect(storesResponse.status).toBe(200);
+    expect(storesResponse.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "Hiley Mazda of Hurst" }),
+        expect.objectContaining({ name: "Hiley Mazda of Arlington" }),
+      ]),
+    );
+
+    const createStoreResponse = await request(app)
+      .post("/stores")
+      .send({ name: "Hiley Mazda of Test" });
+    expect(createStoreResponse.status).toBe(201);
+    const storeId = createStoreResponse.body.id as number;
+
+    await createReconciliationWithRows(app, {
+      boaRows: [boaUploadCsv("M50101", "1HGCM82633A004352", "$501.00", "50101")],
+      dealertrackRows: [dealertrackUploadCsv("M50101", "-501")],
+      boaFilename: "boa-test-store.csv",
+      dealertrackFilename: "dealertrack-test-store.csv",
+      storeId,
+    });
+
+    const filesResponse = await request(app).get("/source-files").query({ store_id: storeId });
+    expect(filesResponse.status).toBe(200);
+    expect(filesResponse.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          dealership_store_id: storeId,
+          store_name: "Hiley Mazda of Test",
+        }),
+      ]),
+    );
+
+    const runsResponse = await request(app).get("/reconciliation-runs").query({ store_id: storeId });
+    expect(runsResponse.status).toBe(200);
+    expect(runsResponse.body).toEqual([
+      expect.objectContaining({
+        dealership_store_id: storeId,
+        store_name: "Hiley Mazda of Test",
+      }),
+    ]);
+  });
+
   test("POST /reconcile requires selected source file IDs", async () => {
     const app = createApp(new MemoryTransactionRepository());
 
@@ -677,6 +723,36 @@ describe("app", () => {
         delta: 1,
       },
     ]);
+  });
+
+  test("GET /dealer-groups/analytics aggregates store-level trends", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const storesResponse = await request(app).get("/stores");
+    const hurstStoreId = (storesResponse.body as Array<{ id: number; name: string }>).find(
+      (store) => store.name === "Hiley Mazda of Hurst",
+    )!.id;
+    await createReconciliation(app);
+
+    const response = await request(app).get("/dealer-groups/analytics");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          dealer_group_name: "Hiley Mazda Group",
+          stores: expect.arrayContaining([
+            expect.objectContaining({
+              dealership_store_id: hurstStoreId,
+              store_name: "Hiley Mazda of Hurst",
+              run_count: 1,
+              unresolved_count: 2,
+              match_rate_percent: expect.any(Number),
+              recurring_exception_count: 0,
+            }),
+          ]),
+        }),
+      ]),
+    );
   });
 
   test("GET /reconciliation-runs/:id/exceptions.csv exports filtered exceptions", async () => {
@@ -1229,11 +1305,15 @@ async function uploadCsv(
   sourceType: string,
   csv: string,
   filename: string,
+  storeId?: number,
 ) {
-  const response = await request(app)
+  const uploadRequest = request(app)
     .post("/upload")
     .field("source_type", sourceType)
-    .attach("file", Buffer.from(csv), filename);
+  if (storeId) {
+    uploadRequest.field("store_id", String(storeId));
+  }
+  const response = await uploadRequest.attach("file", Buffer.from(csv), filename);
 
   expect(response.status).toBe(200);
   return response.body as { source_file_id: number };
@@ -1251,6 +1331,7 @@ async function createReconciliation(app: ReturnType<typeof createApp>) {
     ],
     boaFilename: "boa-run.csv",
     dealertrackFilename: "dealertrack-run.csv",
+    storeId: undefined,
   });
 }
 
@@ -1261,24 +1342,28 @@ async function createReconciliationWithRows(
     dealertrackRows,
     boaFilename,
     dealertrackFilename,
+    storeId,
   }: {
     boaRows: string[];
     dealertrackRows: string[];
     boaFilename: string;
     dealertrackFilename: string;
+    storeId?: number;
   },
 ) {
-  const boaUpload = await uploadCsv(app, "boa", boaRows.join("\n"), boaFilename);
+  const boaUpload = await uploadCsv(app, "boa", boaRows.join("\n"), boaFilename, storeId);
   const dealertrackUpload = await uploadCsv(
     app,
     "dealertrack",
     dealertrackRows.join("\n"),
     dealertrackFilename,
+    storeId,
   );
 
   const response = await request(app).post("/reconcile").send({
     boa_source_file_id: boaUpload.source_file_id,
     dealertrack_source_file_id: dealertrackUpload.source_file_id,
+    ...(storeId ? { dealership_store_id: storeId } : {}),
   });
 
   expect(response.status).toBe(200);
