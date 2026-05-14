@@ -14,6 +14,7 @@ export type UploadResponse = {
   filename: string;
   transaction_count: number;
   validation_errors: UploadValidationError[];
+  automated_reconciliation_run_id?: number | null;
 };
 
 export type SourceFileSummary = {

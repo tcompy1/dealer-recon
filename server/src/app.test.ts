@@ -418,6 +418,143 @@ describe("app", () => {
     ]);
   });
 
+  test("scheduled jobs can auto-run reconciliation when expected files arrive", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+
+    const jobResponse = await request(app).post("/automation/scheduled-jobs").send({
+      dealership_store_id: 1,
+      cadence: "daily",
+      expected_source_types: ["boa", "dealertrack"],
+      enabled: true,
+      auto_run_on_pair: true,
+    });
+    expect(jobResponse.status).toBe(201);
+
+    await uploadCsv(app, "boa", boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"), "auto-boa.csv", 1);
+    const dealertrackUpload = await uploadCsv(
+      app,
+      "dealertrack",
+      dealertrackUploadCsv("M30101", "-301"),
+      "auto-dealertrack.csv",
+      1,
+    );
+
+    expect(dealertrackUpload.automated_reconciliation_run_id).toEqual(expect.any(Number));
+    const runsResponse = await request(app).get("/reconciliation-runs").query({ store_id: 1 });
+    expect(runsResponse.body).toEqual([
+      expect.objectContaining({
+        status: "completed_auto",
+        matched_count: 1,
+      }),
+    ]);
+    const ingestionResponse = await request(app).get("/automation/ingestion-events").query({ store_id: 1 });
+    expect(ingestionResponse.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ state: "uploaded" }),
+        expect.objectContaining({ state: "normalized" }),
+        expect.objectContaining({ state: "reconciled" }),
+      ]),
+    );
+    const eventsResponse = await request(app).get("/automation/events").query({ store_id: 1 });
+    expect(eventsResponse.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ event_type: "reconciliation_completed" }),
+      ]),
+    );
+  });
+
+  test("scheduled due jobs run and missing expected files generate alerts", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    await uploadCsv(app, "boa", boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"), "due-boa.csv", 1);
+    await uploadCsv(app, "dealertrack", dealertrackUploadCsv("M30101", "-301"), "due-dt.csv", 1);
+    await request(app).post("/automation/scheduled-jobs").send({
+      dealership_store_id: 1,
+      cadence: "weekly",
+      expected_source_types: ["boa", "dealertrack"],
+      enabled: true,
+      auto_run_on_pair: false,
+      next_run_at: "2026-05-01T00:00:00.000Z",
+    });
+    await request(app).post("/automation/scheduled-jobs").send({
+      dealership_store_id: 2,
+      cadence: "weekly",
+      expected_source_types: ["boa", "dealertrack"],
+      enabled: true,
+      auto_run_on_pair: false,
+      next_run_at: "2026-05-01T00:00:00.000Z",
+    });
+
+    const runResponse = await request(app)
+      .post("/automation/run-due-jobs")
+      .send({ now: "2026-05-14T00:00:00.000Z" });
+
+    expect(runResponse.status).toBe(200);
+    expect(runResponse.body.runs).toEqual([
+      expect.objectContaining({ status: "completed_auto" }),
+    ]);
+    const eventsResponse = await request(app).get("/automation/events");
+    expect(eventsResponse.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ event_type: "missing_expected_file" }),
+      ]),
+    );
+  });
+
+  test("duplicate uploads create ingestion failure and operational warning events", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const csv = boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101");
+    await uploadCsv(app, "boa", csv, "duplicate-boa.csv", 1);
+
+    const duplicateResponse = await request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .field("store_id", "1")
+      .attach("file", Buffer.from(csv), "duplicate-boa-again.csv");
+
+    expect(duplicateResponse.status).toBe(409);
+    const ingestionResponse = await request(app).get("/automation/ingestion-events").query({ store_id: 1 });
+    expect(ingestionResponse.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ state: "failed", message: "Duplicate upload detected." }),
+      ]),
+    );
+    const eventsResponse = await request(app).get("/automation/events").query({ store_id: 1 });
+    expect(eventsResponse.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ event_type: "duplicate_upload_warning" }),
+      ]),
+    );
+  });
+
+  test("automation status and metrics expose stale store and auto/manual rates", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    await createReconciliation(app);
+
+    const statusResponse = await request(app).get("/automation/status");
+    expect(statusResponse.status).toBe(200);
+    expect(statusResponse.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          dealership_store_id: 2,
+          stale_reconciliation: true,
+        }),
+      ]),
+    );
+    const metricsResponse = await request(app).get("/automation/metrics");
+    expect(metricsResponse.status).toBe(200);
+    expect(metricsResponse.body).toMatchObject({
+      auto_vs_manual_reconciliation_rates: {
+        automated_count: 0,
+        manual_count: 1,
+      },
+    });
+    expect(metricsResponse.body.stale_stores).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ dealership_store_id: 2 }),
+      ]),
+    );
+  });
+
   test("POST /reconcile requires selected source file IDs", async () => {
     const app = createApp(new MemoryTransactionRepository());
 
@@ -1403,7 +1540,7 @@ async function uploadCsv(
   const response = await uploadRequest.attach("file", Buffer.from(csv), filename);
 
   expect(response.status).toBe(200);
-  return response.body as { source_file_id: number };
+  return response.body as { source_file_id: number; automated_reconciliation_run_id?: number | null };
 }
 
 async function createReconciliation(app: ReturnType<typeof createApp>) {

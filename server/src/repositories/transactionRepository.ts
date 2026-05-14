@@ -6,8 +6,13 @@ import type {
   MonthEndReport,
   MonthEndReportAccount,
   NewDealershipStore,
+  NewIngestionEvent,
+  NewOperationalEvent,
   NewSourceFile,
   NewTransaction,
+  NewScheduledReconciliationJob,
+  IngestionEvent,
+  OperationalEvent,
   ReconciliationExceptionReviewUpdate,
   ReconciliationExceptionReviewStatus,
   ReconciliationExceptionStatus,
@@ -19,6 +24,8 @@ import type {
   ReconciliationRunListFilters,
   ReconciliationRunListItem,
   ReconciliationRun,
+  ScheduledReconciliationJob,
+  ScheduledReconciliationJobUpdate,
   SourceFile,
   SourceFileSummary,
   SourceType,
@@ -64,6 +71,37 @@ export interface TransactionRepository {
     dealershipId: number,
     store: NewDealershipStore,
   ): Promise<DealershipStore>;
+  createScheduledReconciliationJob(
+    dealershipId: number,
+    job: NewScheduledReconciliationJob,
+  ): Promise<ScheduledReconciliationJob>;
+  listScheduledReconciliationJobs(
+    dealershipId: number,
+    dealershipStoreId?: number,
+  ): Promise<ScheduledReconciliationJob[]>;
+  updateScheduledReconciliationJob(
+    dealershipId: number,
+    jobId: number,
+    update: ScheduledReconciliationJobUpdate,
+  ): Promise<ScheduledReconciliationJob | null>;
+  createIngestionEvent(
+    dealershipId: number,
+    event: NewIngestionEvent,
+  ): Promise<IngestionEvent>;
+  listIngestionEvents(
+    dealershipId: number,
+    dealershipStoreId?: number,
+    limit?: number,
+  ): Promise<IngestionEvent[]>;
+  createOperationalEvent(
+    dealershipId: number,
+    event: NewOperationalEvent,
+  ): Promise<OperationalEvent>;
+  listOperationalEvents(
+    dealershipId: number,
+    dealershipStoreId?: number,
+    limit?: number,
+  ): Promise<OperationalEvent[]>;
   listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]>;
   listBySourceFile(dealershipId: number, sourceFileId: number): Promise<Transaction[]>;
   listAccountsSummary(dealershipId: number): Promise<AccountSummary[]>;
@@ -160,12 +198,18 @@ export class MemoryTransactionRepository implements TransactionRepository {
     created_at: string;
   }> = [];
   private reconciliationRunSnapshots: ReconciliationRunInputSnapshot[] = [];
+  private scheduledReconciliationJobs: ScheduledReconciliationJob[] = [];
+  private ingestionEvents: IngestionEvent[] = [];
+  private operationalEvents: OperationalEvent[] = [];
   private nextSourceFileId = 1;
   private nextId = 1;
   private nextReconciliationRunId = 1;
   private nextReconciliationMatchGroupId = 1;
   private nextReconciliationExceptionId = 1;
   private nextDealershipStoreId = 3;
+  private nextScheduledReconciliationJobId = 1;
+  private nextIngestionEventId = 1;
+  private nextOperationalEventId = 1;
 
   async createSourceFileWithTransactions(
     dealershipId: number,
@@ -264,6 +308,123 @@ export class MemoryTransactionRepository implements TransactionRepository {
     };
     this.dealershipStores.push(store);
     return store;
+  }
+
+  async createScheduledReconciliationJob(
+    dealershipId: number,
+    jobInput: NewScheduledReconciliationJob,
+  ): Promise<ScheduledReconciliationJob> {
+    const createdAt = new Date().toISOString();
+    const job: ScheduledReconciliationJob = {
+      id: this.nextScheduledReconciliationJobId++,
+      dealership_id: dealershipId,
+      dealership_store_id: jobInput.dealership_store_id ?? this.getDefaultStoreId(dealershipId),
+      store_name: null,
+      cadence: jobInput.cadence,
+      expected_source_types: jobInput.expected_source_types,
+      enabled: jobInput.enabled ?? true,
+      auto_run_on_pair: jobInput.auto_run_on_pair ?? false,
+      last_run_at: null,
+      next_run_at: jobInput.next_run_at ?? nextRunAt(jobInput.cadence, createdAt),
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    this.scheduledReconciliationJobs.push(job);
+    return this.withJobStoreName(job);
+  }
+
+  async listScheduledReconciliationJobs(
+    dealershipId: number,
+    dealershipStoreId?: number,
+  ): Promise<ScheduledReconciliationJob[]> {
+    return this.scheduledReconciliationJobs
+      .filter(
+        (job) =>
+          job.dealership_id === dealershipId &&
+          (dealershipStoreId === undefined || job.dealership_store_id === dealershipStoreId),
+      )
+      .sort((left, right) => left.id - right.id)
+      .map((job) => this.withJobStoreName(job));
+  }
+
+  async updateScheduledReconciliationJob(
+    dealershipId: number,
+    jobId: number,
+    update: ScheduledReconciliationJobUpdate,
+  ): Promise<ScheduledReconciliationJob | null> {
+    const job = this.scheduledReconciliationJobs.find(
+      (candidate) => candidate.id === jobId && candidate.dealership_id === dealershipId,
+    );
+    if (!job) {
+      return null;
+    }
+    Object.assign(job, {
+      ...update,
+      updated_at: new Date().toISOString(),
+    });
+    return this.withJobStoreName(job);
+  }
+
+  async createIngestionEvent(
+    dealershipId: number,
+    eventInput: NewIngestionEvent,
+  ): Promise<IngestionEvent> {
+    const event: IngestionEvent = {
+      ...eventInput,
+      id: this.nextIngestionEventId++,
+      dealership_id: dealershipId,
+      store_name: this.getStore(eventInput.dealership_store_id)?.name ?? null,
+      created_at: new Date().toISOString(),
+    };
+    this.ingestionEvents.push(event);
+    return event;
+  }
+
+  async listIngestionEvents(
+    dealershipId: number,
+    dealershipStoreId?: number,
+    limit = 50,
+  ): Promise<IngestionEvent[]> {
+    return this.ingestionEvents
+      .filter(
+        (event) =>
+          event.dealership_id === dealershipId &&
+          (dealershipStoreId === undefined || event.dealership_store_id === dealershipStoreId),
+      )
+      .slice()
+      .sort((left, right) => right.id - left.id)
+      .slice(0, limit);
+  }
+
+  async createOperationalEvent(
+    dealershipId: number,
+    eventInput: NewOperationalEvent,
+  ): Promise<OperationalEvent> {
+    const event: OperationalEvent = {
+      ...eventInput,
+      id: this.nextOperationalEventId++,
+      dealership_id: dealershipId,
+      store_name: this.getStore(eventInput.dealership_store_id)?.name ?? null,
+      created_at: new Date().toISOString(),
+    };
+    this.operationalEvents.push(event);
+    return event;
+  }
+
+  async listOperationalEvents(
+    dealershipId: number,
+    dealershipStoreId?: number,
+    limit = 50,
+  ): Promise<OperationalEvent[]> {
+    return this.operationalEvents
+      .filter(
+        (event) =>
+          event.dealership_id === dealershipId &&
+          (dealershipStoreId === undefined || event.dealership_store_id === dealershipStoreId),
+      )
+      .slice()
+      .sort((left, right) => right.id - left.id)
+      .slice(0, limit);
   }
 
   async listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]> {
@@ -661,12 +822,18 @@ export class MemoryTransactionRepository implements TransactionRepository {
     this.reconciliationMatchGroupTransactions = [];
     this.reconciliationExceptions = [];
     this.reconciliationRunSnapshots = [];
+    this.scheduledReconciliationJobs = [];
+    this.ingestionEvents = [];
+    this.operationalEvents = [];
     this.nextSourceFileId = 1;
     this.nextId = 1;
     this.nextReconciliationRunId = 1;
     this.nextReconciliationMatchGroupId = 1;
     this.nextReconciliationExceptionId = 1;
     this.nextDealershipStoreId = 3;
+    this.nextScheduledReconciliationJobId = 1;
+    this.nextIngestionEventId = 1;
+    this.nextOperationalEventId = 1;
   }
 
   private toReconciliationRunListItem(run: ReconciliationRun): ReconciliationRunListItem | null {
@@ -728,6 +895,14 @@ export class MemoryTransactionRepository implements TransactionRepository {
 
   private getGroup(groupId: number | null): DealerGroup | null {
     return this.dealerGroups.find((group) => group.id === groupId) ?? null;
+  }
+
+  private withJobStoreName(job: ScheduledReconciliationJob): ScheduledReconciliationJob {
+    return {
+      ...job,
+      store_name: this.getStore(job.dealership_store_id)?.name ?? null,
+      expected_source_types: [...job.expected_source_types],
+    };
   }
 
   private toRunDetailException(exception: {
@@ -1079,6 +1254,18 @@ function normalizeNullableText(value: string | null): string | null {
   }
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function nextRunAt(cadence: ScheduledReconciliationJob["cadence"], fromIso: string): string {
+  const next = new Date(fromIso);
+  if (cadence === "daily") {
+    next.setUTCDate(next.getUTCDate() + 1);
+  } else if (cadence === "weekly") {
+    next.setUTCDate(next.getUTCDate() + 7);
+  } else {
+    next.setUTCMonth(next.getUTCMonth() + 1);
+  }
+  return next.toISOString();
 }
 
 function cloneTransaction(transaction: Transaction): Transaction {

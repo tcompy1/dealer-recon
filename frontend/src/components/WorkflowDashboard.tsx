@@ -1,6 +1,15 @@
 import { type ChangeEvent, useEffect, useMemo, useState } from "react";
 
 import {
+  createScheduledJob,
+  getAutomationStatus,
+  getOperationalMetrics,
+  listIngestionEvents,
+  listOperationalEvents,
+  listScheduledJobs,
+  updateScheduledJob,
+} from "../api/automation";
+import {
   getReconciliationExceptionsCsvUrl,
   getReconciliationRun,
   getReconciliationRunAnalytics,
@@ -30,6 +39,13 @@ import type {
   VinPresenceDiagnostics,
 } from "../types/reconciliation";
 import type { SourceFileSummary, UploadResponse, UploadValidationError } from "../types/sourceFile";
+import type {
+  IngestionEvent,
+  OperationalEvent,
+  OperationalMetrics,
+  ScheduledReconciliationJob,
+  StoreAutomationStatus,
+} from "../types/automation";
 import type { DealerGroup, DealerGroupAnalytics, DealershipStore } from "../types/store";
 
 type UploadSlot = {
@@ -58,6 +74,11 @@ export function WorkflowDashboard() {
   const [selectedStoreId, setSelectedStoreId] = useState<number | null>(null);
   const [newStoreName, setNewStoreName] = useState("");
   const [groupAnalytics, setGroupAnalytics] = useState<DealerGroupAnalytics[]>([]);
+  const [scheduledJobs, setScheduledJobs] = useState<ScheduledReconciliationJob[]>([]);
+  const [automationStatuses, setAutomationStatuses] = useState<StoreAutomationStatus[]>([]);
+  const [ingestionEvents, setIngestionEvents] = useState<IngestionEvent[]>([]);
+  const [operationalEvents, setOperationalEvents] = useState<OperationalEvent[]>([]);
+  const [operationalMetrics, setOperationalMetrics] = useState<OperationalMetrics | null>(null);
   const [activeRun, setActiveRun] = useState<ReconciliationRunDetail | null>(null);
   const [activeRunDiagnostics, setActiveRunDiagnostics] = useState<VinPresenceDiagnostics | null>(null);
   const [activeRunAnalytics, setActiveRunAnalytics] = useState<ReconciliationRunComparison | null>(null);
@@ -83,16 +104,26 @@ export function WorkflowDashboard() {
     if (selectedStoreId === null && activeStoreId !== null) {
       setSelectedStoreId(activeStoreId);
     }
-    const [uploads, runs, analytics] = await Promise.all([
+    const [uploads, runs, analytics, jobs, statuses, ingestion, alerts, metrics] = await Promise.all([
       listSourceFiles(undefined, activeStoreId),
       listReconciliationRuns(activeStoreId),
       getDealerGroupAnalytics(),
+      listScheduledJobs(activeStoreId),
+      getAutomationStatus(),
+      listIngestionEvents(activeStoreId),
+      listOperationalEvents(activeStoreId),
+      getOperationalMetrics(),
     ]);
     setDealerGroups(groups);
     setStores(storeList);
     setSourceFiles(uploads);
     setReconciliationRuns(runs);
     setGroupAnalytics(analytics);
+    setScheduledJobs(jobs);
+    setAutomationStatuses(statuses);
+    setIngestionEvents(ingestion);
+    setOperationalEvents(alerts);
+    setOperationalMetrics(metrics);
   }
 
   async function handleUpload(kind: SourceKind) {
@@ -114,7 +145,7 @@ export function WorkflowDashboard() {
         dealershipStoreId: selectedStoreId,
       });
       setSlot((current) => ({ ...current, upload, isUploading: false }));
-      setSourceFiles(await listSourceFiles(undefined, selectedStoreId));
+      await refreshAutomationPanels(selectedStoreId);
     } catch (error) {
       setSlot((current) => ({
         ...current,
@@ -146,6 +177,7 @@ export function WorkflowDashboard() {
       setActiveRunReplay(null);
       setReconciliationRuns(await listReconciliationRuns(selectedStoreId));
       setGroupAnalytics(await getDealerGroupAnalytics());
+      await refreshAutomationPanels(selectedStoreId);
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Reconciliation failed.");
     } finally {
@@ -161,14 +193,24 @@ export function WorkflowDashboard() {
     setActiveRunReplay(null);
     setBoaUpload(initialUploadSlot);
     setDealertrackUpload(initialUploadSlot);
-    const [uploads, runs, analytics] = await Promise.all([
+    const [uploads, runs, analytics, jobs, ingestion, alerts, metrics, statuses] = await Promise.all([
       listSourceFiles(undefined, storeId),
       listReconciliationRuns(storeId),
       getDealerGroupAnalytics(),
+      listScheduledJobs(storeId),
+      listIngestionEvents(storeId),
+      listOperationalEvents(storeId),
+      getOperationalMetrics(),
+      getAutomationStatus(),
     ]);
     setSourceFiles(uploads);
     setReconciliationRuns(runs);
     setGroupAnalytics(analytics);
+    setScheduledJobs(jobs);
+    setIngestionEvents(ingestion);
+    setOperationalEvents(alerts);
+    setOperationalMetrics(metrics);
+    setAutomationStatuses(statuses);
   }
 
   async function handleCreateStore() {
@@ -268,6 +310,54 @@ export function WorkflowDashboard() {
     }
   }
 
+  async function refreshAutomationPanels(storeId: number | null) {
+    const [uploads, runs, jobs, ingestion, alerts, metrics, statuses] = await Promise.all([
+      listSourceFiles(undefined, storeId),
+      listReconciliationRuns(storeId),
+      listScheduledJobs(storeId),
+      listIngestionEvents(storeId),
+      listOperationalEvents(storeId),
+      getOperationalMetrics(),
+      getAutomationStatus(),
+    ]);
+    setSourceFiles(uploads);
+    setReconciliationRuns(runs);
+    setScheduledJobs(jobs);
+    setIngestionEvents(ingestion);
+    setOperationalEvents(alerts);
+    setOperationalMetrics(metrics);
+    setAutomationStatuses(statuses);
+  }
+
+  async function handleCreateScheduledJob() {
+    if (!selectedStoreId) {
+      return;
+    }
+    setWorkflowError(null);
+    try {
+      await createScheduledJob({
+        dealership_store_id: selectedStoreId,
+        cadence: "daily",
+        expected_source_types: ["boa", "dealertrack"],
+        enabled: true,
+        auto_run_on_pair: true,
+      });
+      await refreshAutomationPanels(selectedStoreId);
+    } catch (error) {
+      setWorkflowError(error instanceof Error ? error.message : "Scheduled job could not be created.");
+    }
+  }
+
+  async function handleToggleScheduledJob(job: ScheduledReconciliationJob, enabled: boolean) {
+    setWorkflowError(null);
+    try {
+      await updateScheduledJob(job.id, { enabled });
+      await refreshAutomationPanels(selectedStoreId);
+    } catch (error) {
+      setWorkflowError(error instanceof Error ? error.message : "Scheduled job could not be updated.");
+    }
+  }
+
   return (
     <div className="grid gap-6">
       <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-5 shadow-sm">
@@ -279,6 +369,16 @@ export function WorkflowDashboard() {
           onCreateStore={() => void handleCreateStore()}
           onNewStoreNameChange={setNewStoreName}
           onStoreChange={(storeId) => void handleStoreChange(storeId)}
+        />
+        <AutomationOverview
+          events={operationalEvents}
+          ingestionEvents={ingestionEvents}
+          jobs={scheduledJobs}
+          metrics={operationalMetrics}
+          selectedStoreId={selectedStoreId}
+          statuses={automationStatuses}
+          onCreateJob={() => void handleCreateScheduledJob()}
+          onToggleJob={(job, enabled) => void handleToggleScheduledJob(job, enabled)}
         />
 
         <div className="flex flex-col gap-1">
@@ -439,6 +539,154 @@ function GroupAnalyticsSummary({
       <Metric label="Store match rate" value={`${selectedStore.match_rate_percent.toFixed(2)}%`} />
       <Metric label="Recurring at store" value={selectedStore.recurring_exception_count} />
     </div>
+  );
+}
+
+function AutomationOverview({
+  events,
+  ingestionEvents,
+  jobs,
+  metrics,
+  selectedStoreId,
+  statuses,
+  onCreateJob,
+  onToggleJob,
+}: {
+  events: OperationalEvent[];
+  ingestionEvents: IngestionEvent[];
+  jobs: ScheduledReconciliationJob[];
+  metrics: OperationalMetrics | null;
+  selectedStoreId: number | null;
+  statuses: StoreAutomationStatus[];
+  onCreateJob: () => void;
+  onToggleJob: (job: ScheduledReconciliationJob, enabled: boolean) => void;
+}) {
+  const selectedStatus = statuses.find((status) => status.dealership_store_id === selectedStoreId);
+
+  return (
+    <div className="grid gap-4">
+      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+        <Metric label="Scheduled jobs" value={jobs.length} />
+        <Metric label="Enabled jobs" value={jobs.filter((job) => job.enabled).length} />
+        <Metric
+          label="Avg completion"
+          value={
+            metrics?.average_reconciliation_completion_time_ms === null ||
+            metrics?.average_reconciliation_completion_time_ms === undefined
+              ? "n/a"
+              : `${metrics.average_reconciliation_completion_time_ms}ms`
+          }
+        />
+        <Metric
+          label="Auto reconciliation"
+          value={`${metrics?.auto_vs_manual_reconciliation_rates.automated_percent.toFixed(2) ?? "0.00"}%`}
+        />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <section className="rounded-md border border-slate-200 bg-white p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-950">Scheduled Jobs</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                Store-level automation rules for recurring reconciliation.
+              </p>
+            </div>
+            <button
+              className="inline-flex h-9 items-center justify-center rounded-md bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+              disabled={!selectedStoreId}
+              type="button"
+              onClick={onCreateJob}
+            >
+              Add Daily
+            </button>
+          </div>
+          <div className="mt-3 grid gap-2">
+            {jobs.length === 0 ? (
+              <p className="text-sm text-slate-600">No scheduled jobs for this store.</p>
+            ) : (
+              jobs.map((job) => (
+                <div
+                  className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 p-3"
+                  key={job.id}
+                >
+                  <div>
+                    <p className="text-sm font-semibold text-slate-950">
+                      {formatReason(job.cadence)} / {job.expected_source_types.join(" + ")}
+                    </p>
+                    <p className="text-xs text-slate-600">
+                      Next {job.next_run_at ? formatDateTime(job.next_run_at) : "not scheduled"}
+                    </p>
+                  </div>
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    Enabled
+                    <input
+                      checked={job.enabled}
+                      type="checkbox"
+                      onChange={(event) => onToggleJob(job, event.target.checked)}
+                    />
+                  </label>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-md border border-slate-200 bg-white p-4">
+          <h3 className="text-sm font-semibold text-slate-950">Store Automation Status</h3>
+          {selectedStatus ? (
+            <div className="mt-3 grid gap-2 text-sm text-slate-700">
+              <p>Last upload: {selectedStatus.last_upload_at ? formatDateTime(selectedStatus.last_upload_at) : "None"}</p>
+              <p>
+                Last reconciliation:{" "}
+                {selectedStatus.last_reconciliation_at
+                  ? formatDateTime(selectedStatus.last_reconciliation_at)
+                  : "None"}
+              </p>
+              <p>Missing files: {selectedStatus.missing_expected_source_types.join(", ") || "None"}</p>
+              <p className={selectedStatus.stale_reconciliation ? "font-semibold text-amber-700" : "text-emerald-700"}>
+                {selectedStatus.stale_reconciliation ? "Stale activity detected" : "Activity current"}
+              </p>
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-slate-600">No status for this store yet.</p>
+          )}
+        </section>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <EventList title="Recent Ingestion Events" rows={ingestionEvents} />
+        <EventList title="Operational Alerts" rows={events} />
+      </div>
+    </div>
+  );
+}
+
+function EventList({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: Array<IngestionEvent | OperationalEvent>;
+}) {
+  return (
+    <section className="rounded-md border border-slate-200 bg-white p-4">
+      <h3 className="text-sm font-semibold text-slate-950">{title}</h3>
+      <div className="mt-3 grid gap-2">
+        {rows.length === 0 ? (
+          <p className="text-sm text-slate-600">None</p>
+        ) : (
+          rows.slice(0, 5).map((row) => (
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3" key={`${title}-${row.id}`}>
+              <p className="text-sm font-semibold text-slate-950">{row.message}</p>
+              <p className="mt-1 text-xs text-slate-600">
+                {row.store_name ?? "Unassigned store"} / {formatDateTime(row.created_at)}
+              </p>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
   );
 }
 

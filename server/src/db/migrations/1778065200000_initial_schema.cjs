@@ -165,6 +165,58 @@ exports.up = (pgm) => {
       UNIQUE (reconciliation_run_input_id, original_transaction_id)
     );
 
+    CREATE OR REPLACE FUNCTION next_run_at_for_cadence(cadence_value text)
+    RETURNS timestamptz AS $$
+    BEGIN
+      IF cadence_value = 'daily' THEN
+        RETURN NOW() + INTERVAL '1 day';
+      ELSIF cadence_value = 'weekly' THEN
+        RETURN NOW() + INTERVAL '7 days';
+      ELSE
+        RETURN NOW() + INTERVAL '1 month';
+      END IF;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    CREATE TABLE IF NOT EXISTS scheduled_reconciliation_jobs (
+      id SERIAL PRIMARY KEY,
+      dealership_id INTEGER NOT NULL REFERENCES dealerships(id) ON DELETE RESTRICT,
+      dealership_store_id INTEGER NULL REFERENCES dealership_stores(id) ON DELETE RESTRICT,
+      cadence VARCHAR(20) NOT NULL,
+      expected_source_types TEXT[] NOT NULL DEFAULT ARRAY['boa','dealertrack'],
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      auto_run_on_pair BOOLEAN NOT NULL DEFAULT FALSE,
+      last_run_at TIMESTAMPTZ NULL,
+      next_run_at TIMESTAMPTZ NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ingestion_events (
+      id SERIAL PRIMARY KEY,
+      dealership_id INTEGER NOT NULL REFERENCES dealerships(id) ON DELETE RESTRICT,
+      dealership_store_id INTEGER NULL REFERENCES dealership_stores(id) ON DELETE SET NULL,
+      source_file_id INTEGER NULL REFERENCES source_files(id) ON DELETE SET NULL,
+      reconciliation_run_id INTEGER NULL REFERENCES reconciliation_runs(id) ON DELETE SET NULL,
+      source_type VARCHAR(20) NULL,
+      state VARCHAR(30) NOT NULL,
+      message TEXT NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS operational_events (
+      id SERIAL PRIMARY KEY,
+      dealership_id INTEGER NOT NULL REFERENCES dealerships(id) ON DELETE RESTRICT,
+      dealership_store_id INTEGER NULL REFERENCES dealership_stores(id) ON DELETE SET NULL,
+      reconciliation_run_id INTEGER NULL REFERENCES reconciliation_runs(id) ON DELETE SET NULL,
+      event_type VARCHAR(80) NOT NULL,
+      severity VARCHAR(20) NOT NULL,
+      message TEXT NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     ALTER TABLE reconciliation_exceptions
       ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'unresolved';
     ALTER TABLE reconciliation_exceptions
@@ -440,6 +492,24 @@ exports.up = (pgm) => {
       ON reconciliation_run_inputs (reconciliation_run_id);
     CREATE INDEX IF NOT EXISTS ix_reconciliation_run_input_transactions_input_id
       ON reconciliation_run_input_transactions (reconciliation_run_input_id);
+    CREATE INDEX IF NOT EXISTS ix_scheduled_reconciliation_jobs_dealership_id
+      ON scheduled_reconciliation_jobs (dealership_id);
+    CREATE INDEX IF NOT EXISTS ix_scheduled_reconciliation_jobs_store_id
+      ON scheduled_reconciliation_jobs (dealership_store_id);
+    CREATE INDEX IF NOT EXISTS ix_scheduled_reconciliation_jobs_next_run_at
+      ON scheduled_reconciliation_jobs (next_run_at);
+    CREATE INDEX IF NOT EXISTS ix_ingestion_events_dealership_id
+      ON ingestion_events (dealership_id);
+    CREATE INDEX IF NOT EXISTS ix_ingestion_events_store_id
+      ON ingestion_events (dealership_store_id);
+    CREATE INDEX IF NOT EXISTS ix_ingestion_events_created_at
+      ON ingestion_events (created_at);
+    CREATE INDEX IF NOT EXISTS ix_operational_events_dealership_id
+      ON operational_events (dealership_id);
+    CREATE INDEX IF NOT EXISTS ix_operational_events_store_id
+      ON operational_events (dealership_store_id);
+    CREATE INDEX IF NOT EXISTS ix_operational_events_created_at
+      ON operational_events (created_at);
     CREATE INDEX IF NOT EXISTS ix_transactions_source_type ON transactions (source_type);
     CREATE INDEX IF NOT EXISTS ix_transactions_transaction_date ON transactions (transaction_date);
     CREATE INDEX IF NOT EXISTS ix_transactions_amount_cents ON transactions (amount_cents);
@@ -480,12 +550,18 @@ exports.down = (pgm) => {
     DROP TABLE IF EXISTS reconciliation_exceptions;
     DROP TABLE IF EXISTS reconciliation_run_input_transactions;
     DROP TABLE IF EXISTS reconciliation_run_inputs;
+    DROP TABLE IF EXISTS operational_events;
+    DROP TABLE IF EXISTS ingestion_events;
+    DROP TABLE IF EXISTS scheduled_reconciliation_jobs;
     DROP TABLE IF EXISTS reconciliation_runs;
     DROP TABLE IF EXISTS transactions;
     DROP TABLE IF EXISTS source_files;
+    DROP TABLE IF EXISTS dealership_stores;
+    DROP TABLE IF EXISTS dealer_groups;
     DROP TABLE IF EXISTS users;
     DROP TABLE IF EXISTS dealerships;
     DROP FUNCTION IF EXISTS prevent_reconciliation_snapshot_mutation();
+    DROP FUNCTION IF EXISTS next_run_at_for_cadence(text);
   `);
 };
 

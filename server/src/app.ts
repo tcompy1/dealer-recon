@@ -18,22 +18,30 @@ import {
   isReconciliationExceptionStatus,
   isReconciliationExceptionReviewStatus,
   isReconciliationExceptionType,
+  scheduledReconciliationCadences,
   isSourceType,
   type NewDealershipStore,
+  type NewScheduledReconciliationJob,
+  type ScheduledReconciliationJobUpdate,
   type ReconciliationRequest,
   type ReconciliationExceptionReviewUpdate,
   type MonthEndReport,
   type ReconciliationRunDetail,
   type ReconciliationRunDetailFilters,
+  type SourceType,
 } from "./domain/types.js";
 import {
   DuplicateSourceFileError,
   type TransactionRepository,
 } from "./repositories/transactionRepository.js";
 import {
-  RECONCILIATION_ENGINE_VERSION,
-  reconcileTransactionSets,
-} from "./services/reconciliationEngine.js";
+  createReconciliationRunFromSourceFiles,
+  evaluateAutoRunAfterUpload,
+  buildOperationalMetrics,
+  buildStoreAutomationStatuses,
+  generateStaleStoreEvents,
+  runDueScheduledJobs,
+} from "./services/reconciliationAutomation.js";
 import { buildReconciliationReplay } from "./services/reconciliationReplay.js";
 import {
   buildDealerGroupAnalytics,
@@ -41,7 +49,6 @@ import {
 } from "./services/runComparisonAnalytics.js";
 import {
   CsvNormalizationError,
-  TRANSACTION_NORMALIZER_VERSION,
   normalizeTransactionsFromCsv,
 } from "./services/transactionNormalizer.js";
 import { logError, logInfo, serializeError } from "./logger.js";
@@ -221,6 +228,138 @@ export function createApp(
     }
   });
 
+  app.get("/automation/scheduled-jobs", async (request, response, next) => {
+    try {
+      const storeId = parseOptionalPositiveInteger(request.query.store_id);
+      if (storeId === false) {
+        response.status(422).json({ detail: "Invalid store_id." });
+        return;
+      }
+      response.json(
+        await repository.listScheduledReconciliationJobs(
+          getRequestDealershipId(response),
+          storeId,
+        ),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/automation/scheduled-jobs", async (request, response, next) => {
+    try {
+      const job = parseScheduledReconciliationJobRequest(request.body);
+      if (job === false) {
+        response.status(422).json({ detail: "Invalid scheduled job request." });
+        return;
+      }
+      response.status(201).json(
+        await repository.createScheduledReconciliationJob(getRequestDealershipId(response), job),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/automation/scheduled-jobs/:id", async (request, response, next) => {
+    try {
+      const jobId = parsePositiveInteger(request.params.id);
+      const update = parseScheduledReconciliationJobUpdate(request.body);
+      if (jobId === null) {
+        response.status(404).json({ detail: "Scheduled job was not found." });
+        return;
+      }
+      if (update === false) {
+        response.status(422).json({ detail: "Invalid scheduled job update." });
+        return;
+      }
+      const job = await repository.updateScheduledReconciliationJob(
+        getRequestDealershipId(response),
+        jobId,
+        update,
+      );
+      if (!job) {
+        response.status(404).json({ detail: "Scheduled job was not found." });
+        return;
+      }
+      response.json(job);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/automation/run-due-jobs", async (request, response, next) => {
+    try {
+      response.json({
+        runs: await runDueScheduledJobs(
+          repository,
+          getRequestDealershipId(response),
+          typeof request.body?.now === "string" ? request.body.now : undefined,
+        ),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/automation/ingestion-events", async (request, response, next) => {
+    try {
+      const storeId = parseOptionalPositiveInteger(request.query.store_id);
+      const limit = parseOptionalPositiveInteger(request.query.limit);
+      if (storeId === false || limit === false) {
+        response.status(422).json({ detail: "Invalid ingestion event query." });
+        return;
+      }
+      response.json(
+        await repository.listIngestionEvents(
+          getRequestDealershipId(response),
+          storeId,
+          limit,
+        ),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/automation/events", async (request, response, next) => {
+    try {
+      const storeId = parseOptionalPositiveInteger(request.query.store_id);
+      const limit = parseOptionalPositiveInteger(request.query.limit);
+      if (storeId === false || limit === false) {
+        response.status(422).json({ detail: "Invalid operational event query." });
+        return;
+      }
+      response.json(
+        await repository.listOperationalEvents(
+          getRequestDealershipId(response),
+          storeId,
+          limit,
+        ),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/automation/status", async (_request, response, next) => {
+    try {
+      const dealershipId = getRequestDealershipId(response);
+      await generateStaleStoreEvents(repository, dealershipId);
+      response.json(await buildStoreAutomationStatuses(repository, dealershipId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/automation/metrics", async (_request, response, next) => {
+    try {
+      response.json(await buildOperationalMetrics(repository, getRequestDealershipId(response)));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/source-files", async (request, response, next) => {
     try {
       const requestDealershipId = getRequestDealershipId(response);
@@ -333,6 +472,27 @@ export function createApp(
         fileHash,
       );
       if (duplicateSourceFile) {
+        await repository.createIngestionEvent(requestDealershipId, {
+          dealership_store_id: dealershipStoreId,
+          source_file_id: duplicateSourceFile.id,
+          reconciliation_run_id: null,
+          source_type: sourceType,
+          state: "failed",
+          message: "Duplicate upload detected.",
+          metadata: { file_hash: fileHash, filename: duplicateSourceFile.original_filename },
+        });
+        await repository.createOperationalEvent(requestDealershipId, {
+          dealership_store_id: dealershipStoreId,
+          reconciliation_run_id: null,
+          event_type: "duplicate_upload_warning",
+          severity: "warning",
+          message: "Duplicate upload detected for this store and source type.",
+          metadata: {
+            source_type: sourceType,
+            source_file_id: duplicateSourceFile.id,
+            file_hash: fileHash,
+          },
+        });
         response.status(409).json({
           detail: "Duplicate upload detected for this source type and file contents.",
           source_file_id: duplicateSourceFile.id,
@@ -355,6 +515,35 @@ export function createApp(
         },
         result.transactions,
       );
+      await repository.createIngestionEvent(requestDealershipId, {
+        dealership_store_id: importResult.sourceFile.dealership_store_id,
+        source_file_id: importResult.sourceFile.id,
+        reconciliation_run_id: null,
+        source_type: sourceType,
+        state: "uploaded",
+        message: "File uploaded.",
+        metadata: { filename: importResult.sourceFile.original_filename, file_hash: fileHash },
+      });
+      await repository.createIngestionEvent(requestDealershipId, {
+        dealership_store_id: importResult.sourceFile.dealership_store_id,
+        source_file_id: importResult.sourceFile.id,
+        reconciliation_run_id: null,
+        source_type: sourceType,
+        state: result.validationErrors.length > 0 ? "validated" : "normalized",
+        message:
+          result.validationErrors.length > 0
+            ? "File validated with warnings."
+            : "File normalized successfully.",
+        metadata: {
+          transaction_count: result.transactions.length,
+          validation_error_count: result.validationErrors.length,
+        },
+      });
+      const autoRun = await evaluateAutoRunAfterUpload(
+        repository,
+        requestDealershipId,
+        importResult.sourceFile,
+      );
 
       response.json({
         source_file_id: importResult.sourceFile.id,
@@ -366,8 +555,20 @@ export function createApp(
         filename: importResult.sourceFile.original_filename,
         transaction_count: importResult.transactions.length,
         validation_errors: result.validationErrors,
+        automated_reconciliation_run_id: autoRun?.id ?? null,
       });
     } catch (error) {
+      const requestDealershipId = getRequestDealershipId(response);
+      const sourceType = isSourceType(request.body?.source_type) ? request.body.source_type : null;
+      await repository.createIngestionEvent(requestDealershipId, {
+        dealership_store_id: null,
+        source_file_id: null,
+        reconciliation_run_id: null,
+        source_type: sourceType,
+        state: "failed",
+        message: error instanceof Error ? error.message : "Upload failed.",
+        metadata: {},
+      });
       next(error);
     }
   });
@@ -433,51 +634,12 @@ export function createApp(
         return;
       }
 
-      const [boaTransactions, dealertrackTransactions] = await Promise.all([
-        repository.listBySourceFile(requestDealershipId, boaSourceFileId),
-        repository.listBySourceFile(requestDealershipId, dealertrackSourceFileId),
-      ]);
-      const result = reconcileTransactionSets(
-        boaTransactions,
-        dealertrackTransactions,
-        "boa",
-        "dealertrack",
-      );
-      const run = await repository.createReconciliationRun({
-        dealership_id: requestDealershipId,
-        dealership_store_id: reconciliationStoreId,
-        boa_source_file_id: boaSourceFileId,
-        dealertrack_source_file_id: dealertrackSourceFileId,
-        result,
-        input_snapshot: {
-          engine_version: RECONCILIATION_ENGINE_VERSION,
-          inputs: [
-            {
-              side: "boa",
-              source_type: "boa",
-              source_file_id: boaSourceFileId,
-              parser_version: TRANSACTION_NORMALIZER_VERSION,
-              parser_metadata: {
-                source_type: "boa",
-                source_file_id: boaSourceFileId,
-                normalizer: "normalizeTransactionsFromCsv",
-              },
-              transactions: boaTransactions,
-            },
-            {
-              side: "dealertrack",
-              source_type: "dealertrack",
-              source_file_id: dealertrackSourceFileId,
-              parser_version: TRANSACTION_NORMALIZER_VERSION,
-              parser_metadata: {
-                source_type: "dealertrack",
-                source_file_id: dealertrackSourceFileId,
-                normalizer: "normalizeTransactionsFromCsv",
-              },
-              transactions: dealertrackTransactions,
-            },
-          ],
-        },
+      const { run, result } = await createReconciliationRunFromSourceFiles({
+        repository,
+        dealershipId: requestDealershipId,
+        boaSourceFile,
+        dealertrackSourceFile,
+        automated: false,
       });
       logInfo("reconciliation_run_created", {
         request_id: response.locals.requestId,
@@ -485,9 +647,9 @@ export function createApp(
         reconciliation_run_id: run.id,
         boa_source_file_id: boaSourceFileId,
         dealertrack_source_file_id: dealertrackSourceFileId,
-        matched_count: result.matched_count,
-        exception_count: result.exception_count,
-        duplicate_count: result.duplicate_count,
+        matched_count: run.matched_count,
+        exception_count: run.exception_count,
+        duplicate_count: run.duplicate_count,
       });
 
       response.json({
@@ -895,6 +1057,127 @@ function parseStoreCreateRequest(value: unknown): NewDealershipStore | false {
     name: body.name.trim(),
     ...(dealerGroupId ? { dealer_group_id: dealerGroupId } : {}),
   };
+}
+
+function parseScheduledReconciliationJobRequest(
+  value: unknown,
+): NewScheduledReconciliationJob | false {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const body = value as {
+    dealership_store_id?: unknown;
+    cadence?: unknown;
+    expected_source_types?: unknown;
+    enabled?: unknown;
+    auto_run_on_pair?: unknown;
+    next_run_at?: unknown;
+  };
+  const storeId = parseOptionalPositiveInteger(body.dealership_store_id);
+  if (storeId === false || !isScheduledCadence(body.cadence)) {
+    return false;
+  }
+  const sourceTypes = parseSourceTypeArray(body.expected_source_types);
+  if (sourceTypes === false || sourceTypes.length === 0) {
+    return false;
+  }
+  if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
+    return false;
+  }
+  if (body.auto_run_on_pair !== undefined && typeof body.auto_run_on_pair !== "boolean") {
+    return false;
+  }
+  if (body.next_run_at !== undefined && body.next_run_at !== null && typeof body.next_run_at !== "string") {
+    return false;
+  }
+  return {
+    ...(storeId ? { dealership_store_id: storeId } : {}),
+    cadence: body.cadence,
+    expected_source_types: sourceTypes,
+    ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+    ...(typeof body.auto_run_on_pair === "boolean"
+      ? { auto_run_on_pair: body.auto_run_on_pair }
+      : {}),
+    ...(typeof body.next_run_at === "string" || body.next_run_at === null
+      ? { next_run_at: body.next_run_at }
+      : {}),
+  };
+}
+
+function parseScheduledReconciliationJobUpdate(
+  value: unknown,
+): ScheduledReconciliationJobUpdate | false {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const body = value as {
+    cadence?: unknown;
+    expected_source_types?: unknown;
+    enabled?: unknown;
+    auto_run_on_pair?: unknown;
+    last_run_at?: unknown;
+    next_run_at?: unknown;
+  };
+  const update: ScheduledReconciliationJobUpdate = {};
+  if (body.cadence !== undefined) {
+    if (!isScheduledCadence(body.cadence)) {
+      return false;
+    }
+    update.cadence = body.cadence;
+  }
+  if (body.expected_source_types !== undefined) {
+    const sourceTypes = parseSourceTypeArray(body.expected_source_types);
+    if (sourceTypes === false) {
+      return false;
+    }
+    update.expected_source_types = sourceTypes;
+  }
+  if (body.enabled !== undefined) {
+    if (typeof body.enabled !== "boolean") {
+      return false;
+    }
+    update.enabled = body.enabled;
+  }
+  if (body.auto_run_on_pair !== undefined) {
+    if (typeof body.auto_run_on_pair !== "boolean") {
+      return false;
+    }
+    update.auto_run_on_pair = body.auto_run_on_pair;
+  }
+  if (body.last_run_at !== undefined) {
+    if (body.last_run_at !== null && typeof body.last_run_at !== "string") {
+      return false;
+    }
+    update.last_run_at = body.last_run_at;
+  }
+  if (body.next_run_at !== undefined) {
+    if (body.next_run_at !== null && typeof body.next_run_at !== "string") {
+      return false;
+    }
+    update.next_run_at = body.next_run_at;
+  }
+  return Object.keys(update).length > 0 ? update : false;
+}
+
+function isScheduledCadence(value: unknown): value is NewScheduledReconciliationJob["cadence"] {
+  return (
+    typeof value === "string" &&
+    scheduledReconciliationCadences.includes(value as NewScheduledReconciliationJob["cadence"])
+  );
+}
+
+function parseSourceTypeArray(value: unknown): SourceType[] | false {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  const sourceTypes: SourceType[] = [];
+  for (const item of value) {
+    if (!isSourceType(item)) {
+      return false;
+    }
+    sourceTypes.push(item);
+  }
+  return [...new Set(sourceTypes)];
 }
 
 async function resolveStoreIdForRequest(

@@ -11,8 +11,13 @@ import type {
   MonthEndReport,
   MonthEndReportAccount,
   NewDealershipStore,
+  NewIngestionEvent,
+  NewOperationalEvent,
   NewSourceFile,
   NewTransaction,
+  NewScheduledReconciliationJob,
+  IngestionEvent,
+  OperationalEvent,
   PersistReconciliationRunInput,
   ReconciliationExceptionReviewUpdate,
   ReconciliationExceptionReviewStatus,
@@ -24,6 +29,8 @@ import type {
   ReconciliationRunListFilters,
   ReconciliationRunListItem,
   ReconciliationRun,
+  ScheduledReconciliationJob,
+  ScheduledReconciliationJobUpdate,
   SourceFile,
   SourceFileSummary,
   SourceType,
@@ -101,6 +108,48 @@ type DealershipStoreRow = {
   dealership_id: number;
   dealer_group_id: number | null;
   name: string;
+  created_at: Date | string;
+};
+
+type ScheduledReconciliationJobRow = {
+  id: number;
+  dealership_id: number;
+  dealership_store_id: number | null;
+  store_name: string | null;
+  cadence: ScheduledReconciliationJob["cadence"];
+  expected_source_types: SourceType[];
+  enabled: boolean;
+  auto_run_on_pair: boolean;
+  last_run_at: Date | string | null;
+  next_run_at: Date | string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
+type IngestionEventRow = {
+  id: number;
+  dealership_id: number;
+  dealership_store_id: number | null;
+  store_name: string | null;
+  source_file_id: number | null;
+  reconciliation_run_id: number | null;
+  source_type: SourceType | null;
+  state: IngestionEvent["state"];
+  message: string;
+  metadata: Record<string, unknown>;
+  created_at: Date | string;
+};
+
+type OperationalEventRow = {
+  id: number;
+  dealership_id: number;
+  dealership_store_id: number | null;
+  store_name: string | null;
+  reconciliation_run_id: number | null;
+  event_type: OperationalEvent["event_type"];
+  severity: OperationalEvent["severity"];
+  message: string;
+  metadata: Record<string, unknown>;
   created_at: Date | string;
 };
 
@@ -283,6 +332,181 @@ export class PostgresTransactionRepository implements TransactionRepository {
     return toDealershipStore(result.rows[0]);
   }
 
+  async createScheduledReconciliationJob(
+    dealershipId: number,
+    job: NewScheduledReconciliationJob,
+  ): Promise<ScheduledReconciliationJob> {
+    const storeId = job.dealership_store_id ?? (await this.getDefaultStoreId(dealershipId));
+    const result = await this.pool.query<ScheduledReconciliationJobRow>(
+      `INSERT INTO scheduled_reconciliation_jobs (
+        dealership_id,
+        dealership_store_id,
+        cadence,
+        expected_source_types,
+        enabled,
+        auto_run_on_pair,
+        next_run_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamptz, next_run_at_for_cadence($3)))
+      RETURNING *, NULL::text AS store_name`,
+      [
+        dealershipId,
+        storeId,
+        job.cadence,
+        job.expected_source_types,
+        job.enabled ?? true,
+        job.auto_run_on_pair ?? false,
+        job.next_run_at ?? null,
+      ],
+    );
+    return this.withJobStoreName(toScheduledReconciliationJob(result.rows[0]));
+  }
+
+  async listScheduledReconciliationJobs(
+    dealershipId: number,
+    dealershipStoreId?: number,
+  ): Promise<ScheduledReconciliationJob[]> {
+    const result = await this.pool.query<ScheduledReconciliationJobRow>(
+      `SELECT srj.*, ds.name AS store_name
+       FROM scheduled_reconciliation_jobs srj
+       LEFT JOIN dealership_stores ds ON ds.id = srj.dealership_store_id
+       WHERE srj.dealership_id = $1
+         AND ($2::integer IS NULL OR srj.dealership_store_id = $2)
+       ORDER BY srj.id`,
+      [dealershipId, dealershipStoreId ?? null],
+    );
+    return result.rows.map(toScheduledReconciliationJob);
+  }
+
+  async updateScheduledReconciliationJob(
+    dealershipId: number,
+    jobId: number,
+    update: ScheduledReconciliationJobUpdate,
+  ): Promise<ScheduledReconciliationJob | null> {
+    const result = await this.pool.query<ScheduledReconciliationJobRow>(
+      `UPDATE scheduled_reconciliation_jobs
+       SET
+         cadence = COALESCE($3, cadence),
+         expected_source_types = COALESCE($4, expected_source_types),
+         enabled = COALESCE($5, enabled),
+         auto_run_on_pair = COALESCE($6, auto_run_on_pair),
+         last_run_at = CASE WHEN $7::boolean THEN $8 ELSE last_run_at END,
+         next_run_at = CASE WHEN $9::boolean THEN $10 ELSE next_run_at END,
+         updated_at = NOW()
+       FROM dealership_stores ds
+       WHERE scheduled_reconciliation_jobs.id = $1
+         AND scheduled_reconciliation_jobs.dealership_id = $2
+         AND ds.id = scheduled_reconciliation_jobs.dealership_store_id
+       RETURNING scheduled_reconciliation_jobs.*, ds.name AS store_name`,
+      [
+        jobId,
+        dealershipId,
+        update.cadence ?? null,
+        update.expected_source_types ?? null,
+        update.enabled ?? null,
+        update.auto_run_on_pair ?? null,
+        update.last_run_at !== undefined,
+        update.last_run_at ?? null,
+        update.next_run_at !== undefined,
+        update.next_run_at ?? null,
+      ],
+    );
+    return result.rows[0] ? toScheduledReconciliationJob(result.rows[0]) : null;
+  }
+
+  async createIngestionEvent(
+    dealershipId: number,
+    event: NewIngestionEvent,
+  ): Promise<IngestionEvent> {
+    const result = await this.pool.query<IngestionEventRow>(
+      `INSERT INTO ingestion_events (
+        dealership_id,
+        dealership_store_id,
+        source_file_id,
+        reconciliation_run_id,
+        source_type,
+        state,
+        message,
+        metadata
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING *, NULL::text AS store_name`,
+      [
+        dealershipId,
+        event.dealership_store_id,
+        event.source_file_id,
+        event.reconciliation_run_id,
+        event.source_type,
+        event.state,
+        event.message,
+        event.metadata,
+      ],
+    );
+    return this.withIngestionStoreName(toIngestionEvent(result.rows[0]));
+  }
+
+  async listIngestionEvents(
+    dealershipId: number,
+    dealershipStoreId?: number,
+    limit = 50,
+  ): Promise<IngestionEvent[]> {
+    const result = await this.pool.query<IngestionEventRow>(
+      `SELECT ie.*, ds.name AS store_name
+       FROM ingestion_events ie
+       LEFT JOIN dealership_stores ds ON ds.id = ie.dealership_store_id
+       WHERE ie.dealership_id = $1
+         AND ($2::integer IS NULL OR ie.dealership_store_id = $2)
+       ORDER BY ie.created_at DESC, ie.id DESC
+       LIMIT $3`,
+      [dealershipId, dealershipStoreId ?? null, limit],
+    );
+    return result.rows.map(toIngestionEvent);
+  }
+
+  async createOperationalEvent(
+    dealershipId: number,
+    event: NewOperationalEvent,
+  ): Promise<OperationalEvent> {
+    const result = await this.pool.query<OperationalEventRow>(
+      `INSERT INTO operational_events (
+        dealership_id,
+        dealership_store_id,
+        reconciliation_run_id,
+        event_type,
+        severity,
+        message,
+        metadata
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *, NULL::text AS store_name`,
+      [
+        dealershipId,
+        event.dealership_store_id,
+        event.reconciliation_run_id,
+        event.event_type,
+        event.severity,
+        event.message,
+        event.metadata,
+      ],
+    );
+    return this.withOperationalStoreName(toOperationalEvent(result.rows[0]));
+  }
+
+  async listOperationalEvents(
+    dealershipId: number,
+    dealershipStoreId?: number,
+    limit = 50,
+  ): Promise<OperationalEvent[]> {
+    const result = await this.pool.query<OperationalEventRow>(
+      `SELECT oe.*, ds.name AS store_name
+       FROM operational_events oe
+       LEFT JOIN dealership_stores ds ON ds.id = oe.dealership_store_id
+       WHERE oe.dealership_id = $1
+         AND ($2::integer IS NULL OR oe.dealership_store_id = $2)
+       ORDER BY oe.created_at DESC, oe.id DESC
+       LIMIT $3`,
+      [dealershipId, dealershipStoreId ?? null, limit],
+    );
+    return result.rows.map(toOperationalEvent);
+  }
+
   async listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]> {
     const result = await this.pool.query<TransactionRow>(
       "SELECT * FROM transactions WHERE dealership_id = $1 AND source_type = $2 ORDER BY id",
@@ -451,6 +675,18 @@ export class PostgresTransactionRepository implements TransactionRepository {
       [dealershipId],
     );
     return result.rows[0]?.id ?? null;
+  }
+
+  private withJobStoreName(job: ScheduledReconciliationJob): ScheduledReconciliationJob {
+    return job;
+  }
+
+  private withIngestionStoreName(event: IngestionEvent): IngestionEvent {
+    return event;
+  }
+
+  private withOperationalStoreName(event: OperationalEvent): OperationalEvent {
+    return event;
   }
 
   private async listUnresolvedExceptionCountsByAccount(
@@ -1335,6 +1571,56 @@ function toDealershipStore(row: DealershipStoreRow): DealershipStore {
     dealership_id: row.dealership_id,
     dealer_group_id: row.dealer_group_id,
     name: row.name,
+    created_at: toDateTimeString(row.created_at),
+  };
+}
+
+function toScheduledReconciliationJob(
+  row: ScheduledReconciliationJobRow,
+): ScheduledReconciliationJob {
+  return {
+    id: row.id,
+    dealership_id: row.dealership_id,
+    dealership_store_id: row.dealership_store_id,
+    store_name: row.store_name ?? null,
+    cadence: row.cadence,
+    expected_source_types: row.expected_source_types,
+    enabled: row.enabled,
+    auto_run_on_pair: row.auto_run_on_pair,
+    last_run_at: row.last_run_at ? toDateTimeString(row.last_run_at) : null,
+    next_run_at: row.next_run_at ? toDateTimeString(row.next_run_at) : null,
+    created_at: toDateTimeString(row.created_at),
+    updated_at: toDateTimeString(row.updated_at),
+  };
+}
+
+function toIngestionEvent(row: IngestionEventRow): IngestionEvent {
+  return {
+    id: row.id,
+    dealership_id: row.dealership_id,
+    dealership_store_id: row.dealership_store_id,
+    store_name: row.store_name ?? null,
+    source_file_id: row.source_file_id,
+    reconciliation_run_id: row.reconciliation_run_id,
+    source_type: row.source_type,
+    state: row.state,
+    message: row.message,
+    metadata: row.metadata,
+    created_at: toDateTimeString(row.created_at),
+  };
+}
+
+function toOperationalEvent(row: OperationalEventRow): OperationalEvent {
+  return {
+    id: row.id,
+    dealership_id: row.dealership_id,
+    dealership_store_id: row.dealership_store_id,
+    store_name: row.store_name ?? null,
+    reconciliation_run_id: row.reconciliation_run_id,
+    event_type: row.event_type,
+    severity: row.severity,
+    message: row.message,
+    metadata: row.metadata,
     created_at: toDateTimeString(row.created_at),
   };
 }
