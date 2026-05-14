@@ -594,6 +594,40 @@ describe("app", () => {
     expect(response.text).not.toContain("M30202");
   });
 
+  test("GET /reconciliation-runs/:id/exceptions.csv excludes weak amount-only duplicate candidates", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const boaUpload = await uploadCsv(
+      app,
+      "boa",
+      boaUploadCsv("M21055", "1HGCM82633A004352", "$31,051.00", "116411"),
+      "boa-weak-duplicates.csv",
+    );
+    const dealertrackUpload = await uploadCsv(
+      app,
+      "dealertrack",
+      [
+        'M21055,"BOA FLOORPLAN CX-30 1HGCM82633A004352",-31051,0',
+        'M21286,"BOA FLOORPLAN CX-30 3MVDMBXL6TM128759",-31051,0',
+      ].join("\n"),
+      "dealertrack-weak-duplicates.csv",
+    );
+
+    const reconciliation = await request(app).post("/reconcile").send({
+      boa_source_file_id: boaUpload.source_file_id,
+      dealertrack_source_file_id: dealertrackUpload.source_file_id,
+    });
+
+    expect(reconciliation.status).toBe(200);
+    expect(reconciliation.body.duplicate_count).toBe(0);
+
+    const response = await request(app).get(
+      `/reconciliation-runs/${reconciliation.body.reconciliation_run_id}/exceptions.csv`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.text).not.toContain("duplicate_transaction");
+  });
+
   test("GET /reconciliation-runs/:id/exceptions.csv includes Dealertrack VIN from Hiley export", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const boaUpload = await uploadCsv(
@@ -1096,5 +1130,16 @@ async function createReconciliation(app: ReturnType<typeof createApp>) {
   });
 
   expect(response.status).toBe(200);
+  expect(response.body.vin_presence_diagnostics).toMatchObject({
+    extracted_vin_sets: {
+      boa: expect.any(Array),
+      dealertrack: expect.any(Array),
+    },
+    vin_presence_exceptions: {
+      dealertrack_not_in_boa: expect.any(Array),
+      boa_not_in_dealertrack: expect.any(Array),
+    },
+    transaction_unmatched_shared_vins: expect.any(Array),
+  });
   return response.body as { reconciliation_run_id: number };
 }

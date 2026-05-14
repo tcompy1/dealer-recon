@@ -282,6 +282,14 @@ describeIfDatabase("reconciliation persistence", () => {
             },
           ],
           exceptions: [],
+          vin_presence_diagnostics: {
+            extracted_vin_sets: { boa: [], dealertrack: [] },
+            vin_presence_exceptions: {
+              dealertrack_not_in_boa: [],
+              boa_not_in_dealertrack: [],
+            },
+            transaction_unmatched_shared_vins: [],
+          },
         };
 
         await expect(

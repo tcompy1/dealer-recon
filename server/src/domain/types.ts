@@ -130,6 +130,43 @@ export type ReconciliationException = {
   description: string;
 };
 
+export type VinPresenceDiagnosticReason =
+  | "amount_mismatch"
+  | "sign_mismatch_or_absolute_amount_issue"
+  | "row_filtered_before_matching"
+  | "weak_match_consumed_stronger_vin_match"
+  | "stock_number_mismatch"
+  | "duplicate_or_one_to_many_transaction_structure"
+  | "missing_parsed_vin";
+
+export type VinPresenceDiagnosticEntry = {
+  vin: string;
+  stored_vin_count: number;
+  extracted_vin_count: number;
+  transaction_ids: number[];
+};
+
+export type VinPresenceTransactionUnmatchedEntry = {
+  vin: string;
+  likely_reason: VinPresenceDiagnosticReason;
+  boa_transaction_ids: number[];
+  dealertrack_transaction_ids: number[];
+  unmatched_boa_transaction_ids: number[];
+  unmatched_dealertrack_transaction_ids: number[];
+};
+
+export type VinPresenceDiagnostics = {
+  extracted_vin_sets: {
+    boa: VinPresenceDiagnosticEntry[];
+    dealertrack: VinPresenceDiagnosticEntry[];
+  };
+  vin_presence_exceptions: {
+    dealertrack_not_in_boa: string[];
+    boa_not_in_dealertrack: string[];
+  };
+  transaction_unmatched_shared_vins: VinPresenceTransactionUnmatchedEntry[];
+};
+
 export type ReconciliationResponse = {
   reconciliation_run_id?: number;
   matched_count: number;
@@ -137,6 +174,7 @@ export type ReconciliationResponse = {
   duplicate_count: number;
   match_groups: MatchGroup[];
   exceptions: ReconciliationException[];
+  vin_presence_diagnostics: VinPresenceDiagnostics;
 };
 
 export type ReconciliationRun = {

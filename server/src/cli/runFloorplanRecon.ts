@@ -56,6 +56,7 @@ export function formatReconciliationResult(result: ReconciliationResponse): stri
   appendExceptionSection(lines, "BOA-only rows", boaOnly);
   appendExceptionSection(lines, "Dealertrack-only rows", dealertrackOnly);
   appendExceptionSection(lines, "duplicate Dealertrack rows", duplicateDealertrack);
+  appendVinPresenceDiagnosticSection(lines, result);
 
   return lines.join("\n");
 }
@@ -115,6 +116,44 @@ function appendExceptionSection(
     lines.push(`  ${rowLabel(exception.transaction)} | ${exception.description}`);
   }
   lines.push("");
+}
+
+function appendVinPresenceDiagnosticSection(
+  lines: string[],
+  result: ReconciliationResponse,
+): void {
+  const diagnostics = result.vin_presence_diagnostics;
+  lines.push("VIN presence diagnostics:");
+  lines.push(`  BOA extracted VINs: ${diagnostics.extracted_vin_sets.boa.length}`);
+  lines.push(`  Dealertrack extracted VINs: ${diagnostics.extracted_vin_sets.dealertrack.length}`);
+  appendVinList(
+    lines,
+    "  VINs in Dealertrack but not BOA",
+    diagnostics.vin_presence_exceptions.dealertrack_not_in_boa,
+  );
+  appendVinList(
+    lines,
+    "  VINs in BOA but not Dealertrack",
+    diagnostics.vin_presence_exceptions.boa_not_in_dealertrack,
+  );
+  lines.push(
+    `  VINs present in both but transaction-unmatched: ${diagnostics.transaction_unmatched_shared_vins.length}`,
+  );
+  for (const entry of diagnostics.transaction_unmatched_shared_vins) {
+    lines.push(
+      `    ${entry.vin} | reason=${entry.likely_reason} | boa_ids=${entry.unmatched_boa_transaction_ids.join(
+        "/",
+      ) || "none"} | dealertrack_ids=${entry.unmatched_dealertrack_transaction_ids.join("/") || "none"}`,
+    );
+  }
+  lines.push("");
+}
+
+function appendVinList(lines: string[], title: string, vins: string[]): void {
+  lines.push(`${title}: ${vins.length}`);
+  for (const vin of vins) {
+    lines.push(`    ${vin}`);
+  }
 }
 
 function rowLabel(transaction: TransactionSummary): string {
