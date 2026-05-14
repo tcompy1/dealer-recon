@@ -6,11 +6,13 @@ import type {
   AccountDetail,
   AccountSourceTotal,
   AccountSummary,
+  AuditEvent,
   DealerGroup,
   DealershipStore,
   MonthEndReport,
   MonthEndReportAccount,
   NewDealershipStore,
+  NewAuditEvent,
   NewIngestionEvent,
   NewOperationalEvent,
   NewSourceFile,
@@ -151,6 +153,18 @@ type OperationalEventRow = {
   message: string;
   metadata: Record<string, unknown>;
   created_at: Date | string;
+};
+
+type AuditEventRow = {
+  id: number;
+  dealership_id: number;
+  actor_user_id: number | null;
+  action_type: string;
+  entity_type: string;
+  entity_id: string | null;
+  previous_state: Record<string, unknown> | null;
+  new_state: Record<string, unknown> | null;
+  timestamp: Date | string;
 };
 
 type MatchGroupRow = {
@@ -505,6 +519,43 @@ export class PostgresTransactionRepository implements TransactionRepository {
       [dealershipId, dealershipStoreId ?? null, limit],
     );
     return result.rows.map(toOperationalEvent);
+  }
+
+  async createAuditEvent(dealershipId: number, event: NewAuditEvent): Promise<AuditEvent> {
+    const result = await this.pool.query<AuditEventRow>(
+      `INSERT INTO audit_events (
+        dealership_id,
+        actor_user_id,
+        action_type,
+        entity_type,
+        entity_id,
+        previous_state,
+        new_state
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *`,
+      [
+        dealershipId,
+        event.actor_user_id,
+        event.action_type,
+        event.entity_type,
+        event.entity_id,
+        event.previous_state,
+        event.new_state,
+      ],
+    );
+    return toAuditEvent(result.rows[0]);
+  }
+
+  async listAuditEvents(dealershipId: number, limit = 100): Promise<AuditEvent[]> {
+    const result = await this.pool.query<AuditEventRow>(
+      `SELECT *
+       FROM audit_events
+       WHERE dealership_id = $1
+       ORDER BY timestamp DESC, id DESC
+       LIMIT $2`,
+      [dealershipId, limit],
+    );
+    return result.rows.map(toAuditEvent);
   }
 
   async listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]> {
@@ -1622,6 +1673,20 @@ function toOperationalEvent(row: OperationalEventRow): OperationalEvent {
     message: row.message,
     metadata: row.metadata,
     created_at: toDateTimeString(row.created_at),
+  };
+}
+
+function toAuditEvent(row: AuditEventRow): AuditEvent {
+  return {
+    id: row.id,
+    dealership_id: row.dealership_id,
+    actor_user_id: row.actor_user_id,
+    action_type: row.action_type,
+    entity_type: row.entity_type,
+    entity_id: row.entity_id,
+    previous_state: row.previous_state,
+    new_state: row.new_state,
+    timestamp: toDateTimeString(row.timestamp),
   };
 }
 

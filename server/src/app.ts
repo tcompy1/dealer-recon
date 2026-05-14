@@ -99,6 +99,10 @@ export function createApp(
     authOptions.allowDevDealershipFallback ?? authRepository === undefined;
 
   app.use(requestLogger);
+  app.use((_request, response, next) => {
+    response.locals.repository = repository;
+    next();
+  });
   app.use(express.json());
   app.use(
     cors({
@@ -141,6 +145,14 @@ export function createApp(
       }
 
       const publicUser = toPublicUser(user);
+      await repository.createAuditEvent(user.dealership_id, {
+        actor_user_id: user.id,
+        action_type: "login",
+        entity_type: "user",
+        entity_id: String(user.id),
+        previous_state: null,
+        new_state: { email: user.email, role: user.role },
+      });
       response.cookie(sessionCookieName, createSessionToken(publicUser, sessionSecret), {
         httpOnly: true,
         sameSite: "lax",
@@ -167,6 +179,9 @@ export function createApp(
           id: 0,
           email: "local-dev-fallback@dealer-recon.local",
           dealership_id: dealershipId,
+          role: "platform_admin",
+          dealer_group_id: null,
+          store_ids: [],
         } satisfies AuthUser;
         next();
         return;
@@ -191,6 +206,23 @@ export function createApp(
     response.json({ user: getAuthenticatedUser(response) });
   });
 
+  app.get("/audit-events", async (request, response, next) => {
+    try {
+      if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin", "read_only_auditor"])) {
+        response.status(403).json({ detail: "Not authorized." });
+        return;
+      }
+      const limit = parseOptionalPositiveInteger(request.query.limit);
+      if (limit === false) {
+        response.status(422).json({ detail: "Invalid audit query." });
+        return;
+      }
+      response.json(await repository.listAuditEvents(getRequestDealershipId(response), limit));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/dealer-groups", async (_request, response, next) => {
     try {
       response.json(await repository.listDealerGroups(getRequestDealershipId(response)));
@@ -201,7 +233,12 @@ export function createApp(
 
   app.get("/stores", async (_request, response, next) => {
     try {
-      response.json(await repository.listDealershipStores(getRequestDealershipId(response)));
+      response.json(
+        filterStoresForUser(
+          getAuthenticatedUser(response),
+          await repository.listDealershipStores(getRequestDealershipId(response)),
+        ),
+      );
     } catch (error) {
       next(error);
     }
@@ -209,12 +246,18 @@ export function createApp(
 
   app.post("/stores", async (request, response, next) => {
     try {
+      if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin"])) {
+        response.status(403).json({ detail: "Not authorized." });
+        return;
+      }
       const store = parseStoreCreateRequest(request.body);
       if (store === false) {
         response.status(422).json({ detail: "Invalid store request." });
         return;
       }
-      response.status(201).json(await repository.createDealershipStore(getRequestDealershipId(response), store));
+      const createdStore = await repository.createDealershipStore(getRequestDealershipId(response), store);
+      await audit(response, "store_created", "dealership_store", createdStore.id, null, createdStore);
+      response.status(201).json(createdStore);
     } catch (error) {
       next(error);
     }
@@ -235,10 +278,19 @@ export function createApp(
         response.status(422).json({ detail: "Invalid store_id." });
         return;
       }
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), storeId ?? null))) {
+        response.status(403).json({ detail: "Not authorized for this store." });
+        return;
+      }
       response.json(
-        await repository.listScheduledReconciliationJobs(
-          getRequestDealershipId(response),
-          storeId,
+        await filterByStoreAccess(
+          repository,
+          getAuthenticatedUser(response),
+          await repository.listScheduledReconciliationJobs(
+            getRequestDealershipId(response),
+            storeId,
+          ),
+          (job) => job.dealership_store_id,
         ),
       );
     } catch (error) {
@@ -248,14 +300,22 @@ export function createApp(
 
   app.post("/automation/scheduled-jobs", async (request, response, next) => {
     try {
+      if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin", "store_manager"])) {
+        response.status(403).json({ detail: "Not authorized." });
+        return;
+      }
       const job = parseScheduledReconciliationJobRequest(request.body);
       if (job === false) {
         response.status(422).json({ detail: "Invalid scheduled job request." });
         return;
       }
-      response.status(201).json(
-        await repository.createScheduledReconciliationJob(getRequestDealershipId(response), job),
-      );
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), job.dealership_store_id ?? null))) {
+        response.status(403).json({ detail: "Not authorized for this store." });
+        return;
+      }
+      const createdJob = await repository.createScheduledReconciliationJob(getRequestDealershipId(response), job);
+      await audit(response, "scheduled_job_created", "scheduled_reconciliation_job", createdJob.id, null, createdJob);
+      response.status(201).json(createdJob);
     } catch (error) {
       next(error);
     }
@@ -263,6 +323,10 @@ export function createApp(
 
   app.patch("/automation/scheduled-jobs/:id", async (request, response, next) => {
     try {
+      if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin", "store_manager"])) {
+        response.status(403).json({ detail: "Not authorized." });
+        return;
+      }
       const jobId = parsePositiveInteger(request.params.id);
       const update = parseScheduledReconciliationJobUpdate(request.body);
       if (jobId === null) {
@@ -271,6 +335,17 @@ export function createApp(
       }
       if (update === false) {
         response.status(422).json({ detail: "Invalid scheduled job update." });
+        return;
+      }
+      const previousJob = (await repository.listScheduledReconciliationJobs(getRequestDealershipId(response))).find(
+        (candidate) => candidate.id === jobId,
+      );
+      if (!previousJob) {
+        response.status(404).json({ detail: "Scheduled job was not found." });
+        return;
+      }
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), previousJob.dealership_store_id))) {
+        response.status(403).json({ detail: "Not authorized for this store." });
         return;
       }
       const job = await repository.updateScheduledReconciliationJob(
@@ -282,6 +357,7 @@ export function createApp(
         response.status(404).json({ detail: "Scheduled job was not found." });
         return;
       }
+      await audit(response, "scheduled_job_updated", "scheduled_reconciliation_job", job.id, previousJob, job);
       response.json(job);
     } catch (error) {
       next(error);
@@ -290,6 +366,10 @@ export function createApp(
 
   app.post("/automation/run-due-jobs", async (request, response, next) => {
     try {
+      if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin", "store_manager"])) {
+        response.status(403).json({ detail: "Not authorized." });
+        return;
+      }
       response.json({
         runs: await runDueScheduledJobs(
           repository,
@@ -308,6 +388,10 @@ export function createApp(
       const limit = parseOptionalPositiveInteger(request.query.limit);
       if (storeId === false || limit === false) {
         response.status(422).json({ detail: "Invalid ingestion event query." });
+        return;
+      }
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), storeId ?? null))) {
+        response.status(403).json({ detail: "Not authorized for this store." });
         return;
       }
       response.json(
@@ -330,6 +414,10 @@ export function createApp(
         response.status(422).json({ detail: "Invalid operational event query." });
         return;
       }
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), storeId ?? null))) {
+        response.status(403).json({ detail: "Not authorized for this store." });
+        return;
+      }
       response.json(
         await repository.listOperationalEvents(
           getRequestDealershipId(response),
@@ -346,7 +434,14 @@ export function createApp(
     try {
       const dealershipId = getRequestDealershipId(response);
       await generateStaleStoreEvents(repository, dealershipId);
-      response.json(await buildStoreAutomationStatuses(repository, dealershipId));
+      response.json(
+        await filterByStoreAccess(
+          repository,
+          getAuthenticatedUser(response),
+          await buildStoreAutomationStatuses(repository, dealershipId),
+          (status) => status.dealership_store_id,
+        ),
+      );
     } catch (error) {
       next(error);
     }
@@ -373,8 +468,20 @@ export function createApp(
         response.status(422).json({ detail: "Invalid store_id." });
         return;
       }
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), dealershipStoreId ?? null))) {
+        response.status(403).json({ detail: "Not authorized for this store." });
+        return;
+      }
 
-      response.json(await repository.listSourceFiles(requestDealershipId, sourceType, dealershipStoreId));
+      const files = await repository.listSourceFiles(requestDealershipId, sourceType, dealershipStoreId);
+      response.json(
+        await filterByStoreAccess(
+          repository,
+          getAuthenticatedUser(response),
+          files,
+          (file) => file.dealership_store_id,
+        ),
+      );
     } catch (error) {
       next(error);
     }
@@ -404,7 +511,6 @@ export function createApp(
         response.status(404).json({ detail: "Account was not found." });
         return;
       }
-
       response.json(detail);
     } catch (error) {
       next(error);
@@ -463,6 +569,14 @@ export function createApp(
       );
       if (dealershipStoreId === false) {
         response.status(422).json({ detail: "Invalid store_id." });
+        return;
+      }
+      if (!canWrite(getAuthenticatedUser(response))) {
+        response.status(403).json({ detail: "Read-only users cannot upload files." });
+        return;
+      }
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), dealershipStoreId))) {
+        response.status(403).json({ detail: "Not authorized for this store." });
         return;
       }
       const duplicateSourceFile = await repository.getSourceFileByHash(
@@ -592,6 +706,10 @@ export function createApp(
         response.status(422).json({ detail: "Invalid dealership_store_id." });
         return;
       }
+      if (!canWrite(getAuthenticatedUser(response))) {
+        response.status(403).json({ detail: "Read-only users cannot run reconciliation." });
+        return;
+      }
 
       const [boaSourceFile, dealertrackSourceFile] = await Promise.all([
         repository.getSourceFile(boaSourceFileId),
@@ -611,6 +729,10 @@ export function createApp(
         return;
       }
       const reconciliationStoreId = requestedStoreId ?? boaSourceFile.dealership_store_id;
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), reconciliationStoreId))) {
+        response.status(403).json({ detail: "Not authorized for this store." });
+        return;
+      }
       if (
         boaSourceFile.dealership_store_id !== dealertrackSourceFile.dealership_store_id ||
         (reconciliationStoreId !== null &&
@@ -651,6 +773,12 @@ export function createApp(
         exception_count: run.exception_count,
         duplicate_count: run.duplicate_count,
       });
+      await audit(response, "reconciliation_run_created", "reconciliation_run", run.id, null, {
+        boa_source_file_id: boaSourceFileId,
+        dealertrack_source_file_id: dealertrackSourceFileId,
+        matched_count: run.matched_count,
+        exception_count: run.exception_count,
+      });
 
       response.json({
         ...result,
@@ -668,10 +796,16 @@ export function createApp(
         response.status(422).json({ detail: "Invalid store_id." });
         return;
       }
-      response.json(
-        await repository.listReconciliationRuns(getRequestDealershipId(response), {
+      const runs = await repository.listReconciliationRuns(getRequestDealershipId(response), {
           ...(dealershipStoreId ? { dealershipStoreId } : {}),
-        }),
+        });
+      response.json(
+        await filterByStoreAccess(
+          repository,
+          getAuthenticatedUser(response),
+          runs,
+          (run) => run.dealership_store_id,
+        ),
       );
     } catch (error) {
       next(error);
@@ -707,6 +841,10 @@ export function createApp(
         response.status(404).json({ detail: "Reconciliation run was not found." });
         return;
       }
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
+        response.status(403).json({ detail: "Not authorized for this store." });
+        return;
+      }
 
       response.json(detail);
     } catch (error) {
@@ -722,18 +860,31 @@ export function createApp(
         return;
       }
 
-      const comparison = await buildReconciliationRunComparison(
-        repository,
+      const runDetail = await repository.getReconciliationRunDetail(
         getRequestDealershipId(response),
         reconciliationRunId,
       );
-      if (!comparison) {
+      if (!runDetail) {
         const ownerDealershipId =
           await repository.getReconciliationRunDealershipId(reconciliationRunId);
         if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
           response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
           return;
         }
+        response.status(404).json({ detail: "Reconciliation run was not found." });
+        return;
+      }
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), runDetail.dealership_store_id))) {
+        response.status(403).json({ detail: "Not authorized for this store." });
+        return;
+      }
+
+      const comparison = await buildReconciliationRunComparison(
+        repository,
+        getRequestDealershipId(response),
+        reconciliationRunId,
+      );
+      if (!comparison) {
         response.status(404).json({ detail: "Reconciliation run was not found." });
         return;
       }
@@ -752,17 +903,30 @@ export function createApp(
         return;
       }
 
-      const snapshot = await repository.getReconciliationRunSnapshot(
+      const runDetail = await repository.getReconciliationRunDetail(
         getRequestDealershipId(response),
         reconciliationRunId,
       );
-      if (!snapshot) {
+      if (!runDetail) {
         const ownerDealershipId =
           await repository.getReconciliationRunDealershipId(reconciliationRunId);
         if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
           response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
           return;
         }
+        response.status(404).json({ detail: "Reconciliation run was not found." });
+        return;
+      }
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), runDetail.dealership_store_id))) {
+        response.status(403).json({ detail: "Not authorized for this store." });
+        return;
+      }
+
+      const snapshot = await repository.getReconciliationRunSnapshot(
+        getRequestDealershipId(response),
+        reconciliationRunId,
+      );
+      if (!snapshot) {
         response.status(404).json({ detail: "Reconciliation snapshot was not found." });
         return;
       }
@@ -781,21 +945,39 @@ export function createApp(
         return;
       }
 
-      const replay = await buildReconciliationReplay(
-        repository,
+      const runDetail = await repository.getReconciliationRunDetail(
         getRequestDealershipId(response),
         reconciliationRunId,
       );
-      if (!replay) {
+      if (!runDetail) {
         const ownerDealershipId =
           await repository.getReconciliationRunDealershipId(reconciliationRunId);
         if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
           response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
           return;
         }
+        response.status(404).json({ detail: "Reconciliation run was not found." });
+        return;
+      }
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), runDetail.dealership_store_id))) {
+        response.status(403).json({ detail: "Not authorized for this store." });
+        return;
+      }
+
+      const replay = await buildReconciliationReplay(
+        repository,
+        getRequestDealershipId(response),
+        reconciliationRunId,
+      );
+      if (!replay) {
         response.status(404).json({ detail: "Reconciliation snapshot was not found." });
         return;
       }
+      await audit(response, "reconciliation_replay", "reconciliation_run", reconciliationRunId, null, {
+        results_changed: replay.results_changed,
+        matched_count_delta: replay.matched_count_delta,
+        exception_count_delta: replay.exception_count_delta,
+      });
 
       response.json(replay);
     } catch (error) {
@@ -832,6 +1014,10 @@ export function createApp(
         response.status(404).json({ detail: "Reconciliation run was not found." });
         return;
       }
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
+        response.status(403).json({ detail: "Not authorized for this store." });
+        return;
+      }
 
       response
         .status(200)
@@ -856,6 +1042,10 @@ export function createApp(
           response.status(404).json({ detail: "Reconciliation exception was not found." });
           return;
         }
+        if (!canWrite(getAuthenticatedUser(response))) {
+          response.status(403).json({ detail: "Read-only users cannot update review workflow." });
+          return;
+        }
 
         const update = parseExceptionReviewUpdate(request.body);
         if (update === false) {
@@ -863,6 +1053,20 @@ export function createApp(
           return;
         }
 
+        const previousDetail = await repository.getReconciliationRunDetail(
+          getRequestDealershipId(response),
+          reconciliationRunId,
+        );
+        const previousException = previousDetail?.exceptions.find(
+          (candidate) => candidate.exception_id === exceptionId,
+        ) ?? null;
+        if (
+          previousDetail &&
+          !(await canAccessStore(repository, getAuthenticatedUser(response), previousDetail.dealership_store_id))
+        ) {
+          response.status(403).json({ detail: "Not authorized for this store." });
+          return;
+        }
         const exception = await repository.updateReconciliationExceptionReview(
           getRequestDealershipId(response),
           reconciliationRunId,
@@ -884,6 +1088,14 @@ export function createApp(
           return;
         }
 
+        await audit(
+          response,
+          "review_workflow_updated",
+          "reconciliation_exception",
+          exception.exception_id,
+          previousException,
+          exception,
+        );
         response.json(exception);
       } catch (error) {
         next(error);
@@ -1016,7 +1228,93 @@ function toPublicUser(user: AuthUser): AuthUser {
     id: user.id,
     email: user.email,
     dealership_id: user.dealership_id,
+    role: user.role,
+    dealer_group_id: user.dealer_group_id,
+    store_ids: [...user.store_ids],
   };
+}
+
+function hasAnyRole(user: AuthUser, roles: AuthUser["role"][]): boolean {
+  return roles.includes(user.role);
+}
+
+function canWrite(user: AuthUser): boolean {
+  return user.role !== "read_only_auditor";
+}
+
+async function canAccessStore(
+  repository: TransactionRepository,
+  user: AuthUser,
+  storeId: number | null,
+): Promise<boolean> {
+  if (user.role === "platform_admin") {
+    return true;
+  }
+  if (storeId === null) {
+    return true;
+  }
+  if (user.role === "dealer_group_admin") {
+    const store = (await repository.listDealershipStores(user.dealership_id)).find(
+      (candidate) => candidate.id === storeId,
+    );
+    return Boolean(store && store.dealer_group_id === user.dealer_group_id);
+  }
+  return user.store_ids.includes(storeId);
+}
+
+async function filterByStoreAccess<T>(
+  repository: TransactionRepository,
+  user: AuthUser,
+  items: T[],
+  getStoreId: (item: T) => number | null,
+): Promise<T[]> {
+  const visibleItems: T[] = [];
+  for (const item of items) {
+    if (await canAccessStore(repository, user, getStoreId(item))) {
+      visibleItems.push(item);
+    }
+  }
+  return visibleItems;
+}
+
+function filterStoresForUser<T extends { id: number; dealer_group_id: number | null }>(
+  user: AuthUser,
+  stores: T[],
+): T[] {
+  if (user.role === "platform_admin") {
+    return stores;
+  }
+  if (user.role === "dealer_group_admin") {
+    return stores.filter((store) => store.dealer_group_id === user.dealer_group_id);
+  }
+  return stores.filter((store) => user.store_ids.includes(store.id));
+}
+
+async function audit(
+  response: express.Response,
+  actionType: string,
+  entityType: string,
+  entityId: string | number | null,
+  previousState: unknown,
+  newState: unknown,
+): Promise<void> {
+  const repository = response.locals.repository as TransactionRepository;
+  const user = getAuthenticatedUser(response);
+  await repository.createAuditEvent(user.dealership_id, {
+    actor_user_id: user.id === 0 ? null : user.id,
+    action_type: actionType,
+    entity_type: entityType,
+    entity_id: entityId === null ? null : String(entityId),
+    previous_state: toAuditState(previousState),
+    new_state: toAuditState(newState),
+  });
+}
+
+function toAuditState(value: unknown): Record<string, unknown> | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 }
 
 function parseSourceFileId(value: unknown): number | null {

@@ -1,7 +1,14 @@
 import { Layout } from "../components/Layout";
 import { WorkflowDashboard } from "../components/WorkflowDashboard";
+import type { CurrentUser } from "../types/auth";
 
-export function DashboardPage({ embedded = false }: { embedded?: boolean }) {
+export function DashboardPage({
+  currentUser,
+  embedded = false,
+}: {
+  currentUser?: CurrentUser;
+  embedded?: boolean;
+}) {
   const content = (
     <section className={embedded ? "grid gap-8" : "grid flex-1 content-start gap-8 py-8"}>
       {!embedded ? (
@@ -11,7 +18,7 @@ export function DashboardPage({ embedded = false }: { embedded?: boolean }) {
         </div>
       ) : null}
 
-      <WorkflowDashboard />
+      <WorkflowDashboard currentUser={currentUser} />
     </section>
   );
 

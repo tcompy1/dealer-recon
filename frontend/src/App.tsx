@@ -93,6 +93,7 @@ export default function App() {
           <div className="grid gap-1">
             <span className="text-xs font-semibold uppercase text-slate-500">Signed in</span>
             <span className="text-sm font-semibold text-slate-900">{currentUser.email}</span>
+            <span className="text-xs text-slate-600">{formatRole(currentUser.role)}</span>
           </div>
           <button
             className="inline-flex h-9 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
@@ -103,12 +104,16 @@ export default function App() {
           </button>
         </div>
 
-        {section === "reconciliation" ? <DashboardPage embedded /> : null}
+        {section === "reconciliation" ? <DashboardPage currentUser={currentUser} embedded /> : null}
         {section === "accounts" ? <AccountsPage /> : null}
         {section === "reports" ? <ReportsPage /> : null}
       </section>
     </Layout>
   );
+}
+
+function formatRole(value: string) {
+  return value.replace(/_/g, " ");
 }
 
 function NavButton({

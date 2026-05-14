@@ -8,6 +8,30 @@ export type ValidationError = {
   message: string;
 };
 
+export const userRoles = [
+  "platform_admin",
+  "dealer_group_admin",
+  "store_manager",
+  "accounting_user",
+  "read_only_auditor",
+] as const;
+
+export type UserRole = (typeof userRoles)[number];
+
+export type AuditEvent = {
+  id: number;
+  dealership_id: number;
+  actor_user_id: number | null;
+  action_type: string;
+  entity_type: string;
+  entity_id: string | null;
+  previous_state: Record<string, unknown> | null;
+  new_state: Record<string, unknown> | null;
+  timestamp: string;
+};
+
+export type NewAuditEvent = Omit<AuditEvent, "id" | "dealership_id" | "timestamp">;
+
 export type Transaction = {
   id: number;
   dealership_id: number;

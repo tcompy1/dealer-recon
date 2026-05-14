@@ -78,6 +78,132 @@ describe("app", () => {
     expect(response.status).toBe(401);
   });
 
+  test("accounting users are scoped to assigned stores", async () => {
+    const authRepository = new MemoryAuthRepository();
+    await authRepository.addUser({
+      email: "accounting@example.com",
+      password: "correct-password",
+      dealership_id: 1,
+      role: "accounting_user",
+      store_ids: [1],
+    });
+    const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+    const agent = request.agent(app);
+    await agent.post("/login").send({ email: "accounting@example.com", password: "correct-password" });
+
+    const storesResponse = await agent.get("/stores");
+    const forbiddenFilesResponse = await agent.get("/source-files").query({ store_id: 2 });
+    const forbiddenUploadResponse = await agent
+      .post("/upload")
+      .field("source_type", "boa")
+      .field("store_id", "2")
+      .attach("file", Buffer.from(boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101")), "boa.csv");
+
+    expect(storesResponse.status).toBe(200);
+    expect(storesResponse.body).toEqual([
+      expect.objectContaining({ id: 1, name: "Hiley Mazda of Hurst" }),
+    ]);
+    expect(forbiddenFilesResponse.status).toBe(403);
+    expect(forbiddenUploadResponse.status).toBe(403);
+  });
+
+  test("read-only auditors cannot modify review workflow state", async () => {
+    const authRepository = new MemoryAuthRepository();
+    await authRepository.addUser({
+      email: "accounting@example.com",
+      password: "correct-password",
+      dealership_id: 1,
+      role: "accounting_user",
+      store_ids: [1],
+    });
+    await authRepository.addUser({
+      email: "auditor@example.com",
+      password: "correct-password",
+      dealership_id: 1,
+      role: "read_only_auditor",
+      store_ids: [1],
+    });
+    const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+    const accountingAgent = request.agent(app);
+    await accountingAgent.post("/login").send({
+      email: "accounting@example.com",
+      password: "correct-password",
+    });
+    const boaUpload = await accountingAgent
+      .post("/upload")
+      .field("source_type", "boa")
+      .field("store_id", "1")
+      .attach(
+        "file",
+        Buffer.from([
+          boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"),
+          boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30202"),
+        ].join("\n")),
+        "boa.csv",
+      );
+    const dealertrackUpload = await accountingAgent
+      .post("/upload")
+      .field("source_type", "dealertrack")
+      .field("store_id", "1")
+      .attach("file", Buffer.from(dealertrackUploadCsv("M30101", "-301")), "dealertrack.csv");
+    const reconciliation = await accountingAgent.post("/reconcile").send({
+      boa_source_file_id: boaUpload.body.source_file_id,
+      dealertrack_source_file_id: dealertrackUpload.body.source_file_id,
+      dealership_store_id: 1,
+    });
+    const detail = await accountingAgent.get(`/reconciliation-runs/${reconciliation.body.reconciliation_run_id}`);
+    const exceptionId = detail.body.exceptions[0].exception_id;
+
+    const auditorAgent = request.agent(app);
+    await auditorAgent.post("/login").send({ email: "auditor@example.com", password: "correct-password" });
+    const patchResponse = await auditorAgent
+      .patch(`/reconciliation-runs/${reconciliation.body.reconciliation_run_id}/exceptions/${exceptionId}`)
+      .send({ review_status: "resolved" });
+
+    expect(patchResponse.status).toBe(403);
+  });
+
+  test("login and replay actions are written to audit events", async () => {
+    const authRepository = new MemoryAuthRepository();
+    await authRepository.addUser({
+      email: "admin@example.com",
+      password: "correct-password",
+      dealership_id: 1,
+      role: "platform_admin",
+    });
+    const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+    const agent = request.agent(app);
+    await agent.post("/login").send({ email: "admin@example.com", password: "correct-password" });
+    const reconciliation = await createReconciliationWithAgent(agent);
+
+    await agent.get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/replay`);
+    const auditResponse = await agent.get("/audit-events");
+
+    expect(auditResponse.status).toBe(200);
+    expect(auditResponse.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action_type: "login", entity_type: "user" }),
+        expect.objectContaining({
+          action_type: "reconciliation_replay",
+          entity_type: "reconciliation_run",
+          entity_id: String(reconciliation.reconciliation_run_id),
+        }),
+      ]),
+    );
+  });
+
   test("authenticated requests scope dealership from the user", async () => {
     const repository = new MemoryTransactionRepository();
     const authRepository = new MemoryAuthRepository();
@@ -1557,6 +1683,39 @@ async function createReconciliation(app: ReturnType<typeof createApp>) {
     dealertrackFilename: "dealertrack-run.csv",
     storeId: undefined,
   });
+}
+
+async function createReconciliationWithAgent(agent: ReturnType<typeof request.agent>) {
+  const boaUpload = await agent
+    .post("/upload")
+    .field("source_type", "boa")
+    .field("store_id", "1")
+    .attach(
+      "file",
+      Buffer.from(
+        [
+          boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"),
+          boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30202"),
+        ].join("\n"),
+      ),
+      "boa-run.csv",
+    );
+  const dealertrackUpload = await agent
+    .post("/upload")
+    .field("source_type", "dealertrack")
+    .field("store_id", "1")
+    .attach(
+      "file",
+      Buffer.from([dealertrackUploadCsv("M30101", "-301"), dealertrackUploadCsv("M30303", "-303")].join("\n")),
+      "dealertrack-run.csv",
+    );
+  const response = await agent.post("/reconcile").send({
+    boa_source_file_id: boaUpload.body.source_file_id,
+    dealertrack_source_file_id: dealertrackUpload.body.source_file_id,
+    dealership_store_id: 1,
+  });
+  expect(response.status).toBe(200);
+  return response.body as { reconciliation_run_id: number };
 }
 
 async function createReconciliationWithRows(

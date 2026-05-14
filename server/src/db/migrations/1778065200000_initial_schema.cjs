@@ -49,8 +49,22 @@ exports.up = (pgm) => {
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
       email TEXT NOT NULL,
+      password_hash TEXT NULL,
+      role VARCHAR(40) NOT NULL DEFAULT 'accounting_user',
       dealership_id INTEGER NOT NULL REFERENCES dealerships(id) ON DELETE RESTRICT,
+      dealer_group_id INTEGER NULL REFERENCES dealer_groups(id) ON DELETE SET NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NULL;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(40) NOT NULL DEFAULT 'accounting_user';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS dealer_group_id INTEGER NULL REFERENCES dealer_groups(id) ON DELETE SET NULL;
+
+    CREATE TABLE IF NOT EXISTS user_store_assignments (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      dealership_store_id INTEGER NOT NULL REFERENCES dealership_stores(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, dealership_store_id)
     );
 
     CREATE TABLE IF NOT EXISTS source_files (
@@ -215,6 +229,18 @@ exports.up = (pgm) => {
       message TEXT NOT NULL,
       metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_events (
+      id SERIAL PRIMARY KEY,
+      dealership_id INTEGER NOT NULL REFERENCES dealerships(id) ON DELETE RESTRICT,
+      actor_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+      action_type TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NULL,
+      previous_state JSONB NULL,
+      new_state JSONB NULL,
+      timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
     ALTER TABLE reconciliation_exceptions
@@ -540,6 +566,18 @@ exports.up = (pgm) => {
     CREATE TRIGGER reconciliation_run_input_transactions_immutable
       BEFORE UPDATE OR DELETE ON reconciliation_run_input_transactions
       FOR EACH ROW EXECUTE FUNCTION prevent_reconciliation_snapshot_mutation();
+
+    CREATE OR REPLACE FUNCTION prevent_audit_event_mutation()
+    RETURNS trigger AS $$
+    BEGIN
+      RAISE EXCEPTION 'audit events are immutable';
+    END;
+    $$ LANGUAGE plpgsql;
+
+    DROP TRIGGER IF EXISTS audit_events_immutable ON audit_events;
+    CREATE TRIGGER audit_events_immutable
+      BEFORE UPDATE OR DELETE ON audit_events
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_event_mutation();
   `);
 };
 
@@ -551,16 +589,19 @@ exports.down = (pgm) => {
     DROP TABLE IF EXISTS reconciliation_run_input_transactions;
     DROP TABLE IF EXISTS reconciliation_run_inputs;
     DROP TABLE IF EXISTS operational_events;
+    DROP TABLE IF EXISTS audit_events;
     DROP TABLE IF EXISTS ingestion_events;
     DROP TABLE IF EXISTS scheduled_reconciliation_jobs;
     DROP TABLE IF EXISTS reconciliation_runs;
     DROP TABLE IF EXISTS transactions;
     DROP TABLE IF EXISTS source_files;
+    DROP TABLE IF EXISTS user_store_assignments;
     DROP TABLE IF EXISTS dealership_stores;
-    DROP TABLE IF EXISTS dealer_groups;
     DROP TABLE IF EXISTS users;
+    DROP TABLE IF EXISTS dealer_groups;
     DROP TABLE IF EXISTS dealerships;
     DROP FUNCTION IF EXISTS prevent_reconciliation_snapshot_mutation();
+    DROP FUNCTION IF EXISTS prevent_audit_event_mutation();
     DROP FUNCTION IF EXISTS next_run_at_for_cadence(text);
   `);
 };

@@ -46,6 +46,7 @@ import type {
   ScheduledReconciliationJob,
   StoreAutomationStatus,
 } from "../types/automation";
+import type { CurrentUser } from "../types/auth";
 import type { DealerGroup, DealerGroupAnalytics, DealershipStore } from "../types/store";
 
 type UploadSlot = {
@@ -64,7 +65,7 @@ const initialUploadSlot: UploadSlot = {
   error: null,
 };
 
-export function WorkflowDashboard() {
+export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }) {
   const [boaUpload, setBoaUpload] = useState<UploadSlot>(initialUploadSlot);
   const [dealertrackUpload, setDealertrackUpload] = useState<UploadSlot>(initialUploadSlot);
   const [sourceFiles, setSourceFiles] = useState<SourceFileSummary[]>([]);
@@ -91,6 +92,7 @@ export function WorkflowDashboard() {
   const [workflowError, setWorkflowError] = useState<string | null>(null);
 
   const canReconcile = Boolean(boaUpload.upload?.source_file_id && dealertrackUpload.upload?.source_file_id);
+  const canModify = currentUser?.role !== "read_only_auditor";
 
   useEffect(() => {
     void refreshLists();
@@ -379,6 +381,7 @@ export function WorkflowDashboard() {
           statuses={automationStatuses}
           onCreateJob={() => void handleCreateScheduledJob()}
           onToggleJob={(job, enabled) => void handleToggleScheduledJob(job, enabled)}
+          canModify={canModify}
         />
 
         <div className="flex flex-col gap-1">
@@ -395,6 +398,7 @@ export function WorkflowDashboard() {
               setBoaUpload((current) => ({ ...current, file, upload: null, error: null }))
             }
             onUpload={() => void handleUpload("boa")}
+            canModify={canModify}
           />
           <UploadPanel
             kind="dealertrack"
@@ -404,6 +408,7 @@ export function WorkflowDashboard() {
               setDealertrackUpload((current) => ({ ...current, file, upload: null, error: null }))
             }
             onUpload={() => void handleUpload("dealertrack")}
+            canModify={canModify}
           />
         </div>
 
@@ -421,7 +426,7 @@ export function WorkflowDashboard() {
         </div>
         <button
           className="inline-flex h-11 items-center justify-center rounded-md bg-slate-950 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-          disabled={!canReconcile || isReconciling}
+          disabled={!canModify || !canReconcile || isReconciling}
           type="button"
           onClick={() => void handleReconcile()}
         >
@@ -445,6 +450,7 @@ export function WorkflowDashboard() {
           void handleExceptionReviewUpdate(exceptionId, update)
         }
         reviewUpdatingId={reviewUpdatingId}
+        canModify={canModify}
       />
 
       <HistorySection
@@ -551,6 +557,7 @@ function AutomationOverview({
   statuses,
   onCreateJob,
   onToggleJob,
+  canModify,
 }: {
   events: OperationalEvent[];
   ingestionEvents: IngestionEvent[];
@@ -560,6 +567,7 @@ function AutomationOverview({
   statuses: StoreAutomationStatus[];
   onCreateJob: () => void;
   onToggleJob: (job: ScheduledReconciliationJob, enabled: boolean) => void;
+  canModify: boolean;
 }) {
   const selectedStatus = statuses.find((status) => status.dealership_store_id === selectedStoreId);
 
@@ -594,7 +602,7 @@ function AutomationOverview({
             </div>
             <button
               className="inline-flex h-9 items-center justify-center rounded-md bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-              disabled={!selectedStoreId}
+              disabled={!canModify || !selectedStoreId}
               type="button"
               onClick={onCreateJob}
             >
@@ -622,6 +630,7 @@ function AutomationOverview({
                     Enabled
                     <input
                       checked={job.enabled}
+                      disabled={!canModify}
                       type="checkbox"
                       onChange={(event) => onToggleJob(job, event.target.checked)}
                     />
@@ -694,12 +703,14 @@ function UploadPanel({
   kind,
   label,
   slot,
+  canModify,
   onFileChange,
   onUpload,
 }: {
   kind: SourceKind;
   label: string;
   slot: UploadSlot;
+  canModify: boolean;
   onFileChange: (file: File | null) => void;
   onUpload: () => void;
 }) {
@@ -719,6 +730,7 @@ function UploadPanel({
       <input
         accept=".csv,text/csv"
         className="block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 file:mr-4 file:rounded-md file:border-0 file:bg-slate-900 file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+        disabled={!canModify}
         type="file"
         onChange={handleFileChange}
       />
@@ -726,7 +738,7 @@ function UploadPanel({
       <div className="flex flex-wrap items-center gap-3">
         <button
           className="inline-flex h-10 items-center justify-center rounded-md bg-cyan-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-          disabled={!slot.file || slot.isUploading}
+          disabled={!canModify || !slot.file || slot.isUploading}
           type="button"
           onClick={onUpload}
         >
@@ -849,6 +861,7 @@ function ResultsSection({
   onReplay,
   onReviewUpdate,
   reviewUpdatingId,
+  canModify,
 }: {
   analytics: ReconciliationRunComparison | null;
   diagnostics: VinPresenceDiagnostics | null;
@@ -861,6 +874,7 @@ function ResultsSection({
   onReplay: () => void;
   onReviewUpdate: (exceptionId: number, update: ReconciliationExceptionReviewUpdate) => void;
   reviewUpdatingId: number | null;
+  canModify: boolean;
 }) {
   if (!run && !isReconciling) {
     return null;
@@ -922,6 +936,7 @@ function ResultsSection({
             onFiltersChange={onFiltersChange}
             onReviewUpdate={onReviewUpdate}
             reviewUpdatingId={reviewUpdatingId}
+            canModify={canModify}
           />
         </>
       ) : null}
@@ -1328,6 +1343,7 @@ function ExceptionsTable({
   onFiltersChange,
   onReviewUpdate,
   reviewUpdatingId,
+  canModify,
 }: {
   filters: ReconciliationRunFilters;
   run: ReconciliationRunDetail;
@@ -1337,6 +1353,7 @@ function ExceptionsTable({
     update: ReconciliationExceptionReviewUpdate,
   ) => void;
   reviewUpdatingId: number | null;
+  canModify: boolean;
 }) {
   const exportUrl = getReconciliationExceptionsCsvUrl(run.reconciliation_run_id, filters);
   const categoryCounts = getExceptionCategoryCounts(run);
@@ -1513,7 +1530,7 @@ function ExceptionsTable({
                   <td className="px-3 py-2">
                     <select
                       className="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
-                      disabled={reviewUpdatingId === exception.exception_id}
+                      disabled={!canModify || reviewUpdatingId === exception.exception_id}
                       value={exception.review_status}
                       onChange={(event) =>
                         onReviewUpdate(exception.exception_id, {
@@ -1531,7 +1548,7 @@ function ExceptionsTable({
                     <input
                       className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
                       defaultValue={exception.assigned_to ?? ""}
-                      disabled={reviewUpdatingId === exception.exception_id}
+                      disabled={!canModify || reviewUpdatingId === exception.exception_id}
                       placeholder="Assign reviewer"
                       type="text"
                       onBlur={(event) => {
@@ -1553,7 +1570,7 @@ function ExceptionsTable({
                     <input
                       className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
                       defaultValue={exception.review_notes}
-                      disabled={reviewUpdatingId === exception.exception_id}
+                      disabled={!canModify || reviewUpdatingId === exception.exception_id}
                       placeholder="Add review notes"
                       type="text"
                       onBlur={(event) => {
@@ -1571,7 +1588,7 @@ function ExceptionsTable({
                         className="inline-flex h-8 items-center justify-center rounded-md border border-emerald-300 bg-white px-3 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:text-slate-400"
                         disabled={
                           exception.review_status === "resolved" ||
-                          reviewUpdatingId === exception.exception_id
+                          !canModify || reviewUpdatingId === exception.exception_id
                         }
                         type="button"
                         onClick={() =>
@@ -1584,7 +1601,7 @@ function ExceptionsTable({
                         className="inline-flex h-8 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
                         disabled={
                           exception.review_status === "ignored" ||
-                          reviewUpdatingId === exception.exception_id
+                          !canModify || reviewUpdatingId === exception.exception_id
                         }
                         type="button"
                         onClick={() =>

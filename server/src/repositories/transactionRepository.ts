@@ -1,11 +1,13 @@
 import type {
   AccountDetail,
   AccountSummary,
+  AuditEvent,
   DealerGroup,
   DealershipStore,
   MonthEndReport,
   MonthEndReportAccount,
   NewDealershipStore,
+  NewAuditEvent,
   NewIngestionEvent,
   NewOperationalEvent,
   NewSourceFile,
@@ -102,6 +104,8 @@ export interface TransactionRepository {
     dealershipStoreId?: number,
     limit?: number,
   ): Promise<OperationalEvent[]>;
+  createAuditEvent(dealershipId: number, event: NewAuditEvent): Promise<AuditEvent>;
+  listAuditEvents(dealershipId: number, limit?: number): Promise<AuditEvent[]>;
   listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]>;
   listBySourceFile(dealershipId: number, sourceFileId: number): Promise<Transaction[]>;
   listAccountsSummary(dealershipId: number): Promise<AccountSummary[]>;
@@ -201,6 +205,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
   private scheduledReconciliationJobs: ScheduledReconciliationJob[] = [];
   private ingestionEvents: IngestionEvent[] = [];
   private operationalEvents: OperationalEvent[] = [];
+  private auditEvents: AuditEvent[] = [];
   private nextSourceFileId = 1;
   private nextId = 1;
   private nextReconciliationRunId = 1;
@@ -210,6 +215,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
   private nextScheduledReconciliationJobId = 1;
   private nextIngestionEventId = 1;
   private nextOperationalEventId = 1;
+  private nextAuditEventId = 1;
 
   async createSourceFileWithTransactions(
     dealershipId: number,
@@ -425,6 +431,28 @@ export class MemoryTransactionRepository implements TransactionRepository {
       .slice()
       .sort((left, right) => right.id - left.id)
       .slice(0, limit);
+  }
+
+  async createAuditEvent(dealershipId: number, eventInput: NewAuditEvent): Promise<AuditEvent> {
+    const event: AuditEvent = {
+      ...eventInput,
+      id: this.nextAuditEventId++,
+      dealership_id: dealershipId,
+      previous_state: cloneJson(eventInput.previous_state),
+      new_state: cloneJson(eventInput.new_state),
+      timestamp: new Date().toISOString(),
+    };
+    this.auditEvents.push(event);
+    return cloneAuditEvent(event);
+  }
+
+  async listAuditEvents(dealershipId: number, limit = 100): Promise<AuditEvent[]> {
+    return this.auditEvents
+      .filter((event) => event.dealership_id === dealershipId)
+      .slice()
+      .sort((left, right) => right.id - left.id)
+      .slice(0, limit)
+      .map(cloneAuditEvent);
   }
 
   async listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]> {
@@ -825,6 +853,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     this.scheduledReconciliationJobs = [];
     this.ingestionEvents = [];
     this.operationalEvents = [];
+    this.auditEvents = [];
     this.nextSourceFileId = 1;
     this.nextId = 1;
     this.nextReconciliationRunId = 1;
@@ -834,6 +863,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     this.nextScheduledReconciliationJobId = 1;
     this.nextIngestionEventId = 1;
     this.nextOperationalEventId = 1;
+    this.nextAuditEventId = 1;
   }
 
   private toReconciliationRunListItem(run: ReconciliationRun): ReconciliationRunListItem | null {
@@ -1277,4 +1307,12 @@ function cloneTransaction(transaction: Transaction): Transaction {
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function cloneAuditEvent(event: AuditEvent): AuditEvent {
+  return {
+    ...event,
+    previous_state: cloneJson(event.previous_state),
+    new_state: cloneJson(event.new_state),
+  };
 }
