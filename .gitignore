@@ -29,3 +29,6 @@ analysis/*
 *-vin-diagnostics*.csv
 *.diagnostics.txt
 *.diagnostics.csv
+
+# Windows alternate data stream metadata from downloaded files
+*:Zone.Identifier
