@@ -24,3 +24,16 @@ storage/uploads/*
 .DS_Store
 .idea/
 .vscode/
+
+# Local analysis / diagnostic outputs.
+# Real-client CSV samples, VIN dumps, and any *-output / *-diagnostics
+# files must never be committed. Keep the README and explicit .gitkeep
+# entries in analysis/, ignore everything else.
+analysis/*
+!analysis/README.md
+!analysis/.gitkeep
+*-diagnostics-output.txt
+*-vin-diagnostics*.txt
+*-vin-diagnostics*.csv
+*.diagnostics.txt
+*.diagnostics.csv

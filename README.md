@@ -495,7 +495,42 @@ UPLOAD_STORAGE_PATH=/app/storage/uploads
 DEFAULT_DEALERSHIP_ID=1
 SESSION_SECRET=local-dev-session-secret-change-before-production
 VITE_API_BASE_URL=http://localhost:8000
+# Optional. Set to true (only in dev) to print BOA/Dealertrack parser
+# row-count summaries and a small sample of accepted rows to stderr.
+# Always off in production; see "Data handling" below.
+PARSER_DEBUG=false
 ```
+
+## Continuous Integration
+
+GitHub Actions runs on every push to `main` and every pull request
+(`.github/workflows/ci.yml`):
+
+- **server** — `npm ci`, `npm run build`, `npm test` against `server/`.
+- **frontend** — `npm ci`, `npm run lint`, `npm run build` against
+  `frontend/`.
+
+The workflow uses no secrets and runs on `ubuntu-latest` with Node 20.
+
+## Data handling
+
+Customer data — VINs, stock numbers, GL accounts, posting dates, dollar
+amounts, bank references — is sensitive. A few rules:
+
+- **Never commit real client data.** The `analysis/` directory is gitignored
+  by default for this reason. See `analysis/README.md` for what is and is
+  not allowed.
+- **`PARSER_DEBUG` is off by default and force-disabled in production.** When
+  enabled in development it writes row counts and up to three sample accepted
+  rows to stderr. Those samples contain raw input cells (VINs, amounts,
+  stock numbers). Treat any captured stderr the same way you would treat the
+  CSV itself.
+- **A history rewrite has happened on this repository before.** A real-client
+  diagnostic file (`analysis/hiley-vin-diagnostics-output.txt`) was committed
+  by mistake and removed via force-push. Treat that data as **disclosed** —
+  rewriting history does not retroactively un-publish anything that was
+  briefly public. Coordinate any future rewrites in advance (see
+  `analysis/README.md` for the checklist) and assume cached copies exist.
 
 ## MVP Build Order
 

@@ -642,6 +642,17 @@ function parseDate(value: string | null | undefined): string | null {
   return null;
 }
 
+function isParserDebugEnabled(): boolean {
+  if (process.env.NODE_ENV === "production") {
+    return false;
+  }
+  const flag = process.env.PARSER_DEBUG;
+  if (!flag) {
+    return false;
+  }
+  return /^(1|true|yes|on)$/i.test(flag.trim());
+}
+
 function printParserDebug(
   sourceName: string,
   rowsScanned: number,
@@ -649,6 +660,9 @@ function printParserDebug(
   rowsSkipped: number,
   sampleAcceptedRows: string[][],
 ): void {
+  if (!isParserDebugEnabled()) {
+    return;
+  }
   console.error(
     `${sourceName} parser debug: rows_scanned=${rowsScanned} rows_accepted=${rowsAccepted} rows_skipped=${rowsSkipped} sample_accepted_rows=${JSON.stringify(
       sampleAcceptedRows.slice(0, 3),
