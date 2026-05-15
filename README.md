@@ -27,7 +27,6 @@ dealer-recon/
 |   |   |-- domain/          # Shared backend types
 |   |   |-- repositories/    # Memory and PostgreSQL source file/transaction stores
 |   |   `-- services/        # CSV normalization and reconciliation logic
-|-- backend/                 # Legacy Python backend retained during migration
 |-- frontend/                # React application
 |   `-- src/
 |       |-- api/             # API client modules

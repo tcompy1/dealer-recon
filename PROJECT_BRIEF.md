@@ -110,12 +110,16 @@ Later:
 
 ## Suggested Stack
 
-Backend:
-- Python
-- FastAPI
+The initial brief suggested a Python/FastAPI/SQLAlchemy backend. The prototype
+was built and is maintained on a TypeScript/Express/`node-pg-migrate` backend
+instead; see the root README for the implemented stack. The original
+suggestion is kept here for historical context only.
+
+Backend (implemented):
+- TypeScript
+- Node.js / Express
 - PostgreSQL
-- SQLAlchemy
-- Pandas for early reconciliation logic
+- `node-pg-migrate`
 
 Frontend:
 - React
@@ -200,7 +204,7 @@ Exception types:
 ## First Engineering Tasks for Codex
 
 1. Create repo scaffold:
-   - FastAPI backend
+   - TypeScript/Express backend (originally proposed as FastAPI; see Suggested Stack)
    - React frontend
    - Docker compose
    - PostgreSQL service

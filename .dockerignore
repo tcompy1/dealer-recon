@@ -1,15 +1,8 @@
 .git
-.venv
 node_modules
 **/node_modules
 dist
 **/dist
 *.tsbuildinfo
-__pycache__
-**/__pycache__
-.pytest_cache
-**/.pytest_cache
-.ruff_cache
-**/.ruff_cache
 .env
 storage/uploads/*
