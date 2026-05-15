@@ -94,7 +94,9 @@ export function createApp(
   const authRepository = authOptions.authRepository;
   const sessionSecret =
     authOptions.sessionSecret ?? "local-dev-session-secret-change-before-production";
-  const isProduction = authOptions.nodeEnv === "production";
+  const nodeEnv = authOptions.nodeEnv ?? "development";
+  const isProduction = nodeEnv === "production";
+  const isLocalEnv = nodeEnv === "development" || nodeEnv === "test";
   const allowDevDealershipFallback =
     authOptions.allowDevDealershipFallback ?? authRepository === undefined;
 
@@ -104,6 +106,11 @@ export function createApp(
     next();
   });
   app.use(express.json());
+  if (corsOrigins.length === 0 && !isLocalEnv) {
+    throw new Error(
+      `CORS allowed origins must be configured explicitly when NODE_ENV=${nodeEnv}.`,
+    );
+  }
   app.use(
     cors({
       origin: corsOrigins.length > 0 ? corsOrigins : true,

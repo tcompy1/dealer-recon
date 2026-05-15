@@ -9,22 +9,45 @@ export type AppConfig = {
   sessionSecret: string;
 };
 
+const LOCAL_DEV_SESSION_SECRET = "local-dev-session-secret-change-before-production";
+const LOCAL_DEV_CORS_ORIGIN = "http://localhost:5173";
+
 export function loadConfig(): AppConfig {
   const nodeEnv = process.env.NODE_ENV ?? "development";
+  const isLocalEnv = nodeEnv === "development" || nodeEnv === "test";
+
   const databaseUrl = process.env.DATABASE_URL;
-  if (nodeEnv === "production" && !databaseUrl) {
-    throw new Error("DATABASE_URL is required when NODE_ENV=production.");
+  if (!isLocalEnv && !databaseUrl) {
+    throw new Error(`DATABASE_URL is required when NODE_ENV=${nodeEnv}.`);
   }
   const port = parsePositiveInteger(process.env.PORT ?? "8000", "PORT");
   const defaultDealershipId = parsePositiveInteger(
     process.env.DEFAULT_DEALERSHIP_ID ?? "1",
     "DEFAULT_DEALERSHIP_ID",
   );
-  const corsOrigins = parseCorsOrigins(process.env.BACKEND_CORS_ORIGINS ?? "http://localhost:5173");
-  const sessionSecret =
-    process.env.SESSION_SECRET ?? "local-dev-session-secret-change-before-production";
-  if (nodeEnv === "production" && !process.env.SESSION_SECRET) {
-    throw new Error("SESSION_SECRET is required when NODE_ENV=production.");
+
+  const rawCorsOrigins = process.env.BACKEND_CORS_ORIGINS;
+  if (!isLocalEnv && (rawCorsOrigins === undefined || rawCorsOrigins.trim() === "")) {
+    throw new Error(
+      `BACKEND_CORS_ORIGINS must list explicit allowed origins when NODE_ENV=${nodeEnv}.`,
+    );
+  }
+  const corsOrigins = parseCorsOrigins(rawCorsOrigins ?? LOCAL_DEV_CORS_ORIGIN);
+  if (!isLocalEnv && corsOrigins.length === 0) {
+    throw new Error(
+      `BACKEND_CORS_ORIGINS must list at least one allowed origin when NODE_ENV=${nodeEnv}.`,
+    );
+  }
+
+  const providedSessionSecret = process.env.SESSION_SECRET;
+  if (!isLocalEnv && !providedSessionSecret) {
+    throw new Error(`SESSION_SECRET is required when NODE_ENV=${nodeEnv}.`);
+  }
+  const sessionSecret = providedSessionSecret ?? LOCAL_DEV_SESSION_SECRET;
+  if (!isLocalEnv && sessionSecret === LOCAL_DEV_SESSION_SECRET) {
+    throw new Error(
+      `SESSION_SECRET must not use the local development default when NODE_ENV=${nodeEnv}.`,
+    );
   }
   if (sessionSecret.length < 32) {
     throw new Error("SESSION_SECRET must be at least 32 characters.");

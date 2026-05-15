@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   server:
-    name: server (install, build, test)
+    name: server (install, lint, typecheck, build, test)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -23,6 +23,8 @@ jobs:
           cache: npm
           cache-dependency-path: server/package-lock.json
       - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
       - run: npm run build
       - run: npm test
 

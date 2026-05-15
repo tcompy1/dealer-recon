@@ -1,6 +1,5 @@
 import type {
   ReconciliationReplayResponse,
-  ReconciliationResponse,
   ReconciliationRunDetail,
   ReconciliationRunInputSnapshot,
   TransactionSummary,

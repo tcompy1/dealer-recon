@@ -16,7 +16,7 @@ const describeIfDatabase = databaseUrl ? describe : describe.skip;
 const boaUploadCsv = (stockNumber: string, vin: string, amount: string, reference: string) =>
   `,,,9/26/2025,${reference},,${stockNumber},,${vin},,"${amount}",`;
 
-const dealertrackUploadCsv = (stockNumber: string, amount: string) =>
+const _dealertrackUploadCsv = (stockNumber: string, amount: string) =>
   `${stockNumber},"BOA FLOORPLAN",${amount},0`;
 
 describeIfDatabase("reconciliation persistence", () => {

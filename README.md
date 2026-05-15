@@ -153,6 +153,30 @@ If a deployment fails after migrations, prefer restoring the backup for destruct
 small reversible changes, stop the app, run `npm run migrate:prod:down`, redeploy the prior image, and
 check `/ready`.
 
+### Production environment variables
+
+The backend refuses to start in any non-local environment (anything other than
+`NODE_ENV=development` or `NODE_ENV=test`) unless all of the following are
+explicitly set:
+
+- `DATABASE_URL` — Postgres connection string for the deployment.
+- `SESSION_SECRET` — at least 32 characters. Must NOT equal the
+  `local-dev-session-secret-change-before-production` placeholder. Generate
+  per-environment, e.g. `openssl rand -hex 32`, and supply via your secret
+  manager (Docker secrets, VPS env file with `chmod 600`, hosted secret
+  store). Do not commit real secrets.
+- `BACKEND_CORS_ORIGINS` — comma-separated list of allowed browser origins
+  (e.g. `https://app.example.com,https://admin.example.com`). The server
+  rejects an empty list and never reflects arbitrary origins outside
+  development/test, because session cookies are sent with
+  `credentials: include`.
+
+For Docker / Compose deployments, populate a deployment-specific `.env` (not
+checked in) modeled on `.env.example`, then run the standard
+`docker-compose.prod.yml` flow above. For a VPS host, the same `.env`
+contract applies; ensure the file is owned by the service user and not
+world-readable.
+
 ## Tenancy Model
 
 The backend resolves dealership scope from the authenticated user. `DEFAULT_DEALERSHIP_ID` remains
@@ -506,7 +530,8 @@ PARSER_DEBUG=false
 GitHub Actions runs on every push to `main` and every pull request
 (`.github/workflows/ci.yml`):
 
-- **server** — `npm ci`, `npm run build`, `npm test` against `server/`.
+- **server** — `npm ci`, `npm run lint`, `npm run typecheck`,
+  `npm run build`, `npm test` against `server/`.
 - **frontend** — `npm ci`, `npm run lint`, `npm run build` against
   `frontend/`.
 

@@ -972,7 +972,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
   }
 }
 
-function toSourceFileSummary(sourceFile: SourceFile): SourceFileSummary {
+function _toSourceFileSummary(sourceFile: SourceFile): SourceFileSummary {
   return {
     source_file_id: sourceFile.id,
     dealership_id: sourceFile.dealership_id,
