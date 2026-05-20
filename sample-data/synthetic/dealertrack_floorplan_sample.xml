@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:html="http://www.w3.org/TR/REC-html40">
+ <Worksheet ss:Name="FloorplanRecon">
+  <Table>
+   <Row>
+    <Cell><Data ss:Type="String">Control</Data></Cell>
+    <Cell><Data ss:Type="String">Description</Data></Cell>
+    <Cell><Data ss:Type="String">Amount</Data></Cell>
+    <Cell><Data ss:Type="String">Balance</Data></Cell>
+   </Row>
+   <Row>
+    <Cell><Data ss:Type="String">M10001</Data></Cell>
+    <Cell><Data ss:Type="String">FLOORPLAN ADV STK M10001 VIN 1FAKEVN0000A0001X NEW</Data></Cell>
+    <Cell><Data ss:Type="Number">12345.00</Data></Cell>
+    <Cell><Data ss:Type="Number">12345.00</Data></Cell>
+   </Row>
+   <Row>
+    <Cell ss:Index="1"><Data ss:Type="String">M10002</Data></Cell>
+    <Cell ss:Index="3"><Data ss:Type="Number">9876.50</Data></Cell>
+   </Row>
+   <Row>
+    <Cell><Data ss:Type="String">M10003</Data></Cell>
+    <Cell><Data ss:Type="String">FLOORPLAN PAYOFF 2FAKEVN0000B0002Y USED &amp; CERT</Data></Cell>
+    <Cell><Data ss:Type="Number">-5500.25</Data></Cell>
+    <Cell><Data ss:Type="Number">0.00</Data></Cell>
+   </Row>
+   <Row>
+    <Cell><Data ss:Type="String">M10004</Data></Cell>
+    <Cell><Data ss:Type="String">FLOORPLAN ADV VIN 3FAKEVN0000C0003Z</Data></Cell>
+    <Cell><Data ss:Type="Number">23456.78</Data></Cell>
+    <Cell><Data ss:Type="Number">23456.78</Data></Cell>
+   <Row>
+    <Cell><Data ss:Type="String">M10005</Data></Cell>
+    <Cell><Data ss:Type="String">PARTIAL BROKEN ROW 4FAKEVN0000D0004W</Data></Cell>
+    <Cell><Data ss:Type="Number">100.00</Data></Cell>
+   </Row>
+  </Table>
+ </Worksheet>
+</Workbook>
