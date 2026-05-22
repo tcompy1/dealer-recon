@@ -14,7 +14,12 @@ export function DashboardPage({
       {!embedded ? (
         <div className="flex flex-col gap-2">
           <p className="text-sm font-semibold text-cyan-700">Dealer Recon</p>
-          <h1 className="text-3xl font-semibold text-slate-950">Floorplan reconciliation</h1>
+          <h1 className="text-3xl font-semibold text-slate-950">BOA-first floorplan reconciliation</h1>
+          <p className="text-sm text-slate-600">
+            Upload the BOA statement and Dealertrack schedule, match by VIN6 + exact amount, and
+            export a Hurst FP Rec-style workbook with Schedule Not on Statement and Statement Not on
+            GL sections.
+          </p>
         </div>
       ) : null}
 

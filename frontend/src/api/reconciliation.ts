@@ -60,6 +60,10 @@ export function getReconciliationExceptionsCsvUrl(
   )}`;
 }
 
+export function getHurstFpRecExportUrl(reconciliationRunId: number): string {
+  return `${API_BASE_URL}/reconciliation-runs/${reconciliationRunId}/hurst-fp-rec`;
+}
+
 export async function updateReconciliationExceptionReview({
   reconciliationRunId,
   exceptionId,

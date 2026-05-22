@@ -36,6 +36,7 @@ import type {
 } from "../domain/types.js";
 import { formatCents } from "../domain/money.js";
 import { categorizeRunDetailExceptions } from "../services/exceptionCategorizer.js";
+import type { PriorExceptionRecord } from "../services/exceptionCarryForward.js";
 
 export type SourceFileImport = {
   sourceFile: SourceFile;
@@ -140,6 +141,14 @@ export interface TransactionRepository {
     exceptionId: number,
     update: ReconciliationExceptionReviewUpdate,
   ): Promise<ReconciliationRunDetail["exceptions"][number] | null>;
+  listPriorUnresolvedExceptions(
+    dealershipId: number,
+    options: {
+      dealershipStoreId: number | null;
+      excludeRunId: number;
+      createdBefore?: string;
+    },
+  ): Promise<PriorExceptionRecord[]>;
   clear?(): Promise<void>;
 }
 
@@ -197,6 +206,8 @@ export class MemoryTransactionRepository implements TransactionRepository {
     review_status: ReconciliationExceptionReviewStatus;
     assigned_to: string | null;
     review_notes: string;
+    boa_notes: string;
+    gl_notes: string;
     reviewed_at: string | null;
     reviewed_by: string | null;
     created_at: string;
@@ -645,6 +656,8 @@ export class MemoryTransactionRepository implements TransactionRepository {
         review_status: "unreviewed",
         assigned_to: null,
         review_notes: "",
+        boa_notes: "",
+        gl_notes: "",
         reviewed_at: null,
         reviewed_by: null,
         created_at: createdAt,
@@ -805,6 +818,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     if (update.note !== undefined) {
       exception.note = update.note;
       exception.review_notes = update.note;
+      assignSideNotes(exception, update.note);
     }
     if (update.review_status !== undefined) {
       exception.review_status = update.review_status;
@@ -819,6 +833,13 @@ export class MemoryTransactionRepository implements TransactionRepository {
     if (update.review_notes !== undefined) {
       exception.review_notes = update.review_notes;
       exception.note = update.review_notes;
+      assignSideNotes(exception, update.review_notes);
+    }
+    if (update.boa_notes !== undefined) {
+      exception.boa_notes = update.boa_notes;
+    }
+    if (update.gl_notes !== undefined) {
+      exception.gl_notes = update.gl_notes;
     }
     if (update.reviewed_by !== undefined) {
       exception.reviewed_by = normalizeNullableText(update.reviewed_by);
@@ -840,6 +861,58 @@ export class MemoryTransactionRepository implements TransactionRepository {
           exception.reconciliation_run_id === reconciliationRunId && exception.id === exceptionId,
       )?.dealership_id ?? null
     );
+  }
+
+  async listPriorUnresolvedExceptions(
+    dealershipId: number,
+    options: {
+      dealershipStoreId: number | null;
+      excludeRunId: number;
+      createdBefore?: string;
+    },
+  ): Promise<PriorExceptionRecord[]> {
+    const records: PriorExceptionRecord[] = [];
+    for (const exception of this.reconciliationExceptions) {
+      if (exception.dealership_id !== dealershipId) {
+        continue;
+      }
+      if (exception.reconciliation_run_id === options.excludeRunId) {
+        continue;
+      }
+      if (exception.status !== "unresolved") {
+        continue;
+      }
+      const run = this.reconciliationRuns.find((candidate) => candidate.id === exception.reconciliation_run_id);
+      if (!run) {
+        continue;
+      }
+      if ((run.dealership_store_id ?? null) !== options.dealershipStoreId) {
+        continue;
+      }
+      if (options.createdBefore && run.created_at >= options.createdBefore) {
+        continue;
+      }
+      const transaction = this.transactions.find((candidate) => candidate.id === exception.transaction_id);
+      if (!transaction) {
+        continue;
+      }
+      records.push({
+        exception_id: exception.id,
+        reconciliation_run_id: exception.reconciliation_run_id,
+        dealership_store_id: run.dealership_store_id ?? null,
+        source_type: exception.source_type,
+        amount_cents: transaction.amount_cents,
+        vin: transaction.vin,
+        stock_number: transaction.stock_number,
+        reference_number: transaction.reference_number,
+        description: transaction.description,
+        boa_notes: exception.boa_notes ?? "",
+        gl_notes: exception.gl_notes ?? "",
+        review_notes: exception.review_notes ?? "",
+        created_at: run.created_at,
+      });
+    }
+    return records;
   }
 
   async clear(): Promise<void> {
@@ -945,6 +1018,8 @@ export class MemoryTransactionRepository implements TransactionRepository {
     review_status: ReconciliationExceptionReviewStatus;
     assigned_to: string | null;
     review_notes: string;
+    boa_notes: string;
+    gl_notes: string;
     reviewed_at: string | null;
     reviewed_by: string | null;
     created_at: string;
@@ -960,6 +1035,8 @@ export class MemoryTransactionRepository implements TransactionRepository {
       review_status: exception.review_status,
       assigned_to: exception.assigned_to,
       review_notes: exception.review_notes,
+      boa_notes: exception.boa_notes ?? "",
+      gl_notes: exception.gl_notes ?? "",
       reviewed_at: exception.reviewed_at,
       reviewed_by: exception.reviewed_by,
       source_type: exception.source_type,
@@ -969,6 +1046,21 @@ export class MemoryTransactionRepository implements TransactionRepository {
         this.transactions.find((transaction) => transaction.id === exception.transaction_id)!,
       ),
     };
+  }
+}
+
+function assignSideNotes(
+  exception: { source_type: SourceType; boa_notes: string; gl_notes: string },
+  value: string,
+): void {
+  if (exception.source_type === "boa") {
+    exception.boa_notes = value;
+  } else if (
+    exception.source_type === "dealertrack" ||
+    exception.source_type === "dms" ||
+    exception.source_type === "gl"
+  ) {
+    exception.gl_notes = value;
   }
 }
 

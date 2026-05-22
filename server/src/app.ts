@@ -40,6 +40,8 @@ import {
   normalizeTransactionsFromCsv,
 } from "./services/transactionNormalizer.js";
 import { toExceptionsCsv, toMonthEndReportCsv } from "./presenters/csv.js";
+import { buildHurstFpRecWorkbook, toHurstFpRecXlsHtml } from "./presenters/hurstFpRec.js";
+import { applyCarryForwardToDetail } from "./services/exceptionCarryForward.js";
 import {
   parseExceptionReviewUpdate,
   parseLoginRequest,
@@ -862,7 +864,15 @@ export function createApp(
         return;
       }
 
-      response.json(detail);
+      const priors = await repository.listPriorUnresolvedExceptions(
+        getRequestDealershipId(response),
+        {
+          dealershipStoreId: detail.dealership_store_id,
+          excludeRunId: reconciliationRunId,
+          createdBefore: detail.created_at,
+        },
+      );
+      response.json(applyCarryForwardToDetail(detail, priors));
     } catch (error) {
       next(error);
     }
@@ -1043,6 +1053,62 @@ export function createApp(
           `attachment; filename="reconciliation-run-${reconciliationRunId}-exceptions.csv"`,
         )
         .send(toExceptionsCsv(detail));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/reconciliation-runs/:id/hurst-fp-rec", async (request, response, next) => {
+    try {
+      const reconciliationRunId = parsePositiveInteger(request.params.id);
+      if (reconciliationRunId === null) {
+        response.status(404).json({ detail: "Reconciliation run was not found." });
+        return;
+      }
+
+      const detail = await repository.getReconciliationRunDetail(
+        getRequestDealershipId(response),
+        reconciliationRunId,
+      );
+      if (!detail) {
+        const ownerDealershipId =
+          await repository.getReconciliationRunDealershipId(reconciliationRunId);
+        if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
+          response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
+          return;
+        }
+        response.status(404).json({ detail: "Reconciliation run was not found." });
+        return;
+      }
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
+        response.status(403).json({ detail: "Not authorized for this store." });
+        return;
+      }
+
+      const priors = await repository.listPriorUnresolvedExceptions(
+        getRequestDealershipId(response),
+        {
+          dealershipStoreId: detail.dealership_store_id,
+          excludeRunId: reconciliationRunId,
+          createdBefore: detail.created_at,
+        },
+      );
+      const enrichedDetail = applyCarryForwardToDetail(detail, priors);
+      const workbook = buildHurstFpRecWorkbook(enrichedDetail);
+      const format = typeof request.query.format === "string" ? request.query.format : "xls";
+      if (format === "json") {
+        response.json(workbook);
+        return;
+      }
+
+      response
+        .status(200)
+        .type("application/vnd.ms-excel")
+        .setHeader(
+          "Content-Disposition",
+          `attachment; filename="hurst-fp-rec-run-${reconciliationRunId}.xls"`,
+        )
+        .send(toHurstFpRecXlsHtml(workbook));
     } catch (error) {
       next(error);
     }
