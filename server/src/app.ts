@@ -39,6 +39,11 @@ import {
   CsvNormalizationError,
   normalizeTransactionsFromCsv,
 } from "./services/transactionNormalizer.js";
+import { preprocessUpload } from "./services/preprocessing/index.js";
+import type {
+  PreprocessingDiagnostic,
+  PreprocessingSummary,
+} from "./services/preprocessing/types.js";
 import { toExceptionsCsv, toMonthEndReportCsv } from "./presenters/csv.js";
 import { buildHurstFpRecWorkbook, toHurstFpRecXlsHtml } from "./presenters/hurstFpRec.js";
 import { applyCarryForwardToDetail } from "./services/exceptionCarryForward.js";
@@ -65,12 +70,17 @@ import {
 import { logError, logInfo, serializeError } from "./logger.js";
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
-const allowedCsvMimeTypes = new Set([
+const allowedUploadMimeTypes = new Set([
   "text/csv",
   "application/csv",
   "application/vnd.ms-excel",
+  "application/xml",
+  "text/xml",
+  "text/html",
   "text/plain",
+  "application/octet-stream",
 ]);
+const allowedUploadExtensions = /\.(csv|xls|xml|html?)$/i;
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -79,10 +89,15 @@ const upload = multer({
     files: 1,
   },
   fileFilter: (_request, file, callback) => {
-    const hasCsvExtension = /\.csv$/i.test(file.originalname);
-    const hasCsvMimeType = allowedCsvMimeTypes.has(file.mimetype);
-    if (!hasCsvExtension || !hasCsvMimeType) {
-      callback(new AppHttpError("Upload must be a CSV file.", 422));
+    const hasAllowedExtension = allowedUploadExtensions.test(file.originalname);
+    const hasAllowedMimeType = allowedUploadMimeTypes.has(file.mimetype);
+    if (!hasAllowedExtension || !hasAllowedMimeType) {
+      callback(
+        new AppHttpError(
+          "Upload must be a CSV, BOA .xls billing statement, or Dealertrack SpreadsheetML .xml/.xls export.",
+          422,
+        ),
+      );
       return;
     }
     callback(null, true);
@@ -633,7 +648,15 @@ export function createApp(
         return;
       }
 
-      const result = normalizeTransactionsFromCsv(request.file.buffer, sourceType);
+      const preprocessingResult = runUploadPreprocessing(
+        request.file.buffer,
+        sourceType,
+        request.file.originalname ?? null,
+      );
+      const result = {
+        transactions: preprocessingResult.transactions,
+        validationErrors: preprocessingResult.validationErrors,
+      };
       const importResult = await repository.createSourceFileWithTransactions(
         requestDealershipId,
         {
@@ -669,6 +692,7 @@ export function createApp(
         metadata: {
           transaction_count: result.transactions.length,
           validation_error_count: result.validationErrors.length,
+          preprocessing: preprocessingResult.preprocessingMetadata,
         },
       });
       const autoRun = await evaluateAutoRunAfterUpload(
@@ -688,6 +712,7 @@ export function createApp(
         transaction_count: importResult.transactions.length,
         validation_errors: result.validationErrors,
         automated_reconciliation_run_id: autoRun?.id ?? null,
+        preprocessing: preprocessingResult.preprocessingMetadata,
       });
     } catch (error) {
       const requestDealershipId = getRequestDealershipId(response);
@@ -1362,4 +1387,67 @@ class AppHttpError extends Error {
   ) {
     super(message);
   }
+}
+
+type UploadPreprocessingMetadata = {
+  detected_format: string;
+  detection_confidence: string;
+  detection_reason: string;
+  parser_route: string;
+  preprocessing_version: string | null;
+  summary: PreprocessingSummary | null;
+  diagnostics: PreprocessingDiagnostic[];
+  legacy_csv_path: boolean;
+  unsupported_reason: string | null;
+};
+
+type UploadPreprocessingResult = {
+  transactions: import("./domain/types.js").NewTransaction[];
+  validationErrors: import("./domain/types.js").ValidationError[];
+  preprocessingMetadata: UploadPreprocessingMetadata;
+};
+
+function runUploadPreprocessing(
+  buffer: Buffer,
+  sourceType: import("./domain/types.js").SourceType,
+  originalFilename: string | null,
+): UploadPreprocessingResult {
+  const decision = preprocessUpload(buffer, sourceType, originalFilename);
+  if (decision.kind === "preprocessed") {
+    const { output } = decision;
+    return {
+      transactions: output.transactions,
+      validationErrors: output.validationErrors,
+      preprocessingMetadata: {
+        detected_format: output.detection.format,
+        detection_confidence: output.detection.confidence,
+        detection_reason: output.detection.reason,
+        parser_route: output.route.kind,
+        preprocessing_version: output.summary.preprocessing_version,
+        summary: output.summary,
+        diagnostics: output.diagnostics,
+        legacy_csv_path: false,
+        unsupported_reason: null,
+      },
+    };
+  }
+  if (decision.kind === "fallback_legacy_csv") {
+    const legacy = normalizeTransactionsFromCsv(buffer, sourceType);
+    return {
+      transactions: legacy.transactions,
+      validationErrors: legacy.validationErrors,
+      preprocessingMetadata: {
+        detected_format: decision.detection.format,
+        detection_confidence: decision.detection.confidence,
+        detection_reason: decision.detection.reason,
+        parser_route: decision.route.kind,
+        preprocessing_version: null,
+        summary: null,
+        diagnostics: [],
+        legacy_csv_path: true,
+        unsupported_reason: null,
+      },
+    };
+  }
+  throw new AppHttpError(decision.reason, 422);
 }
