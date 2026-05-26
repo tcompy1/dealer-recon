@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import request from "supertest";
 import { describe, expect, test } from "vitest";
 
@@ -5,6 +7,11 @@ import { createApp } from "./app.js";
 import { MemoryAuthRepository } from "./auth.js";
 import { MemoryTransactionRepository } from "./repositories/transactionRepository.js";
 import { MAX_CSV_ROWS } from "./services/transactionNormalizer.js";
+
+const FIXTURE_ROOT = new URL("../../", import.meta.url);
+async function loadFixture(relativePath: string): Promise<Buffer> {
+  return readFile(new URL(relativePath, FIXTURE_ROOT));
+}
 
 const boaUploadCsv = (stockNumber: string, vin: string, amount: string, reference = "382882") =>
   [`,,,9/26/2025,${reference},,${stockNumber},,${vin},,"${amount}",`].join("\n");
@@ -327,6 +334,96 @@ describe("app", () => {
       validation_errors: [],
     });
     expect(response.body.source_file_id).toEqual(expect.any(Number));
+  });
+
+  test("POST /upload returns preprocessing diagnostics summary for BOA HTML XLS uploads", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const buffer = await loadFixture("sample-data/synthetic/boa_billing_statement_sample.xls.html");
+
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .attach("file", buffer, "boa_billing_statement_sample.xls");
+
+    expect(response.status).toBe(200);
+    const preprocessing = response.body.preprocessing;
+    expect(preprocessing).toBeTruthy();
+    expect(preprocessing).toMatchObject({
+      detected_format: expect.any(String),
+      detection_confidence: expect.any(String),
+      detection_reason: expect.any(String),
+      parser_route: expect.any(String),
+      preprocessing_version: expect.any(String),
+      legacy_csv_path: false,
+      unsupported_reason: null,
+      diagnostics: expect.any(Array),
+      summary: expect.objectContaining({
+        source_kind: "boa",
+        rows_scanned: expect.any(Number),
+        rows_accepted: expect.any(Number),
+        rows_removed_zero_balance: expect.any(Number),
+        rows_removed_straightline: expect.any(Number),
+        rows_removed_banner: expect.any(Number),
+        rows_skipped_unknown: expect.any(Number),
+        rows_requiring_manual_enrichment: expect.any(Number),
+        duplicate_vin6_count: expect.any(Number),
+        preprocessed_at: expect.any(String),
+      }),
+    });
+
+    const diagnosticKinds = new Set(
+      (preprocessing.diagnostics as Array<{ kind: string }>).map((diagnostic) => diagnostic.kind),
+    );
+    // The synthetic BOA fixture has a zero-balance row that must be flagged.
+    expect(diagnosticKinds.has("zero_balance_row_removed")).toBe(true);
+
+    for (const diagnostic of preprocessing.diagnostics as Array<{
+      kind: string;
+      message: string;
+      source_row_number: number | null;
+    }>) {
+      expect(typeof diagnostic.kind).toBe("string");
+      expect(typeof diagnostic.message).toBe("string");
+      expect(
+        diagnostic.source_row_number === null || typeof diagnostic.source_row_number === "number",
+      ).toBe(true);
+    }
+  });
+
+  test("POST /upload returns preprocessing diagnostics summary for Dealertrack SpreadsheetML uploads", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const buffer = await loadFixture("sample-data/synthetic/dealertrack_floorplan_sample.xml");
+
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "dealertrack")
+      .attach("file", buffer, "dealertrack_floorplan_sample.xml");
+
+    expect(response.status).toBe(200);
+    expect(response.body.preprocessing).toMatchObject({
+      legacy_csv_path: false,
+      unsupported_reason: null,
+      summary: expect.objectContaining({ source_kind: "dealertrack" }),
+    });
+  });
+
+  test("POST /upload flags legacy CSV path for CSV BOA uploads", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .attach(
+        "file",
+        Buffer.from(boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101")),
+        "boa.csv",
+      );
+
+    expect(response.status).toBe(200);
+    expect(response.body.preprocessing).toMatchObject({
+      legacy_csv_path: true,
+      summary: null,
+      diagnostics: [],
+    });
   });
 
   test("POST /upload rejects invalid source_type", async () => {

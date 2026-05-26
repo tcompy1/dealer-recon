@@ -26,6 +26,7 @@ import {
   listDealershipStores,
 } from "../api/stores";
 import { listSourceFiles, uploadSourceFile } from "../api/uploads";
+import { PreprocessingDiagnosticsPanel } from "./preprocessing/PreprocessingDiagnosticsPanel";
 import { VinPresenceDiagnosticsPanel } from "./VinPresenceDiagnosticsPanel";
 import type {
   ReconciledTransaction,
@@ -749,36 +750,42 @@ function UploadPanel({
         {slot.file ? <span className="text-sm text-slate-600">{slot.file.name}</span> : null}
       </div>
 
-      {slot.upload ? <UploadReceipt upload={slot.upload} /> : null}
+      {slot.upload ? <UploadReceipt sourceLabel={label} upload={slot.upload} /> : null}
       {slot.error ? <ErrorBanner message={slot.error} /> : null}
     </div>
   );
 }
 
-function UploadReceipt({ upload }: { upload: UploadResponse }) {
+function UploadReceipt({ sourceLabel, upload }: { sourceLabel: string; upload: UploadResponse }) {
   return (
-    <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
-      <div className="grid gap-1 sm:grid-cols-2">
-        <p>
-          <span className="font-medium">source_file_id:</span> {upload.source_file_id}
-        </p>
-        <p>
-          <span className="font-medium">filename:</span> {upload.filename}
-        </p>
-        <p>
-          <span className="font-medium">store:</span> {upload.store_name ?? "n/a"}
-        </p>
-        <p>
-          <span className="font-medium">transactions:</span> {upload.transaction_count}
-        </p>
-        <p>
-          <span className="font-medium">validation errors:</span>{" "}
-          {upload.validation_errors.length}
-        </p>
+    <div className="grid gap-3">
+      <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
+        <div className="grid gap-1 sm:grid-cols-2">
+          <p>
+            <span className="font-medium">source_file_id:</span> {upload.source_file_id}
+          </p>
+          <p>
+            <span className="font-medium">filename:</span> {upload.filename}
+          </p>
+          <p>
+            <span className="font-medium">store:</span> {upload.store_name ?? "n/a"}
+          </p>
+          <p>
+            <span className="font-medium">transactions:</span> {upload.transaction_count}
+          </p>
+          <p>
+            <span className="font-medium">validation errors:</span>{" "}
+            {upload.validation_errors.length}
+          </p>
+        </div>
+        {upload.validation_errors.length > 0 ? (
+          <ValidationErrors errors={upload.validation_errors} />
+        ) : null}
       </div>
-      {upload.validation_errors.length > 0 ? (
-        <ValidationErrors errors={upload.validation_errors} />
-      ) : null}
+      <PreprocessingDiagnosticsPanel
+        preprocessing={upload.preprocessing ?? null}
+        sourceLabel={sourceLabel}
+      />
     </div>
   );
 }
