@@ -159,13 +159,14 @@ describeIfDatabase("migrate", () => {
         const sourceFileResult = await pool.query<{ id: number }>(
           `INSERT INTO source_files (
             dealership_id,
+            dealership_store_id,
             source_type,
             original_filename,
             stored_filename,
             file_hash,
             row_count,
             validation_error_count
-          ) VALUES (1, 'boa', 'constraint-test.csv', NULL, $1, 1, 0)
+          ) VALUES (1, 1, 'boa', 'constraint-test.csv', NULL, $1, 1, 0)
           RETURNING id`,
           [`constraint-test-${Date.now()}`],
         );
