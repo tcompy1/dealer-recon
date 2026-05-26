@@ -9,15 +9,32 @@ import type {
   VinPresenceDiagnosticReason,
 } from "../domain/types.js";
 import { formatCents } from "../domain/money.js";
+import { computeVin6, extractVin6FromDescription } from "../domain/vin6.js";
 import type { TransactionRepository } from "../repositories/transactionRepository.js";
 import { categorizeEngineExceptions } from "./exceptionCategorizer.js";
 
-export const VIN_EXACT_REASON = "vin_exact";
+// Tier 1 / Tier 2 auto-match reasons.
+export const VIN6_AMOUNT_REASON = "vin6_abs_amount";
 export const VIN_AMOUNT_REASON = "vin_abs_amount";
 export const DERIVED_VIN_AMOUNT_REASON = "derived_vin_abs_amount";
+
+// Tier 3 / Tier 4 Needs-Review reasons. These are exceptions, not match groups,
+// and the categorizer maps them to dedicated categories so the presenter routes
+// them into the Needs Review section. Auto-confirmation is never allowed for
+// these reasons.
+export const NEEDS_REVIEW_VIN6_REASON = "needs_review_vin6_only";
+export const NEEDS_REVIEW_AMOUNT_REASON = "needs_review_amount_only";
+
+// Retained for backwards compatibility with any importers; both used to be
+// auto-match tiers and have been demoted to Needs Review under v2.
 export const STOCK_AMOUNT_REASON = "stock_number_amount";
 export const AMOUNT_CONTEXT_REASON = "amount_reference_context";
-export const RECONCILIATION_ENGINE_VERSION = "reconciliation-engine-v1";
+
+// Bumping the engine version makes the behavior change explicit in saved
+// reconciliation snapshots. Replaying a v1 run under v2 will report
+// engine_version_difference.differs = true rather than silently mutating
+// historical results.
+export const RECONCILIATION_ENGINE_VERSION = "reconciliation-engine-v2-vin6-tiers";
 
 type ReconciliationScope = {
   dealershipId?: number;
@@ -32,37 +49,35 @@ type CandidateMatch = {
   duplicate_eligible: boolean;
 };
 
-type MatchTier = {
+type AutoMatchTier = {
   reason: string;
   confidence: number;
   duplicateEligible: boolean;
   matcher: (left: Transaction, right: Transaction) => boolean;
 };
 
-const MATCH_TIERS: MatchTier[] = [
+// Tier 1 + Tier 2 are the only tiers that produce confirmed match groups. They
+// are evaluated in order; the first that fires wins. Tier 1 (VIN6 + amount) is
+// the clerk's actual primary match key; Tier 2 (full VIN + amount) is the
+// stricter superset preserved for cases where both sides carry full VINs.
+const AUTO_MATCH_TIERS: AutoMatchTier[] = [
   {
     reason: VIN_AMOUNT_REASON,
     confidence: 1.0,
     duplicateEligible: true,
-    matcher: isExplicitVinAmountMatch,
+    matcher: isFullVinAmountMatch,
   },
   {
     reason: DERIVED_VIN_AMOUNT_REASON,
     confidence: 0.98,
     duplicateEligible: true,
-    matcher: isDerivedVinAmountMatch,
+    matcher: isDerivedFullVinAmountMatch,
   },
   {
-    reason: STOCK_AMOUNT_REASON,
-    confidence: 0.92,
+    reason: VIN6_AMOUNT_REASON,
+    confidence: 0.97,
     duplicateEligible: true,
-    matcher: isStockAmountMatch,
-  },
-  {
-    reason: AMOUNT_CONTEXT_REASON,
-    confidence: 0.72,
-    duplicateEligible: false,
-    matcher: isAmountContextMatch,
+    matcher: isVin6AmountMatch,
   },
 ];
 
@@ -97,7 +112,10 @@ export function reconcileTransactionSets(
   const matchGroups: MatchGroup[] = [];
   const exceptions: ReconciliationException[] = [];
 
-  for (const tier of MATCH_TIERS) {
+  // Pass 1 + 2: auto-match tiers. Greedy, left-driven, deterministic on input
+  // order; first eligible right candidate per left wins, remaining same-tier
+  // candidates are flagged as duplicates of that match.
+  for (const tier of AUTO_MATCH_TIERS) {
     for (const leftTransaction of leftTransactions) {
       if (matchedLeftIds.has(leftTransaction.id)) {
         continue;
@@ -135,11 +153,147 @@ export function reconcileTransactionSets(
     }
   }
 
+  // Pass 3 (Tier 3): VIN6 agrees but amounts do not. Emit Needs Review
+  // exceptions for both sides so the clerk can investigate without losing
+  // either row to silent auto-confirmation. Only pairs where neither side has
+  // already been auto-matched are considered.
+  const tier3PairedLeft = new Set<number>();
+  const tier3PairedRight = new Set<number>();
   for (const leftTransaction of leftTransactions) {
-    if (matchedLeftIds.has(leftTransaction.id)) {
+    if (matchedLeftIds.has(leftTransaction.id) || tier3PairedLeft.has(leftTransaction.id)) {
       continue;
     }
+    const leftVin6 = matchingVin6(leftTransaction);
+    if (!leftVin6) {
+      continue;
+    }
+    const candidate = rightTransactions.find(
+      (rightTransaction) =>
+        !matchedRightIds.has(rightTransaction.id) &&
+        !duplicateRightIds.has(rightTransaction.id) &&
+        !tier3PairedRight.has(rightTransaction.id) &&
+        matchingVin6(rightTransaction) === leftVin6 &&
+        !amountsMatch(leftTransaction.amount_cents, rightTransaction.amount_cents),
+    );
+    if (!candidate) {
+      continue;
+    }
+    tier3PairedLeft.add(leftTransaction.id);
+    tier3PairedRight.add(candidate.id);
+    exceptions.push(
+      buildException(
+        NEEDS_REVIEW_VIN6_REASON,
+        leftTransaction,
+        `Needs review: VIN6 ${leftVin6} matches ${rightSourceType} transaction ${candidate.id} (${formatCents(candidate.amount_cents)}) but amount differs.`,
+      ),
+    );
+    exceptions.push(
+      buildException(
+        NEEDS_REVIEW_VIN6_REASON,
+        candidate,
+        `Needs review: VIN6 ${leftVin6} matches ${leftSourceType} transaction ${leftTransaction.id} (${formatCents(leftTransaction.amount_cents)}) but amount differs.`,
+      ),
+    );
+  }
 
+  // Pass 4 (Tier 4): no VIN6 agreement but the same absolute amount appears on
+  // both sides AND a deterministic explanatory link exists (same reference or
+  // same stock number). This replaces the v1 stock_number_amount and
+  // amount_reference_context auto-tiers, which the audit and clerk interview
+  // both flag as unsafe to auto-confirm. We never auto-confirm here; the
+  // deterministic explanation is preserved in the description.
+  for (const leftTransaction of leftTransactions) {
+    if (matchedLeftIds.has(leftTransaction.id) || tier3PairedLeft.has(leftTransaction.id)) {
+      continue;
+    }
+    const candidate = rightTransactions.find((rightTransaction) => {
+      if (
+        matchedRightIds.has(rightTransaction.id) ||
+        duplicateRightIds.has(rightTransaction.id) ||
+        tier3PairedRight.has(rightTransaction.id)
+      ) {
+        return false;
+      }
+      if (!amountsMatch(leftTransaction.amount_cents, rightTransaction.amount_cents)) {
+        return false;
+      }
+      // Refuse to pair if both sides have full VINs that disagree - that's a
+      // VIN conflict, not a Tier 4 candidate. Tier 3 already handled the case
+      // where one side's VIN6 matched.
+      const leftVin = matchingVin(leftTransaction);
+      const rightVin = matchingVin(rightTransaction);
+      if (leftVin && rightVin && leftVin !== rightVin) {
+        return false;
+      }
+      const leftVin6 = matchingVin6(leftTransaction);
+      const rightVin6 = matchingVin6(rightTransaction);
+      if (leftVin6 && rightVin6 && leftVin6 !== rightVin6) {
+        // Different VIN6 on both sides at the same amount - not a safe
+        // Needs Review pair, leave them to fall through to Tier 5 unmatched.
+        return false;
+      }
+      return hasDeterministicExplanatoryLink(leftTransaction, rightTransaction);
+    });
+    if (!candidate) {
+      continue;
+    }
+    tier3PairedLeft.add(leftTransaction.id);
+    tier3PairedRight.add(candidate.id);
+    const link = describeExplanatoryLink(leftTransaction, candidate);
+    exceptions.push(
+      buildException(
+        NEEDS_REVIEW_AMOUNT_REASON,
+        leftTransaction,
+        `Needs review: amount ${formatCents(leftTransaction.amount_cents)} matches ${rightSourceType} transaction ${candidate.id} (${link}) but no VIN6 agreement - clerk must verify.`,
+      ),
+    );
+    exceptions.push(
+      buildException(
+        NEEDS_REVIEW_AMOUNT_REASON,
+        candidate,
+        `Needs review: amount ${formatCents(candidate.amount_cents)} matches ${leftSourceType} transaction ${leftTransaction.id} (${link}) but no VIN6 agreement - clerk must verify.`,
+      ),
+    );
+
+    // Any further still-unmatched right-side rows that share the same stock
+    // and absolute amount as the pair are flagged as duplicate transactions so
+    // that the clerk still sees a "duplicate" signal even though we declined
+    // to auto-confirm the original pair. We only do this for stock-linked
+    // pairs, where "duplicate" is meaningful in the clerk's worksheet.
+    const linkStock = clean(leftTransaction.stock_number);
+    const candidateStock = clean(candidate.stock_number);
+    if (linkStock && candidateStock && linkStock === candidateStock) {
+      for (const rightTransaction of rightTransactions) {
+        if (
+          matchedRightIds.has(rightTransaction.id) ||
+          duplicateRightIds.has(rightTransaction.id) ||
+          tier3PairedRight.has(rightTransaction.id)
+        ) {
+          continue;
+        }
+        if (
+          clean(rightTransaction.stock_number) === linkStock &&
+          amountsMatch(rightTransaction.amount_cents, leftTransaction.amount_cents)
+        ) {
+          duplicateRightIds.add(rightTransaction.id);
+          exceptions.push(
+            buildException(
+              "duplicate_transaction",
+              rightTransaction,
+              `Duplicate ${rightSourceType} transaction shares stock ${linkStock} and amount with ${leftSourceType} transaction ${leftTransaction.id} (already in needs review).`,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  // Tier 5: anything still unaccounted-for is unmatched and emits the
+  // appropriate missing_in_* exception.
+  for (const leftTransaction of leftTransactions) {
+    if (matchedLeftIds.has(leftTransaction.id) || tier3PairedLeft.has(leftTransaction.id)) {
+      continue;
+    }
     exceptions.push(
       buildException(
         `missing_in_${rightSourceType}`,
@@ -150,10 +304,13 @@ export function reconcileTransactionSets(
   }
 
   for (const rightTransaction of rightTransactions) {
-    if (matchedRightIds.has(rightTransaction.id) || duplicateRightIds.has(rightTransaction.id)) {
+    if (
+      matchedRightIds.has(rightTransaction.id) ||
+      duplicateRightIds.has(rightTransaction.id) ||
+      tier3PairedRight.has(rightTransaction.id)
+    ) {
       continue;
     }
-
     exceptions.push(
       buildException(
         `missing_in_${leftSourceType}`,
@@ -190,7 +347,7 @@ export function reconcileTransactionSets(
 function findMatchingCandidatesForTier(
   leftTransaction: Transaction,
   rightTransactions: Transaction[],
-  tier: MatchTier,
+  tier: AutoMatchTier,
 ): CandidateMatch[] {
   return rightTransactions
     .filter((rightTransaction) => tier.matcher(leftTransaction, rightTransaction))
@@ -202,7 +359,7 @@ function findMatchingCandidatesForTier(
     }));
 }
 
-function isExplicitVinAmountMatch(
+function isFullVinAmountMatch(
   leftTransaction: Transaction,
   rightTransaction: Transaction,
 ): boolean {
@@ -214,7 +371,7 @@ function isExplicitVinAmountMatch(
   );
 }
 
-function isDerivedVinAmountMatch(
+function isDerivedFullVinAmountMatch(
   leftTransaction: Transaction,
   rightTransaction: Transaction,
 ): boolean {
@@ -228,68 +385,90 @@ function isDerivedVinAmountMatch(
   );
 }
 
-function isStockAmountMatch(leftTransaction: Transaction, rightTransaction: Transaction): boolean {
-  const leftVin = matchingVin(leftTransaction);
-  const rightVin = matchingVin(rightTransaction);
-  if (leftVin && rightVin && leftVin !== rightVin) {
-    return false;
-  }
-
-  return Boolean(
-      leftTransaction.stock_number &&
-      rightTransaction.stock_number &&
-      clean(leftTransaction.stock_number) === clean(rightTransaction.stock_number) &&
-      amountsMatch(leftTransaction.amount_cents, rightTransaction.amount_cents),
-  );
-}
-
-function isAmountContextMatch(leftTransaction: Transaction, rightTransaction: Transaction): boolean {
+function isVin6AmountMatch(
+  leftTransaction: Transaction,
+  rightTransaction: Transaction,
+): boolean {
   if (!amountsMatch(leftTransaction.amount_cents, rightTransaction.amount_cents)) {
     return false;
   }
+  const leftVin6 = matchingVin6(leftTransaction);
+  const rightVin6 = matchingVin6(rightTransaction);
+  if (!leftVin6 || !rightVin6 || leftVin6 !== rightVin6) {
+    return false;
+  }
+  // Require at least one side to have a VIN6 derived from a real 17-char VIN.
+  // Two loose 6-char fallback VIN6s on both sides could collide spuriously
+  // and are not trustworthy enough to auto-confirm. This matches the clerk's
+  // mental model: she only trusts VIN6 when she can see it came from a real
+  // VIN, and she manually retypes the VIN6 when the DMS VIN is missing or
+  // malformed.
+  return hasTrustedVin6Source(leftTransaction) || hasTrustedVin6Source(rightTransaction);
+}
 
+function hasDeterministicExplanatoryLink(
+  leftTransaction: Transaction,
+  rightTransaction: Transaction,
+): boolean {
   const leftReference = clean(leftTransaction.reference_number);
   const rightReference = clean(rightTransaction.reference_number);
   if (leftReference && rightReference && leftReference === rightReference) {
     return true;
   }
-
-  if (!datesWithinTolerance(leftTransaction, rightTransaction, 45)) {
-    return false;
+  const leftStock = clean(leftTransaction.stock_number);
+  const rightStock = clean(rightTransaction.stock_number);
+  if (leftStock && rightStock && leftStock === rightStock) {
+    return true;
   }
+  return false;
+}
 
-  const leftContext = context(leftTransaction);
-  const rightContext = context(rightTransaction);
-  return [...leftContext].filter((token) => rightContext.has(token)).length >= 2;
+function describeExplanatoryLink(
+  leftTransaction: Transaction,
+  rightTransaction: Transaction,
+): string {
+  const leftReference = clean(leftTransaction.reference_number);
+  const rightReference = clean(rightTransaction.reference_number);
+  if (leftReference && rightReference && leftReference === rightReference) {
+    return `reference ${leftReference}`;
+  }
+  const leftStock = clean(leftTransaction.stock_number);
+  const rightStock = clean(rightTransaction.stock_number);
+  if (leftStock && rightStock && leftStock === rightStock) {
+    return `stock ${leftStock}`;
+  }
+  return "amount-only";
 }
 
 function amountsMatch(leftAmountCents: number, rightAmountCents: number): boolean {
   return Math.abs(leftAmountCents) === Math.abs(rightAmountCents);
 }
 
-function context(transaction: Transaction): Set<string> {
-  const values = [
-    transaction.reference_number,
-    transaction.stock_number,
-    transaction.vin,
-    transaction.description,
-  ];
-  const tokens = new Set<string>();
-  for (const value of values) {
-    if (!value) {
-      continue;
-    }
-    for (const token of clean(value).split(" ")) {
-      if (token.length >= 4) {
-        tokens.add(token);
-      }
-    }
-  }
-  return tokens;
-}
-
 function matchingVin(transaction: Transaction): string {
   return clean(transaction.vin) || extractVin(transaction.description);
+}
+
+function matchingVin6(transaction: Transaction): string | null {
+  return (
+    computeVin6(transaction.vin) ?? extractVin6FromDescription(transaction.description) ?? null
+  );
+}
+
+// A VIN6 is "trusted" when it was derived from a real 17-char VIN on this side
+// of the recon. A 6-char fallback (e.g. stock number masquerading as a VIN)
+// can collide across unrelated vehicles, so VIN6-only auto-confirm requires
+// at least one side to have a verified 17-char VIN backing the VIN6.
+function hasTrustedVin6Source(transaction: Transaction): boolean {
+  if (transaction.vin && /[A-HJ-NPR-Z0-9]{17}/i.test(transaction.vin)) {
+    return true;
+  }
+  if (
+    transaction.description &&
+    /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(transaction.description)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function extractVin(value: string | null): string {
@@ -299,28 +478,11 @@ function extractVin(value: string | null): string {
   return value.toUpperCase().match(/\b[A-HJ-NPR-Z0-9]{17}\b/)?.[0] ?? "";
 }
 
-function datesWithinTolerance(
-  leftTransaction: Transaction,
-  rightTransaction: Transaction,
-  toleranceDays: number,
-): boolean {
-  const leftDate = effectiveDate(leftTransaction);
-  const rightDate = effectiveDate(rightTransaction);
-  if (!leftDate || !rightDate) {
-    return true;
-  }
-  return Math.abs(Date.parse(leftDate) - Date.parse(rightDate)) <= toleranceDays * 86_400_000;
-}
-
-function effectiveDate(transaction: Transaction): string | null {
-  return transaction.transaction_date ?? transaction.post_date;
-}
-
 function clean(value: string | null): string {
   if (!value) {
     return "";
   }
-  return value.toUpperCase().replace(/\//g, " ").replace(/-/g, " ").split(/\s+/).join(" ");
+  return value.toUpperCase().replace(/\//g, " ").replace(/-/g, " ").trim().split(/\s+/).join(" ");
 }
 
 function buildVinPresenceDiagnostics(

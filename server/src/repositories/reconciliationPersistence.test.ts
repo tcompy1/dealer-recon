@@ -47,7 +47,7 @@ describeIfDatabase("reconciliation persistence", () => {
           app,
           "dealertrack",
           [
-            `M50101,"BOA FLOORPLAN ${unique}",-100,0`,
+            `M50101,"BOA FLOORPLAN 1HGCM82633A004352 ${unique}",-100,0`,
             `M50303,"BOA FLOORPLAN ${unique}",-333,0`,
           ].join("\n"),
           `dealertrack-persist-${unique}.csv`,

@@ -131,6 +131,8 @@ function exception(transaction: Transaction): ReconciliationRunDetail["exception
     review_status: "unreviewed",
     assigned_to: null,
     review_notes: "",
+    boa_notes: "",
+    gl_notes: "",
     reviewed_at: null,
     reviewed_by: null,
     source_type: transaction.source_type,

@@ -39,6 +39,8 @@ export type ReconciliationExceptionCategory =
   | "stock_number_mismatch"
   | "vin_missing_but_reference_match"
   | "possible_timing_issue"
+  | "vin6_match_amount_mismatch"
+  | "amount_only_review"
   | "unclassified";
 
 export type VinPresenceDiagnosticReason =
@@ -135,6 +137,19 @@ export type ReconciliationRunDetailMatchGroup = {
   }>;
 };
 
+export type ReconciliationExceptionCarryForward = {
+  carried_forward: boolean;
+  previous_run_id: number | null;
+  previous_exception_id: number | null;
+  first_seen_run_id: number | null;
+  first_seen_at: string | null;
+  last_seen_run_id: number | null;
+  last_seen_at: string | null;
+  occurrence_count: number;
+  prior_boa_notes: string;
+  prior_gl_notes: string;
+};
+
 export type ReconciliationRunDetailException = {
   exception_id: number;
   exception_type: ReconciliationException["exception_type"];
@@ -144,12 +159,15 @@ export type ReconciliationRunDetailException = {
   review_status: ReconciliationExceptionReviewStatus;
   assigned_to: string | null;
   review_notes: string;
+  boa_notes: string;
+  gl_notes: string;
   reviewed_at: string | null;
   reviewed_by: string | null;
   source_type: SourceType;
   reason: string;
   created_at: string;
   transaction: ReconciledTransaction;
+  carry_forward?: ReconciliationExceptionCarryForward;
 };
 
 export type ReconciliationRunDetail = ReconciliationRunListItem & {
@@ -249,5 +267,7 @@ export type ReconciliationExceptionReviewUpdate = {
   review_status?: ReconciliationExceptionReviewStatus;
   assigned_to?: string | null;
   review_notes?: string;
+  boa_notes?: string;
+  gl_notes?: string;
   reviewed_by?: string | null;
 };

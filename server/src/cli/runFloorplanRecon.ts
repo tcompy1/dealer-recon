@@ -52,10 +52,15 @@ export function formatReconciliationResult(result: ReconciliationResponse): stri
     }
   }
 
+  const needsReviewVin6 = exceptionsByType(result, "needs_review_vin6_only");
+  const needsReviewAmount = exceptionsByType(result, "needs_review_amount_only");
+
   lines.push("");
   appendExceptionSection(lines, "BOA-only rows", boaOnly);
   appendExceptionSection(lines, "Dealertrack-only rows", dealertrackOnly);
   appendExceptionSection(lines, "duplicate Dealertrack rows", duplicateDealertrack);
+  appendExceptionSection(lines, "Needs review (VIN6 match, amount differs)", needsReviewVin6);
+  appendExceptionSection(lines, "Needs review (amount match, no VIN6 agreement)", needsReviewAmount);
   appendVinPresenceDiagnosticSection(lines, result);
 
   return lines.join("\n");

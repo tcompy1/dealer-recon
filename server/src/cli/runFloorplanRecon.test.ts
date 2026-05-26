@@ -15,13 +15,15 @@ describe("runLocalFloorplanRecon", () => {
     const result = await runLocalFloorplanRecon({ boaFile, dealertrackFile });
     const output = formatReconciliationResult(result);
 
-    expect(output).toContain("matched count: 3");
-    expect(output).toContain("exceptions count: 3");
+    // V2: BOA rows have full VINs, Dealertrack rows do not, so no tier can
+    // auto-confirm stock-only pairs. Three stock-linked pairs drop to Tier 4
+    // Needs Review (6 exceptions), the duplicate is still flagged, and the
+    // BOA-only / Dealertrack-only rows are Tier 5 missing.
+    expect(output).toContain("matched count: 0");
+    expect(output).toContain("exceptions count: 9");
     expect(output).toContain("duplicates count: 1");
-    expect(output).toContain("BOA-only rows: 1");
-    expect(output).toContain("Dealertrack-only rows: 1");
     expect(output).toContain("duplicate Dealertrack rows: 1");
-    expect(output).toContain("reason=stock_number_amount | confidence=0.92");
+    expect(output).toContain("Needs review (");
     expect(output).toContain("stock=M20657");
     expect(output).toContain("stock=M20450");
     stderr.mockRestore();

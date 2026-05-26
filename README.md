@@ -1,13 +1,20 @@
 # Dealer Recon
 
-Dealer Recon is an upload-based reconciliation and close automation prototype for auto dealer
-groups. The first product wedge is daily bank/cash reconciliation from exported files, with later
-support for month-end close and OEM receivables reconciliation.
+Dealer Recon is a BOA-first floorplan reconciliation tool for auto dealer groups. It cleans BOA
+and Dealertrack exports, matches records by VIN6 plus exact amount, separates clean pairs from
+unmatched items, and generates a Hurst FP Rec-style Excel workbook for clerk review and CFO
+validation.
+
+The MVP is not a generic exceptions dashboard. Items that do not pair cleanly become
+**Schedule Not on Statement** (Dealertrack/GL row with no BOA match), **Statement Not on GL**
+(BOA row with no Dealertrack match), or **Needs Review** (amount/VIN/stock conflict requiring
+clerk judgment).
 
 This repo contains a TypeScript implementation of the upload-based reconciliation prototype. It
-supports CSV upload, BOA and Dealertrack floorplan normalization, V1 reconciliation, account close
-summaries, month-end reporting, local user authentication, and a local sample-file reconciliation
-workflow. External integrations are intentionally not built yet.
+supports CSV upload, BOA and Dealertrack floorplan normalization, VIN6 derivation, BOA-anchored
+matching, account close summaries, month-end reporting, local user authentication, a local
+sample-file reconciliation workflow, and Hurst FP Rec-style `.xls` export. External integrations
+are intentionally not built yet.
 
 ## Stack
 
@@ -325,6 +332,31 @@ persisted run totals.
 same `source_type`, `exception_type`, `status`, and `search` query parameters and returns one row per
 exception with run ID, exception metadata, review status, note, transaction identifiers, dates,
 amount, stock number, VIN, description, reason, and creation time.
+
+`GET /reconciliation-runs/:id/hurst-fp-rec` returns a Hurst FP Rec-style workbook for the run. The
+default response is an Excel-compatible `.xls` (HTML table) attachment, and `?format=json` returns
+the workbook as JSON. The workbook contains three sections:
+
+- **Schedule Not on Statement** — Dealertrack/GL rows that have no matching BOA statement entry.
+- **Statement Not on GL** — BOA rows that have no matching Dealertrack/GL entry.
+- **Needs Review** — items where VIN, amount, or stock differ between sides and require clerk
+  judgment.
+
+Each row includes the descriptor, stock number, VIN6, VIN, amount, GL notes, BOA notes, carry-forward
+markers (`carried_forward`, `previous_run_id`, `first_seen_run_id`, `first_seen_at`,
+`occurrence_count`, `prior_boa_notes`, `prior_gl_notes`), and review status. The header summarizes the
+BOA outstanding total, Dealertrack 2100 total, the BOA-minus-Dealertrack variance, and the count of
+items carried forward from prior runs.
+
+Notes are stored as separate `boa_notes` and `gl_notes` fields on each exception so the workbook can
+preserve BOA-side context and GL-side context independently. PATCH calls to
+`/reconciliation-runs/:id/exceptions/:exception_id` accept either `review_notes` (legacy field —
+auto-routed into `boa_notes` or `gl_notes` based on the exception's source) or explicit
+`boa_notes` / `gl_notes` overrides.
+
+Carry-forward links an unresolved exception in the current run to prior unresolved exceptions for the
+same dealership/store, side (BOA vs. GL), and stable key (VIN6 → stock number → reference) at the same
+amount. Cross-store and cross-side links are intentionally never produced.
 
 Exceptions start as `unresolved`. Reviewers can mark an exception `resolved` when follow-up is
 complete, or `ignored` when the exception is accepted as non-actionable. Review notes are stored with

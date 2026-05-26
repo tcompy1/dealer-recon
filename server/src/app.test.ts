@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import request from "supertest";
 import { describe, expect, test } from "vitest";
 
@@ -6,11 +8,18 @@ import { MemoryAuthRepository } from "./auth.js";
 import { MemoryTransactionRepository } from "./repositories/transactionRepository.js";
 import { MAX_CSV_ROWS } from "./services/transactionNormalizer.js";
 
+const FIXTURE_ROOT = new URL("../../", import.meta.url);
+async function loadFixture(relativePath: string): Promise<Buffer> {
+  return readFile(new URL(relativePath, FIXTURE_ROOT));
+}
+
 const boaUploadCsv = (stockNumber: string, vin: string, amount: string, reference = "382882") =>
   [`,,,9/26/2025,${reference},,${stockNumber},,${vin},,"${amount}",`].join("\n");
 
-const dealertrackUploadCsv = (stockNumber: string, amount: string) =>
-  `${stockNumber},"BOA FLOORPLAN",${amount},0`;
+const dealertrackUploadCsv = (stockNumber: string, amount: string, vin?: string) =>
+  vin
+    ? `${stockNumber},"BOA FLOORPLAN ${vin}",${amount},0`
+    : `${stockNumber},"BOA FLOORPLAN",${amount},0`;
 
 describe("app", () => {
   test("POST /login authenticates a local user and GET /me returns the user", async () => {
@@ -327,6 +336,96 @@ describe("app", () => {
     expect(response.body.source_file_id).toEqual(expect.any(Number));
   });
 
+  test("POST /upload returns preprocessing diagnostics summary for BOA HTML XLS uploads", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const buffer = await loadFixture("sample-data/synthetic/boa_billing_statement_sample.xls.html");
+
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .attach("file", buffer, "boa_billing_statement_sample.xls");
+
+    expect(response.status).toBe(200);
+    const preprocessing = response.body.preprocessing;
+    expect(preprocessing).toBeTruthy();
+    expect(preprocessing).toMatchObject({
+      detected_format: expect.any(String),
+      detection_confidence: expect.any(String),
+      detection_reason: expect.any(String),
+      parser_route: expect.any(String),
+      preprocessing_version: expect.any(String),
+      legacy_csv_path: false,
+      unsupported_reason: null,
+      diagnostics: expect.any(Array),
+      summary: expect.objectContaining({
+        source_kind: "boa",
+        rows_scanned: expect.any(Number),
+        rows_accepted: expect.any(Number),
+        rows_removed_zero_balance: expect.any(Number),
+        rows_removed_straightline: expect.any(Number),
+        rows_removed_banner: expect.any(Number),
+        rows_skipped_unknown: expect.any(Number),
+        rows_requiring_manual_enrichment: expect.any(Number),
+        duplicate_vin6_count: expect.any(Number),
+        preprocessed_at: expect.any(String),
+      }),
+    });
+
+    const diagnosticKinds = new Set(
+      (preprocessing.diagnostics as Array<{ kind: string }>).map((diagnostic) => diagnostic.kind),
+    );
+    // The synthetic BOA fixture has a zero-balance row that must be flagged.
+    expect(diagnosticKinds.has("zero_balance_row_removed")).toBe(true);
+
+    for (const diagnostic of preprocessing.diagnostics as Array<{
+      kind: string;
+      message: string;
+      source_row_number: number | null;
+    }>) {
+      expect(typeof diagnostic.kind).toBe("string");
+      expect(typeof diagnostic.message).toBe("string");
+      expect(
+        diagnostic.source_row_number === null || typeof diagnostic.source_row_number === "number",
+      ).toBe(true);
+    }
+  });
+
+  test("POST /upload returns preprocessing diagnostics summary for Dealertrack SpreadsheetML uploads", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const buffer = await loadFixture("sample-data/synthetic/dealertrack_floorplan_sample.xml");
+
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "dealertrack")
+      .attach("file", buffer, "dealertrack_floorplan_sample.xml");
+
+    expect(response.status).toBe(200);
+    expect(response.body.preprocessing).toMatchObject({
+      legacy_csv_path: false,
+      unsupported_reason: null,
+      summary: expect.objectContaining({ source_kind: "dealertrack" }),
+    });
+  });
+
+  test("POST /upload flags legacy CSV path for CSV BOA uploads", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .attach(
+        "file",
+        Buffer.from(boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101")),
+        "boa.csv",
+      );
+
+    expect(response.status).toBe(200);
+    expect(response.body.preprocessing).toMatchObject({
+      legacy_csv_path: true,
+      summary: null,
+      diagnostics: [],
+    });
+  });
+
   test("POST /upload rejects invalid source_type", async () => {
     const app = createApp(new MemoryTransactionRepository());
 
@@ -560,7 +659,7 @@ describe("app", () => {
     const dealertrackUpload = await uploadCsv(
       app,
       "dealertrack",
-      dealertrackUploadCsv("M30101", "-301"),
+      dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
       "auto-dealertrack.csv",
       1,
     );
@@ -592,7 +691,7 @@ describe("app", () => {
   test("scheduled due jobs run and missing expected files generate alerts", async () => {
     const app = createApp(new MemoryTransactionRepository());
     await uploadCsv(app, "boa", boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"), "due-boa.csv", 1);
-    await uploadCsv(app, "dealertrack", dealertrackUploadCsv("M30101", "-301"), "due-dt.csv", 1);
+    await uploadCsv(app, "dealertrack", dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"), "due-dt.csv", 1);
     await request(app).post("/automation/scheduled-jobs").send({
       dealership_store_id: 1,
       cadence: "weekly",
@@ -736,9 +835,9 @@ describe("app", () => {
     expect(response.body.match_groups).toHaveLength(1);
     expect(response.body.match_groups[0]).toMatchObject({
       match_group_id: expect.any(Number),
-      match_type: "stock_number_amount",
-      confidence: 0.92,
-      reason: "stock_number_amount",
+      match_type: "derived_vin_abs_amount",
+      confidence: 0.98,
+      reason: "derived_vin_abs_amount",
       transactions: [
         expect.objectContaining({
           side: "left",
@@ -1016,7 +1115,7 @@ describe("app", () => {
         boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30209"),
       ],
       dealertrackRows: [
-        dealertrackUploadCsv("M30101", "-301"),
+        dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
         dealertrackUploadCsv("M40404", "-404"),
       ],
       boaFilename: "boa-current-trend.csv",
@@ -1405,7 +1504,7 @@ describe("app", () => {
     const dealertrackUpload = await uploadCsv(
       app,
       "dealertrack",
-      dealertrackUploadCsv("M30101", "-100"),
+      dealertrackUploadCsv("M30101", "-100", "1HGCM82633A004352"),
       "dealertrack-report.csv",
     );
     const reconciliationResponse = await request(app).post("/reconcile").send({
@@ -1515,7 +1614,7 @@ describe("app", () => {
     const dealertrackUpload = await uploadCsv(
       app,
       "dealertrack",
-      dealertrackUploadCsv("M11111", "-100"),
+      dealertrackUploadCsv("M11111", "-100", "1HGCM82633A004352"),
       "dealertrack-one.csv",
     );
     await uploadCsv(
@@ -1592,7 +1691,7 @@ describe("app", () => {
   test("POST /reconcile repeated uploads do not pollute later reconciliation", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const boaCsv = boaUploadCsv("M22222", "2HGCM82633A004352", "$222.00", "222222");
-    const dealertrackCsv = dealertrackUploadCsv("M22222", "-222");
+    const dealertrackCsv = dealertrackUploadCsv("M22222", "-222", "2HGCM82633A004352");
 
     await uploadCsv(app, "boa", boaCsv, "boa-first.csv");
     await uploadCsv(app, "dealertrack", dealertrackCsv, "dealertrack-first.csv");
@@ -1605,7 +1704,7 @@ describe("app", () => {
     const secondDealertrackUpload = await uploadCsv(
       app,
       "dealertrack",
-      'M22222,"BOA FLOORPLAN SECOND",-222,0',
+      'M22222,"BOA FLOORPLAN SECOND 2HGCM82633A004352",-222,0',
       "dealertrack-second.csv",
     );
 
@@ -1648,6 +1747,111 @@ describe("app", () => {
 
     expect(response.status).toBe(400);
   });
+
+  test("PATCH on a BOA-side exception routes review_notes into boa_notes", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+    const detail = await request(app).get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}`);
+    const boaException = detail.body.exceptions.find(
+      (exception: { source_type: string }) => exception.source_type === "boa",
+    );
+    expect(boaException).toBeDefined();
+
+    const updateResponse = await request(app)
+      .patch(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions/${boaException.exception_id}`)
+      .send({ review_notes: "Statement only — chasing title" });
+
+    expect(updateResponse.status).toBe(200);
+    expect(updateResponse.body).toMatchObject({
+      review_notes: "Statement only — chasing title",
+      boa_notes: "Statement only — chasing title",
+      gl_notes: "",
+    });
+  });
+
+  test("PATCH supports explicit boa_notes and gl_notes overrides", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+    const detail = await request(app).get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}`);
+    const exceptionId = detail.body.exceptions[0].exception_id;
+
+    const updateResponse = await request(app)
+      .patch(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions/${exceptionId}`)
+      .send({ boa_notes: "explicit boa", gl_notes: "explicit gl" });
+
+    expect(updateResponse.status).toBe(200);
+    expect(updateResponse.body).toMatchObject({
+      boa_notes: "explicit boa",
+      gl_notes: "explicit gl",
+    });
+  });
+
+  test("hurst-fp-rec carries forward unresolved items from a prior run for the same store", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const first = await createReconciliationWithRows(app, {
+      boaRows: [
+        boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"),
+        boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30202"),
+      ],
+      dealertrackRows: [
+        dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
+        dealertrackUploadCsv("M99999", "-999"),
+      ],
+      boaFilename: "boa-first.csv",
+      dealertrackFilename: "dt-first.csv",
+      storeId: 1,
+    });
+    const firstDetail = await request(app).get(
+      `/reconciliation-runs/${first.reconciliation_run_id}`,
+    );
+    const firstBoaException = firstDetail.body.exceptions.find(
+      (exception: { source_type: string; transaction: { stock_number: string | null } }) =>
+        exception.source_type === "boa" && exception.transaction.stock_number === "M30202",
+    );
+    expect(firstBoaException).toBeDefined();
+    await request(app)
+      .patch(
+        `/reconciliation-runs/${first.reconciliation_run_id}/exceptions/${firstBoaException.exception_id}`,
+      )
+      .send({ review_notes: "carry me forward" });
+
+    const second = await createReconciliationWithRows(app, {
+      boaRows: [
+        boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"),
+        boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30202"),
+        boaUploadCsv("M40404", "4HGCM82633A004352", "$404.00", "40404"),
+      ],
+      dealertrackRows: [
+        dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
+        dealertrackUploadCsv("M99999", "-999"),
+        dealertrackUploadCsv("M77777", "-777"),
+      ],
+      boaFilename: "boa-second.csv",
+      dealertrackFilename: "dt-second.csv",
+      storeId: 1,
+    });
+
+    const workbookResponse = await request(app)
+      .get(`/reconciliation-runs/${second.reconciliation_run_id}/hurst-fp-rec`)
+      .query({ format: "json" });
+
+    expect(workbookResponse.status).toBe(200);
+    expect(workbookResponse.body.carried_forward_count).toBeGreaterThanOrEqual(1);
+    const carriedRow =
+      workbookResponse.body.statement_not_on_gl.rows.find(
+        (row: { carried_forward: boolean }) => row.carried_forward,
+      ) ??
+      workbookResponse.body.schedule_not_on_statement.rows.find(
+        (row: { carried_forward: boolean }) => row.carried_forward,
+      );
+    expect(carriedRow).toBeDefined();
+    expect(carriedRow.previous_run_id).toBe(first.reconciliation_run_id);
+    if (carriedRow.prior_boa_notes || carriedRow.prior_gl_notes) {
+      expect(`${carriedRow.prior_boa_notes}${carriedRow.prior_gl_notes}`).toContain(
+        "carry me forward",
+      );
+    }
+  });
 });
 
 async function uploadCsv(
@@ -1676,7 +1880,11 @@ async function createReconciliation(app: ReturnType<typeof createApp>) {
       boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30202"),
     ],
     dealertrackRows: [
-      dealertrackUploadCsv("M30101", "-301"),
+      // Embed BOA VIN in the Dealertrack description so the v2 engine can
+      // auto-match by derived full VIN + amount (Tier 2). Without the VIN, the
+      // pair would be demoted to Needs Review under v2 because stock alone is
+      // not a trusted match key.
+      dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
       dealertrackUploadCsv("M30303", "-303"),
     ],
     boaFilename: "boa-run.csv",
@@ -1706,7 +1914,12 @@ async function createReconciliationWithAgent(agent: ReturnType<typeof request.ag
     .field("store_id", "1")
     .attach(
       "file",
-      Buffer.from([dealertrackUploadCsv("M30101", "-301"), dealertrackUploadCsv("M30303", "-303")].join("\n")),
+      Buffer.from(
+        [
+          dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
+          dealertrackUploadCsv("M30303", "-303"),
+        ].join("\n"),
+      ),
       "dealertrack-run.csv",
     );
   const response = await agent.post("/reconcile").send({

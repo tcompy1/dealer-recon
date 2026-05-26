@@ -51,6 +51,23 @@ export function categorizeReconciliationException(
     return "duplicate_or_one_to_many";
   }
 
+  // Engine-emitted Needs Review tiers carry the canonical exception_type
+  // (Tier 3 / Tier 4). The description text is also matched so historical
+  // exceptions reconstructed from the persisted reason string still resolve
+  // to the right category.
+  if (
+    exception.exception_type === "needs_review_vin6_only" ||
+    isNeedsReviewVin6Reason(exception)
+  ) {
+    return "vin6_match_amount_mismatch";
+  }
+  if (
+    exception.exception_type === "needs_review_amount_only" ||
+    isNeedsReviewAmountReason(exception)
+  ) {
+    return "amount_only_review";
+  }
+
   const transaction = exception.transaction;
   const counterpartTransactions =
     transaction.source_type === "boa" ? dealertrackTransactions : boaTransactions;
@@ -219,4 +236,18 @@ function effectiveDate(transaction: Transaction | TransactionSummary): string | 
 
 function isDuplicateReason(exception: CategorizableException): boolean {
   return (exception.description ?? exception.reason ?? "").toLowerCase().includes("duplicate");
+}
+
+function isNeedsReviewVin6Reason(exception: CategorizableException): boolean {
+  const text = (exception.description ?? exception.reason ?? "").toLowerCase();
+  return (
+    text.includes("needs review") &&
+    text.includes("vin6") &&
+    text.includes("amount differs")
+  );
+}
+
+function isNeedsReviewAmountReason(exception: CategorizableException): boolean {
+  const text = (exception.description ?? exception.reason ?? "").toLowerCase();
+  return text.includes("needs review") && text.includes("no vin6 agreement");
 }
