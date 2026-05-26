@@ -1648,6 +1648,111 @@ describe("app", () => {
 
     expect(response.status).toBe(400);
   });
+
+  test("PATCH on a BOA-side exception routes review_notes into boa_notes", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+    const detail = await request(app).get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}`);
+    const boaException = detail.body.exceptions.find(
+      (exception: { source_type: string }) => exception.source_type === "boa",
+    );
+    expect(boaException).toBeDefined();
+
+    const updateResponse = await request(app)
+      .patch(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions/${boaException.exception_id}`)
+      .send({ review_notes: "Statement only — chasing title" });
+
+    expect(updateResponse.status).toBe(200);
+    expect(updateResponse.body).toMatchObject({
+      review_notes: "Statement only — chasing title",
+      boa_notes: "Statement only — chasing title",
+      gl_notes: "",
+    });
+  });
+
+  test("PATCH supports explicit boa_notes and gl_notes overrides", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+    const detail = await request(app).get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}`);
+    const exceptionId = detail.body.exceptions[0].exception_id;
+
+    const updateResponse = await request(app)
+      .patch(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions/${exceptionId}`)
+      .send({ boa_notes: "explicit boa", gl_notes: "explicit gl" });
+
+    expect(updateResponse.status).toBe(200);
+    expect(updateResponse.body).toMatchObject({
+      boa_notes: "explicit boa",
+      gl_notes: "explicit gl",
+    });
+  });
+
+  test("hurst-fp-rec carries forward unresolved items from a prior run for the same store", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const first = await createReconciliationWithRows(app, {
+      boaRows: [
+        boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"),
+        boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30202"),
+      ],
+      dealertrackRows: [
+        dealertrackUploadCsv("M30101", "-301"),
+        dealertrackUploadCsv("M99999", "-999"),
+      ],
+      boaFilename: "boa-first.csv",
+      dealertrackFilename: "dt-first.csv",
+      storeId: 1,
+    });
+    const firstDetail = await request(app).get(
+      `/reconciliation-runs/${first.reconciliation_run_id}`,
+    );
+    const firstBoaException = firstDetail.body.exceptions.find(
+      (exception: { source_type: string; transaction: { stock_number: string | null } }) =>
+        exception.source_type === "boa" && exception.transaction.stock_number === "M30202",
+    );
+    expect(firstBoaException).toBeDefined();
+    await request(app)
+      .patch(
+        `/reconciliation-runs/${first.reconciliation_run_id}/exceptions/${firstBoaException.exception_id}`,
+      )
+      .send({ review_notes: "carry me forward" });
+
+    const second = await createReconciliationWithRows(app, {
+      boaRows: [
+        boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"),
+        boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30202"),
+        boaUploadCsv("M40404", "4HGCM82633A004352", "$404.00", "40404"),
+      ],
+      dealertrackRows: [
+        dealertrackUploadCsv("M30101", "-301"),
+        dealertrackUploadCsv("M99999", "-999"),
+        dealertrackUploadCsv("M77777", "-777"),
+      ],
+      boaFilename: "boa-second.csv",
+      dealertrackFilename: "dt-second.csv",
+      storeId: 1,
+    });
+
+    const workbookResponse = await request(app)
+      .get(`/reconciliation-runs/${second.reconciliation_run_id}/hurst-fp-rec`)
+      .query({ format: "json" });
+
+    expect(workbookResponse.status).toBe(200);
+    expect(workbookResponse.body.carried_forward_count).toBeGreaterThanOrEqual(1);
+    const carriedRow =
+      workbookResponse.body.statement_not_on_gl.rows.find(
+        (row: { carried_forward: boolean }) => row.carried_forward,
+      ) ??
+      workbookResponse.body.schedule_not_on_statement.rows.find(
+        (row: { carried_forward: boolean }) => row.carried_forward,
+      );
+    expect(carriedRow).toBeDefined();
+    expect(carriedRow.previous_run_id).toBe(first.reconciliation_run_id);
+    if (carriedRow.prior_boa_notes || carriedRow.prior_gl_notes) {
+      expect(`${carriedRow.prior_boa_notes}${carriedRow.prior_gl_notes}`).toContain(
+        "carry me forward",
+      );
+    }
+  });
 });
 
 async function uploadCsv(

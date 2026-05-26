@@ -44,6 +44,7 @@ import {
   type SourceFileImport,
   type TransactionRepository,
 } from "./transactionRepository.js";
+import type { PriorExceptionRecord } from "../services/exceptionCarryForward.js";
 
 type SourceFileRow = {
   id: number;
@@ -190,6 +191,8 @@ type ReconciliationExceptionRow = TransactionRow & {
   review_status: ReconciliationExceptionReviewStatus;
   assigned_to: string | null;
   review_notes: string;
+  boa_notes: string | null;
+  gl_notes: string | null;
   reviewed_at: Date | string | null;
   reviewed_by: string | null;
   exception_created_at: Date | string;
@@ -649,6 +652,8 @@ export class PostgresTransactionRepository implements TransactionRepository {
        re.review_status,
        re.assigned_to,
        re.review_notes,
+       COALESCE(re.boa_notes, '') AS boa_notes,
+       COALESCE(re.gl_notes, '') AS gl_notes,
        re.reviewed_at,
        re.reviewed_by,
        re.created_at AS exception_created_at,
@@ -1131,6 +1136,8 @@ export class PostgresTransactionRepository implements TransactionRepository {
        re.review_status,
        re.assigned_to,
        re.review_notes,
+       COALESCE(re.boa_notes, '') AS boa_notes,
+       COALESCE(re.gl_notes, '') AS gl_notes,
        re.reviewed_at,
        re.reviewed_by,
        re.created_at AS exception_created_at,
@@ -1175,6 +1182,8 @@ export class PostgresTransactionRepository implements TransactionRepository {
       review_status: row.review_status,
       assigned_to: row.assigned_to,
       review_notes: row.review_notes,
+      boa_notes: row.boa_notes ?? "",
+      gl_notes: row.gl_notes ?? "",
       reviewed_at: row.reviewed_at ? toDateTimeString(row.reviewed_at) : null,
       reviewed_by: row.reviewed_by,
       source_type: row.exception_source_type,
@@ -1242,6 +1251,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
       return null;
     }
 
+    const reviewNotesValue = update.review_notes ?? update.note ?? null;
     const result = await this.pool.query<ReconciliationExceptionRow>(
       `UPDATE reconciliation_exceptions
        SET
@@ -1250,6 +1260,16 @@ export class PostgresTransactionRepository implements TransactionRepository {
          assigned_to = CASE WHEN $5::boolean THEN $6 ELSE assigned_to END,
          review_notes = COALESCE($7, review_notes),
          note = COALESCE($8, note),
+         boa_notes = CASE
+           WHEN $12::text IS NOT NULL THEN $12
+           WHEN $7::text IS NOT NULL AND reconciliation_exceptions.source_type = 'boa' THEN $7
+           ELSE COALESCE(boa_notes, '')
+         END,
+         gl_notes = CASE
+           WHEN $13::text IS NOT NULL THEN $13
+           WHEN $7::text IS NOT NULL AND reconciliation_exceptions.source_type IN ('dealertrack', 'dms', 'gl') THEN $7
+           ELSE COALESCE(gl_notes, '')
+         END,
          reviewed_by = CASE WHEN $9::boolean THEN $10 ELSE reviewed_by END,
          reviewed_at = CASE
            WHEN COALESCE($3, review_status) IN ('resolved', 'ignored')
@@ -1271,6 +1291,8 @@ export class PostgresTransactionRepository implements TransactionRepository {
          reconciliation_exceptions.review_status,
          reconciliation_exceptions.assigned_to,
          reconciliation_exceptions.review_notes,
+         COALESCE(reconciliation_exceptions.boa_notes, '') AS boa_notes,
+         COALESCE(reconciliation_exceptions.gl_notes, '') AS gl_notes,
          reconciliation_exceptions.reviewed_at,
          reconciliation_exceptions.reviewed_by,
          reconciliation_exceptions.created_at AS exception_created_at,
@@ -1282,11 +1304,13 @@ export class PostgresTransactionRepository implements TransactionRepository {
         update.review_status ? legacyStatusFromReviewStatus(update.review_status) : update.status ?? null,
         update.assigned_to !== undefined,
         normalizeNullableText(update.assigned_to ?? null),
-        update.review_notes ?? update.note ?? null,
-        update.review_notes ?? update.note ?? null,
+        reviewNotesValue,
+        reviewNotesValue,
         update.reviewed_by !== undefined,
         normalizeNullableText(update.reviewed_by ?? null),
         dealershipId,
+        update.boa_notes ?? null,
+        update.gl_notes ?? null,
       ],
     );
 
@@ -1302,6 +1326,8 @@ export class PostgresTransactionRepository implements TransactionRepository {
       review_status: row.review_status,
       assigned_to: row.assigned_to,
       review_notes: row.review_notes,
+      boa_notes: row.boa_notes ?? "",
+      gl_notes: row.gl_notes ?? "",
       reviewed_at: row.reviewed_at ? toDateTimeString(row.reviewed_at) : null,
       reviewed_by: row.reviewed_by,
       source_type: row.exception_source_type,
@@ -1309,6 +1335,80 @@ export class PostgresTransactionRepository implements TransactionRepository {
       created_at: toDateTimeString(row.exception_created_at),
       transaction: toTransactionSummary(toTransaction(row)),
     };
+  }
+
+  async listPriorUnresolvedExceptions(
+    dealershipId: number,
+    options: {
+      dealershipStoreId: number | null;
+      excludeRunId: number;
+      createdBefore?: string;
+    },
+  ): Promise<PriorExceptionRecord[]> {
+    const result = await this.pool.query<{
+      exception_id: number;
+      reconciliation_run_id: number;
+      dealership_store_id: number | null;
+      source_type: SourceType;
+      amount_cents: string | number;
+      vin: string | null;
+      stock_number: string | null;
+      reference_number: string | null;
+      description: string | null;
+      boa_notes: string | null;
+      gl_notes: string | null;
+      review_notes: string | null;
+      created_at: Date | string;
+    }>(
+      `SELECT
+         re.id AS exception_id,
+         re.reconciliation_run_id,
+         rr.dealership_store_id,
+         re.source_type,
+         t.amount_cents,
+         t.vin,
+         t.stock_number,
+         t.reference_number,
+         t.description,
+         COALESCE(re.boa_notes, '') AS boa_notes,
+         COALESCE(re.gl_notes, '') AS gl_notes,
+         COALESCE(re.review_notes, '') AS review_notes,
+         rr.created_at
+       FROM reconciliation_exceptions re
+       JOIN reconciliation_runs rr ON rr.id = re.reconciliation_run_id
+       JOIN transactions t ON t.id = re.transaction_id
+       WHERE re.dealership_id = $1
+         AND rr.dealership_id = $1
+         AND re.reconciliation_run_id <> $2
+         AND re.status = 'unresolved'
+         AND (
+           ($3::integer IS NULL AND rr.dealership_store_id IS NULL)
+           OR ($3::integer IS NOT NULL AND rr.dealership_store_id = $3)
+         )
+         AND ($4::timestamptz IS NULL OR rr.created_at < $4)
+       ORDER BY rr.created_at, re.id`,
+      [
+        dealershipId,
+        options.excludeRunId,
+        options.dealershipStoreId,
+        options.createdBefore ?? null,
+      ],
+    );
+    return result.rows.map((row) => ({
+      exception_id: row.exception_id,
+      reconciliation_run_id: row.reconciliation_run_id,
+      dealership_store_id: row.dealership_store_id,
+      source_type: row.source_type,
+      amount_cents: Number(row.amount_cents),
+      vin: row.vin,
+      stock_number: row.stock_number,
+      reference_number: row.reference_number,
+      description: row.description,
+      boa_notes: row.boa_notes ?? "",
+      gl_notes: row.gl_notes ?? "",
+      review_notes: row.review_notes ?? "",
+      created_at: toDateTimeString(row.created_at),
+    }));
   }
 
   async getReconciliationExceptionDealershipId(
@@ -1439,6 +1539,8 @@ function toReconciliationExceptionDetail(
     review_status: row.review_status,
     assigned_to: row.assigned_to,
     review_notes: row.review_notes,
+    boa_notes: row.boa_notes ?? "",
+    gl_notes: row.gl_notes ?? "",
     reviewed_at: row.reviewed_at ? toDateTimeString(row.reviewed_at) : null,
     reviewed_by: row.reviewed_by,
     source_type: row.exception_source_type,
@@ -1447,6 +1549,7 @@ function toReconciliationExceptionDetail(
     transaction: toTransactionSummary(toTransaction(row)),
   };
 }
+
 
 function accountKey(accountIdentifier: string, accountType: string): string {
   return `${accountIdentifier}\u0000${accountType}`;

@@ -300,6 +300,8 @@ export function parseExceptionReviewUpdate(
     review_status?: unknown;
     assigned_to?: unknown;
     review_notes?: unknown;
+    boa_notes?: unknown;
+    gl_notes?: unknown;
     reviewed_by?: unknown;
   };
   const hasStatus = Object.hasOwn(body, "status");
@@ -307,8 +309,19 @@ export function parseExceptionReviewUpdate(
   const hasReviewStatus = Object.hasOwn(body, "review_status");
   const hasAssignedTo = Object.hasOwn(body, "assigned_to");
   const hasReviewNotes = Object.hasOwn(body, "review_notes");
+  const hasBoaNotes = Object.hasOwn(body, "boa_notes");
+  const hasGlNotes = Object.hasOwn(body, "gl_notes");
   const hasReviewedBy = Object.hasOwn(body, "reviewed_by");
-  if (!hasStatus && !hasNote && !hasReviewStatus && !hasAssignedTo && !hasReviewNotes && !hasReviewedBy) {
+  if (
+    !hasStatus &&
+    !hasNote &&
+    !hasReviewStatus &&
+    !hasAssignedTo &&
+    !hasReviewNotes &&
+    !hasBoaNotes &&
+    !hasGlNotes &&
+    !hasReviewedBy
+  ) {
     return false;
   }
   if (hasStatus && !isReconciliationExceptionStatus(body.status)) {
@@ -326,6 +339,12 @@ export function parseExceptionReviewUpdate(
   if (hasReviewNotes && typeof body.review_notes !== "string") {
     return false;
   }
+  if (hasBoaNotes && typeof body.boa_notes !== "string") {
+    return false;
+  }
+  if (hasGlNotes && typeof body.gl_notes !== "string") {
+    return false;
+  }
   if (hasReviewedBy && body.reviewed_by !== null && typeof body.reviewed_by !== "string") {
     return false;
   }
@@ -340,6 +359,12 @@ export function parseExceptionReviewUpdate(
       : {}),
     ...(hasReviewNotes && typeof body.review_notes === "string"
       ? { review_notes: body.review_notes.trim() }
+      : {}),
+    ...(hasBoaNotes && typeof body.boa_notes === "string"
+      ? { boa_notes: body.boa_notes.trim() }
+      : {}),
+    ...(hasGlNotes && typeof body.gl_notes === "string"
+      ? { gl_notes: body.gl_notes.trim() }
       : {}),
     ...(hasReviewedBy
       ? { reviewed_by: typeof body.reviewed_by === "string" ? body.reviewed_by.trim() || null : null }

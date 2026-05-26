@@ -196,6 +196,8 @@ function exception({
     review_status,
     assigned_to,
     review_notes: "",
+    boa_notes: "",
+    gl_notes: "",
     reviewed_at,
     reviewed_by: null,
     source_type,

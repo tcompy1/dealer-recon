@@ -500,7 +500,22 @@ export type ReconciliationExceptionReviewUpdate = {
   review_status?: ReconciliationExceptionReviewStatus;
   assigned_to?: string | null;
   review_notes?: string;
+  boa_notes?: string;
+  gl_notes?: string;
   reviewed_by?: string | null;
+};
+
+export type ReconciliationExceptionCarryForward = {
+  carried_forward: boolean;
+  previous_run_id: number | null;
+  previous_exception_id: number | null;
+  first_seen_run_id: number | null;
+  first_seen_at: string | null;
+  last_seen_run_id: number | null;
+  last_seen_at: string | null;
+  occurrence_count: number;
+  prior_boa_notes: string;
+  prior_gl_notes: string;
 };
 
 export type ReconciliationRunDetail = ReconciliationRunListItem & {
@@ -528,12 +543,15 @@ export type ReconciliationRunDetail = ReconciliationRunListItem & {
     review_status: ReconciliationExceptionReviewStatus;
     assigned_to: string | null;
     review_notes: string;
+    boa_notes: string;
+    gl_notes: string;
     reviewed_at: string | null;
     reviewed_by: string | null;
     source_type: SourceType;
     reason: string;
     created_at: string;
     transaction: TransactionSummary;
+    carry_forward?: ReconciliationExceptionCarryForward;
   }>;
 };
 

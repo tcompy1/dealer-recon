@@ -10,6 +10,7 @@ import {
   updateScheduledJob,
 } from "../api/automation";
 import {
+  getHurstFpRecExportUrl,
   getReconciliationExceptionsCsvUrl,
   getReconciliationRun,
   getReconciliationRunAnalytics,
@@ -28,6 +29,7 @@ import { listSourceFiles, uploadSourceFile } from "../api/uploads";
 import { VinPresenceDiagnosticsPanel } from "./VinPresenceDiagnosticsPanel";
 import type {
   ReconciledTransaction,
+  ReconciliationExceptionCarryForward,
   ReconciliationExceptionStatus,
   ReconciliationExceptionReviewUpdate,
   ReconciliationExceptionReviewStatus,
@@ -887,7 +889,7 @@ function ResultsSection({
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="flex flex-col gap-1">
           <p className="text-xs font-semibold uppercase text-cyan-700">Step 3</p>
-          <h2 className="text-lg font-semibold text-slate-950">View reconciliation results</h2>
+          <h2 className="text-lg font-semibold text-slate-950">Review reconciliation</h2>
           {run ? (
             <p className="text-sm text-slate-600">
               Run #{run.reconciliation_run_id} for {run.store_name ?? "Unassigned store"} from{" "}
@@ -895,14 +897,25 @@ function ResultsSection({
             </p>
           ) : null}
         </div>
-        {exportUrl ? (
-          <a
-            className="inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-700"
-            download
-            href={exportUrl}
-          >
-            Export Exceptions CSV
-          </a>
+        {run ? (
+          <div className="flex flex-wrap gap-2">
+            <a
+              className="inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-700"
+              download
+              href={getHurstFpRecExportUrl(run.reconciliation_run_id)}
+            >
+              Export Hurst FP Rec (.xls)
+            </a>
+            {exportUrl ? (
+              <a
+                className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+                download
+                href={exportUrl}
+              >
+                Export Unmatched Items CSV
+              </a>
+            ) : null}
+          </div>
         ) : null}
       </div>
 
@@ -915,8 +928,8 @@ function ResultsSection({
       {run ? (
         <>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Metric label="Matched" value={run.matched_count} />
-            <Metric label="Exceptions" value={run.exception_count} />
+            <Metric label="Clean matches (VIN + amount)" value={run.matched_count} />
+            <Metric label="Unmatched items" value={run.exception_count} />
             <Metric label="Duplicates" value={run.duplicate_count} />
             <Metric label="Run ID" value={run.reconciliation_run_id} />
           </div>
@@ -950,15 +963,16 @@ function ExceptionBreakdown({ run }: { run: ReconciliationRunDetail }) {
   return (
     <div className="grid gap-2">
       <div>
-        <h3 className="text-base font-semibold text-slate-950">Exception breakdown</h3>
+        <h3 className="text-base font-semibold text-slate-950">Unmatched items breakdown</h3>
         <p className="mt-1 text-sm text-slate-600">
-          BOA-only rows are missing in Dealertrack; Dealertrack-only rows are missing in BOA.
+          Statement Not on GL = BOA rows with no Dealertrack match. Schedule Not on Statement =
+          Dealertrack rows with no BOA match.
         </p>
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
-        <Metric label="BOA-only exceptions" value={breakdown.boaOnly} />
-        <Metric label="Dealertrack-only exceptions" value={breakdown.dealertrackOnly} />
-        <Metric label="Duplicate exceptions" value={breakdown.duplicates} />
+        <Metric label="Statement Not on GL" value={breakdown.boaOnly} />
+        <Metric label="Schedule Not on Statement" value={breakdown.dealertrackOnly} />
+        <Metric label="Duplicate Dealertrack rows" value={breakdown.duplicates} />
       </div>
     </div>
   );
@@ -1363,9 +1377,10 @@ function ExceptionsTable({
     <div className="grid gap-2">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h3 className="text-base font-semibold text-slate-950">Exceptions</h3>
+          <h3 className="text-base font-semibold text-slate-950">Unmatched items</h3>
           <p className="mt-1 text-sm text-slate-600">
-            Showing {run.exceptions.length} of {run.exception_count}
+            Items that did not pair cleanly become Statement Not on GL, Schedule Not on Statement,
+            or Needs Review. Showing {run.exceptions.length} of {run.exception_count}.
           </p>
           <div className="mt-2 flex flex-wrap gap-2">
             {reviewStatusCounts.map(([status, count]) => (
@@ -1411,8 +1426,8 @@ function ExceptionsTable({
               }
             >
               <option value="">All types</option>
-              <option value="missing_in_dealertrack">Missing in Dealertrack</option>
-              <option value="missing_in_boa">Missing in BOA</option>
+              <option value="missing_in_dealertrack">Statement Not on GL (BOA-only)</option>
+              <option value="missing_in_boa">Schedule Not on Statement (Dealertrack-only)</option>
               <option value="duplicate_transaction">Duplicate</option>
             </select>
           </label>
@@ -1478,7 +1493,7 @@ function ExceptionsTable({
             download
             href={exportUrl}
           >
-            Export Exceptions CSV
+            Export Unmatched Items CSV
           </a>
         </div>
       </div>
@@ -1492,9 +1507,11 @@ function ExceptionsTable({
               <th className="px-3 py-2 font-semibold">Assigned</th>
               <th className="px-3 py-2 font-semibold">Source</th>
               <th className="px-3 py-2 font-semibold">Stock</th>
+              <th className="px-3 py-2 font-semibold">VIN6</th>
               <th className="px-3 py-2 font-semibold">VIN</th>
               <th className="px-3 py-2 font-semibold">Amount</th>
               <th className="px-3 py-2 font-semibold">Reason</th>
+              <th className="px-3 py-2 font-semibold">Carry-fwd</th>
               <th className="px-3 py-2 font-semibold">Note</th>
               <th className="px-3 py-2 font-semibold">Actions</th>
             </tr>
@@ -1502,8 +1519,8 @@ function ExceptionsTable({
           <tbody className="divide-y divide-slate-200 bg-white">
             {run.exceptions.length === 0 ? (
               <tr>
-                <td className="px-3 py-3 text-slate-600" colSpan={11}>
-                  No exceptions.
+                <td className="px-3 py-3 text-slate-600" colSpan={13}>
+                  No unmatched items.
                 </td>
               </tr>
             ) : (
@@ -1563,9 +1580,13 @@ function ExceptionsTable({
                   </td>
                   <td className="px-3 py-2">{exception.source_type.toUpperCase()}</td>
                   <td className="px-3 py-2">{exception.transaction.stock_number ?? "n/a"}</td>
+                  <td className="px-3 py-2">{computeDisplayVin6(exception.transaction)}</td>
                   <td className="px-3 py-2">{exception.transaction.vin ?? "n/a"}</td>
                   <td className="px-3 py-2">{formatAmount(exception.transaction)}</td>
                   <td className="px-3 py-2">{exception.reason}</td>
+                  <td className="px-3 py-2 text-xs">
+                    {renderCarryForward(exception.carry_forward)}
+                  </td>
                   <td className="min-w-56 px-3 py-2">
                     <input
                       className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
@@ -1581,6 +1602,7 @@ function ExceptionsTable({
                         }
                       }}
                     />
+                    {renderPriorNotes(exception.carry_forward)}
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-2">
@@ -1722,6 +1744,68 @@ function formatAmount(transaction: ReconciledTransaction) {
     style: "currency",
     currency: "USD",
   });
+}
+
+const vinPattern = /\b[A-HJ-NPR-Z0-9]{17}\b/;
+
+function computeDisplayVin6(transaction: ReconciledTransaction): string {
+  const vin = (transaction.vin ?? "").toUpperCase();
+  if (vin) {
+    const match = vin.match(vinPattern);
+    if (match) {
+      return match[0].slice(-6);
+    }
+    if (vin.length >= 6) {
+      return vin.slice(-6);
+    }
+  }
+  const description = (transaction.description ?? "").toUpperCase();
+  const descriptionMatch = description.match(vinPattern);
+  if (descriptionMatch) {
+    return descriptionMatch[0].slice(-6);
+  }
+  return "n/a";
+}
+
+function renderCarryForward(carry: ReconciliationExceptionCarryForward | undefined) {
+  if (!carry || !carry.carried_forward) {
+    return null;
+  }
+  const firstSeen = carry.first_seen_at ? carry.first_seen_at.slice(0, 10) : null;
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="inline-flex w-fit items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-900">
+        Carried forward ({carry.occurrence_count}x)
+      </span>
+      {firstSeen ? (
+        <span className="text-[11px] text-slate-500">
+          since {firstSeen}
+          {carry.first_seen_run_id ? ` (run #${carry.first_seen_run_id})` : ""}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function renderPriorNotes(carry: ReconciliationExceptionCarryForward | undefined) {
+  if (!carry || !carry.carried_forward) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (carry.prior_boa_notes) {
+    parts.push(`BOA: ${carry.prior_boa_notes}`);
+  }
+  if (carry.prior_gl_notes) {
+    parts.push(`GL: ${carry.prior_gl_notes}`);
+  }
+  if (parts.length === 0) {
+    return null;
+  }
+  return (
+    <p className="mt-1 text-[11px] text-slate-500">
+      <span className="font-semibold text-slate-600">Prior notes:</span> {parts.join(" | ")}
+    </p>
+  );
 }
 
 function formatDateTime(value: string) {
