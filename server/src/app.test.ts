@@ -9,8 +9,10 @@ import { MAX_CSV_ROWS } from "./services/transactionNormalizer.js";
 const boaUploadCsv = (stockNumber: string, vin: string, amount: string, reference = "382882") =>
   [`,,,9/26/2025,${reference},,${stockNumber},,${vin},,"${amount}",`].join("\n");
 
-const dealertrackUploadCsv = (stockNumber: string, amount: string) =>
-  `${stockNumber},"BOA FLOORPLAN",${amount},0`;
+const dealertrackUploadCsv = (stockNumber: string, amount: string, vin?: string) =>
+  vin
+    ? `${stockNumber},"BOA FLOORPLAN ${vin}",${amount},0`
+    : `${stockNumber},"BOA FLOORPLAN",${amount},0`;
 
 describe("app", () => {
   test("POST /login authenticates a local user and GET /me returns the user", async () => {
@@ -560,7 +562,7 @@ describe("app", () => {
     const dealertrackUpload = await uploadCsv(
       app,
       "dealertrack",
-      dealertrackUploadCsv("M30101", "-301"),
+      dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
       "auto-dealertrack.csv",
       1,
     );
@@ -592,7 +594,7 @@ describe("app", () => {
   test("scheduled due jobs run and missing expected files generate alerts", async () => {
     const app = createApp(new MemoryTransactionRepository());
     await uploadCsv(app, "boa", boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"), "due-boa.csv", 1);
-    await uploadCsv(app, "dealertrack", dealertrackUploadCsv("M30101", "-301"), "due-dt.csv", 1);
+    await uploadCsv(app, "dealertrack", dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"), "due-dt.csv", 1);
     await request(app).post("/automation/scheduled-jobs").send({
       dealership_store_id: 1,
       cadence: "weekly",
@@ -736,9 +738,9 @@ describe("app", () => {
     expect(response.body.match_groups).toHaveLength(1);
     expect(response.body.match_groups[0]).toMatchObject({
       match_group_id: expect.any(Number),
-      match_type: "stock_number_amount",
-      confidence: 0.92,
-      reason: "stock_number_amount",
+      match_type: "derived_vin_abs_amount",
+      confidence: 0.98,
+      reason: "derived_vin_abs_amount",
       transactions: [
         expect.objectContaining({
           side: "left",
@@ -1016,7 +1018,7 @@ describe("app", () => {
         boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30209"),
       ],
       dealertrackRows: [
-        dealertrackUploadCsv("M30101", "-301"),
+        dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
         dealertrackUploadCsv("M40404", "-404"),
       ],
       boaFilename: "boa-current-trend.csv",
@@ -1405,7 +1407,7 @@ describe("app", () => {
     const dealertrackUpload = await uploadCsv(
       app,
       "dealertrack",
-      dealertrackUploadCsv("M30101", "-100"),
+      dealertrackUploadCsv("M30101", "-100", "1HGCM82633A004352"),
       "dealertrack-report.csv",
     );
     const reconciliationResponse = await request(app).post("/reconcile").send({
@@ -1515,7 +1517,7 @@ describe("app", () => {
     const dealertrackUpload = await uploadCsv(
       app,
       "dealertrack",
-      dealertrackUploadCsv("M11111", "-100"),
+      dealertrackUploadCsv("M11111", "-100", "1HGCM82633A004352"),
       "dealertrack-one.csv",
     );
     await uploadCsv(
@@ -1592,7 +1594,7 @@ describe("app", () => {
   test("POST /reconcile repeated uploads do not pollute later reconciliation", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const boaCsv = boaUploadCsv("M22222", "2HGCM82633A004352", "$222.00", "222222");
-    const dealertrackCsv = dealertrackUploadCsv("M22222", "-222");
+    const dealertrackCsv = dealertrackUploadCsv("M22222", "-222", "2HGCM82633A004352");
 
     await uploadCsv(app, "boa", boaCsv, "boa-first.csv");
     await uploadCsv(app, "dealertrack", dealertrackCsv, "dealertrack-first.csv");
@@ -1605,7 +1607,7 @@ describe("app", () => {
     const secondDealertrackUpload = await uploadCsv(
       app,
       "dealertrack",
-      'M22222,"BOA FLOORPLAN SECOND",-222,0',
+      'M22222,"BOA FLOORPLAN SECOND 2HGCM82633A004352",-222,0',
       "dealertrack-second.csv",
     );
 
@@ -1695,7 +1697,7 @@ describe("app", () => {
         boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30202"),
       ],
       dealertrackRows: [
-        dealertrackUploadCsv("M30101", "-301"),
+        dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
         dealertrackUploadCsv("M99999", "-999"),
       ],
       boaFilename: "boa-first.csv",
@@ -1723,7 +1725,7 @@ describe("app", () => {
         boaUploadCsv("M40404", "4HGCM82633A004352", "$404.00", "40404"),
       ],
       dealertrackRows: [
-        dealertrackUploadCsv("M30101", "-301"),
+        dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
         dealertrackUploadCsv("M99999", "-999"),
         dealertrackUploadCsv("M77777", "-777"),
       ],
@@ -1781,7 +1783,11 @@ async function createReconciliation(app: ReturnType<typeof createApp>) {
       boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30202"),
     ],
     dealertrackRows: [
-      dealertrackUploadCsv("M30101", "-301"),
+      // Embed BOA VIN in the Dealertrack description so the v2 engine can
+      // auto-match by derived full VIN + amount (Tier 2). Without the VIN, the
+      // pair would be demoted to Needs Review under v2 because stock alone is
+      // not a trusted match key.
+      dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
       dealertrackUploadCsv("M30303", "-303"),
     ],
     boaFilename: "boa-run.csv",
@@ -1811,7 +1817,12 @@ async function createReconciliationWithAgent(agent: ReturnType<typeof request.ag
     .field("store_id", "1")
     .attach(
       "file",
-      Buffer.from([dealertrackUploadCsv("M30101", "-301"), dealertrackUploadCsv("M30303", "-303")].join("\n")),
+      Buffer.from(
+        [
+          dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
+          dealertrackUploadCsv("M30303", "-303"),
+        ].join("\n"),
+      ),
       "dealertrack-run.csv",
     );
   const response = await agent.post("/reconcile").send({

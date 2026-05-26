@@ -109,7 +109,7 @@ describe("reconcileTransactions", () => {
     ]);
   });
 
-  test("matches by stock and absolute amount when VIN is missing", async () => {
+  test("does not auto-match by stock and amount alone when no VIN6 is available", async () => {
     const repository = new MemoryTransactionRepository();
     await repository.insertMany(
       normalizeTransactionsFromCsv(
@@ -127,12 +127,14 @@ describe("reconcileTransactions", () => {
 
     const result = await reconcileTransactions(repository);
 
-    expect(result).toMatchObject({
-      matched_count: 1,
-      exception_count: 0,
-      duplicate_count: 0,
-    });
-    expect(result.match_groups[0].match_reason).toBe("stock_number_amount");
+    expect(result.matched_count).toBe(0);
+    expect(result.match_groups).toHaveLength(0);
+    expect(result.exceptions).toHaveLength(2);
+    expect(result.exceptions.map((exception) => exception.exception_type).sort()).toEqual([
+      "needs_review_amount_only",
+      "needs_review_amount_only",
+    ]);
+    expect(result.exceptions.every((exception) => exception.exception_category === "amount_only_review")).toBe(true);
   });
 
   test("reserves high-confidence identity matches before weak amount context fallback", async () => {
@@ -341,44 +343,30 @@ describe("reconcileTransactions", () => {
     );
   });
 
-  test("matches stock number patterns and detects duplicates", async () => {
+  test("routes stock-only floorplan pairs to Needs Review instead of auto-confirming", async () => {
     const repository = await loadFloorplanSamples();
     const result = await reconcileTransactions(repository);
 
-    expect(result.matched_count).toBe(3);
-    expect(result.exception_count).toBe(3);
+    // Under v2, BOA rows have full VINs but their Dealertrack counterparts do
+    // not. Tier 1/2 can't auto-confirm without VIN6 agreement, so each
+    // stock-linked pair drops to Tier 4 Needs Review (two exceptions per
+    // pair). 3 pairs => 6 needs_review_amount_only exceptions; the duplicate
+    // M20450 Dealertrack row is still flagged. M20999 BOA and M20888 DT have
+    // no counterpart and emit Tier 5 missing_in_* exceptions.
+    expect(result.matched_count).toBe(0);
     expect(result.duplicate_count).toBe(1);
 
-    const stockMatches = result.match_groups.filter(
-      (group) => group.match_reason === "stock_number_amount",
+    const needsReview = result.exceptions.filter(
+      (exception) => exception.exception_type === "needs_review_amount_only",
     );
-    expect(stockMatches).toHaveLength(3);
-    expect(
-      stockMatches.map((group) => [
-        group.transactions[0].reference_number,
-        group.transactions[0].stock_number,
-        group.transactions[1].stock_number,
-      ]),
-    ).toEqual(
-      expect.arrayContaining([
-        ["382882", "M20657", "M20657"],
-        ["708021", "M20450", "M20450"],
-      ]),
-    );
+    expect(needsReview).toHaveLength(6);
+    expect(needsReview.every((exception) => exception.exception_category === "amount_only_review")).toBe(true);
+
+    const stockNumbers = new Set(needsReview.map((exception) => exception.transaction.stock_number));
+    expect(stockNumbers).toEqual(new Set(["M20500", "M20657", "M20450"]));
   });
 
-  test("proves VIN-only matching would fail for stock-number-only Dealertrack rows", async () => {
-    const repository = await loadFloorplanSamples();
-    const result = await reconcileTransactions(repository);
-    const stockMatches = result.match_groups.filter(
-      (group) => group.match_reason === "stock_number_amount",
-    );
-
-    expect(stockMatches).toHaveLength(3);
-    expect(stockMatches.every((group) => group.transactions[1].vin === null)).toBe(true);
-  });
-
-  test("detects duplicate Dealertrack entry", async () => {
+  test("detects duplicate Dealertrack entry even when matching is demoted to Needs Review", async () => {
     const repository = await loadFloorplanSamples();
     const result = await reconcileTransactions(repository);
     const duplicateExceptions = result.exceptions.filter(
@@ -413,14 +401,32 @@ describe("reconcileTransactions", () => {
 
     const result = await reconcileTransactions(repository);
 
-    expect(result.matched_count).toBe(1);
-    expect(result.match_groups[0].transactions.map((transaction) => transaction.amount_cents)).toEqual([
-      10001,
-      -10001,
-    ]);
-    expect(result.exceptions.map((exception) => exception.transaction.stock_number)).toEqual(
-      expect.arrayContaining(["M50002"]),
+    // V2: no auto-match because the Dealertrack rows have no VIN and no
+    // 17-char VIN in description. M50001 BOA ($100.01) pairs with M50001 DT
+    // (-$100.01) under Tier 4 Needs Review; M50002 BOA ($100.02) has no
+    // amount match on the Dealertrack side and lands as Tier 5 missing.
+    // The two amounts differ by one cent and must not collapse into a match.
+    expect(result.matched_count).toBe(0);
+
+    const needsReview = result.exceptions.filter(
+      (exception) => exception.exception_type === "needs_review_amount_only",
     );
+    expect(needsReview.map((exception) => exception.transaction.amount_cents).sort()).toEqual([
+      -10001,
+      10001,
+    ]);
+    expect(needsReview.map((exception) => exception.transaction.stock_number).sort()).toEqual([
+      "M50001",
+      "M50001",
+    ]);
+
+    const missing = result.exceptions.filter((exception) =>
+      exception.exception_type.startsWith("missing_in_"),
+    );
+    expect(missing.map((exception) => exception.transaction.stock_number).sort()).toEqual([
+      "M50002",
+      "M50002",
+    ]);
     stderr.mockRestore();
   });
 

@@ -39,6 +39,8 @@ export type ReconciliationExceptionCategory =
   | "stock_number_mismatch"
   | "vin_missing_but_reference_match"
   | "possible_timing_issue"
+  | "vin6_match_amount_mismatch"
+  | "amount_only_review"
   | "unclassified";
 
 export type VinPresenceDiagnosticReason =
