@@ -653,6 +653,26 @@ export function createApp(
         sourceType,
         request.file.originalname ?? null,
       );
+      if (preprocessingResult.kind === "unsupported") {
+        await repository.createIngestionEvent(requestDealershipId, {
+          dealership_store_id: dealershipStoreId,
+          source_file_id: null,
+          reconciliation_run_id: null,
+          source_type: sourceType,
+          state: "failed",
+          message: preprocessingResult.detail,
+          metadata: {
+            file_hash: fileHash,
+            filename: request.file.originalname ?? null,
+            preprocessing: preprocessingResult.preprocessingMetadata,
+          },
+        });
+        response.status(preprocessingResult.statusCode).json({
+          detail: preprocessingResult.detail,
+          preprocessing: preprocessingResult.preprocessingMetadata,
+        });
+        return;
+      }
       const result = {
         transactions: preprocessingResult.transactions,
         validationErrors: preprocessingResult.validationErrors,
@@ -1401,11 +1421,19 @@ type UploadPreprocessingMetadata = {
   unsupported_reason: string | null;
 };
 
-type UploadPreprocessingResult = {
-  transactions: import("./domain/types.js").NewTransaction[];
-  validationErrors: import("./domain/types.js").ValidationError[];
-  preprocessingMetadata: UploadPreprocessingMetadata;
-};
+type UploadPreprocessingResult =
+  | {
+      kind: "ok";
+      transactions: import("./domain/types.js").NewTransaction[];
+      validationErrors: import("./domain/types.js").ValidationError[];
+      preprocessingMetadata: UploadPreprocessingMetadata;
+    }
+  | {
+      kind: "unsupported";
+      statusCode: 422;
+      detail: string;
+      preprocessingMetadata: UploadPreprocessingMetadata;
+    };
 
 function runUploadPreprocessing(
   buffer: Buffer,
@@ -1416,6 +1444,7 @@ function runUploadPreprocessing(
   if (decision.kind === "preprocessed") {
     const { output } = decision;
     return {
+      kind: "ok",
       transactions: output.transactions,
       validationErrors: output.validationErrors,
       preprocessingMetadata: {
@@ -1434,6 +1463,7 @@ function runUploadPreprocessing(
   if (decision.kind === "fallback_legacy_csv") {
     const legacy = normalizeTransactionsFromCsv(buffer, sourceType);
     return {
+      kind: "ok",
       transactions: legacy.transactions,
       validationErrors: legacy.validationErrors,
       preprocessingMetadata: {
@@ -1449,5 +1479,20 @@ function runUploadPreprocessing(
       },
     };
   }
-  throw new AppHttpError(decision.reason, 422);
+  return {
+    kind: "unsupported",
+    statusCode: 422,
+    detail: decision.reason,
+    preprocessingMetadata: {
+      detected_format: decision.detection.format,
+      detection_confidence: decision.detection.confidence,
+      detection_reason: decision.detection.reason,
+      parser_route: decision.route.kind,
+      preprocessing_version: null,
+      summary: null,
+      diagnostics: [],
+      legacy_csv_path: false,
+      unsupported_reason: decision.reason,
+    },
+  };
 }

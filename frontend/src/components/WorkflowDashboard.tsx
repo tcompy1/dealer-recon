@@ -25,7 +25,7 @@ import {
   listDealerGroups,
   listDealershipStores,
 } from "../api/stores";
-import { listSourceFiles, uploadSourceFile } from "../api/uploads";
+import { UploadError, listSourceFiles, uploadSourceFile } from "../api/uploads";
 import { PreprocessingDiagnosticsPanel } from "./preprocessing/PreprocessingDiagnosticsPanel";
 import { VinPresenceDiagnosticsPanel } from "./VinPresenceDiagnosticsPanel";
 import type {
@@ -41,7 +41,12 @@ import type {
   ReconciliationReplayResponse,
   VinPresenceDiagnostics,
 } from "../types/reconciliation";
-import type { SourceFileSummary, UploadResponse, UploadValidationError } from "../types/sourceFile";
+import type {
+  SourceFileSummary,
+  UploadPreprocessingMetadata,
+  UploadResponse,
+  UploadValidationError,
+} from "../types/sourceFile";
 import type {
   IngestionEvent,
   OperationalEvent,
@@ -57,6 +62,7 @@ type UploadSlot = {
   upload: UploadResponse | null;
   isUploading: boolean;
   error: string | null;
+  errorPreprocessing: UploadPreprocessingMetadata | null;
 };
 
 type SourceKind = "boa" | "dealertrack";
@@ -66,6 +72,7 @@ const initialUploadSlot: UploadSlot = {
   upload: null,
   isUploading: false,
   error: null,
+  errorPreprocessing: null,
 };
 
 export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }) {
@@ -141,7 +148,13 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     }
 
     setWorkflowError(null);
-    setSlot((current) => ({ ...current, isUploading: true, error: null, upload: null }));
+    setSlot((current) => ({
+      ...current,
+      isUploading: true,
+      error: null,
+      errorPreprocessing: null,
+      upload: null,
+    }));
 
     try {
       const upload = await uploadSourceFile({
@@ -149,13 +162,21 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         file: slot.file,
         dealershipStoreId: selectedStoreId,
       });
-      setSlot((current) => ({ ...current, upload, isUploading: false }));
+      setSlot((current) => ({
+        ...current,
+        upload,
+        isUploading: false,
+        errorPreprocessing: null,
+      }));
       await refreshAutomationPanels(selectedStoreId);
     } catch (error) {
+      const errorPreprocessing =
+        error instanceof UploadError ? error.preprocessing : null;
       setSlot((current) => ({
         ...current,
         isUploading: false,
         error: error instanceof Error ? error.message : "Upload failed.",
+        errorPreprocessing,
       }));
     }
   }
@@ -398,7 +419,13 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
             label="BOA file"
             slot={boaUpload}
             onFileChange={(file) =>
-              setBoaUpload((current) => ({ ...current, file, upload: null, error: null }))
+              setBoaUpload((current) => ({
+                ...current,
+                file,
+                upload: null,
+                error: null,
+                errorPreprocessing: null,
+              }))
             }
             onUpload={() => void handleUpload("boa")}
             canModify={canModify}
@@ -408,7 +435,13 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
             label="Dealertrack file"
             slot={dealertrackUpload}
             onFileChange={(file) =>
-              setDealertrackUpload((current) => ({ ...current, file, upload: null, error: null }))
+              setDealertrackUpload((current) => ({
+                ...current,
+                file,
+                upload: null,
+                error: null,
+                errorPreprocessing: null,
+              }))
             }
             onUpload={() => void handleUpload("dealertrack")}
             canModify={canModify}
@@ -752,6 +785,12 @@ function UploadPanel({
 
       {slot.upload ? <UploadReceipt sourceLabel={label} upload={slot.upload} /> : null}
       {slot.error ? <ErrorBanner message={slot.error} /> : null}
+      {slot.errorPreprocessing ? (
+        <PreprocessingDiagnosticsPanel
+          preprocessing={slot.errorPreprocessing}
+          sourceLabel={label}
+        />
+      ) : null}
     </div>
   );
 }
