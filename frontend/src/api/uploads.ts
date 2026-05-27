@@ -1,11 +1,31 @@
-import { API_BASE_URL, apiGet, getErrorMessage } from "./client";
-import type { SourceFileSummary, SourceType, UploadResponse } from "../types/sourceFile";
+import { API_BASE_URL, apiGet } from "./client";
+import type {
+  SourceFileSummary,
+  SourceType,
+  UploadPreprocessingMetadata,
+  UploadResponse,
+} from "../types/sourceFile";
 
 type UploadSourceFileInput = {
   sourceType: SourceType;
   file: File;
   dealershipStoreId?: number | null;
 };
+
+export class UploadError extends Error {
+  readonly status: number;
+  readonly preprocessing: UploadPreprocessingMetadata | null;
+
+  constructor(
+    message: string,
+    options: { status: number; preprocessing?: UploadPreprocessingMetadata | null },
+  ) {
+    super(message);
+    this.name = "UploadError";
+    this.status = options.status;
+    this.preprocessing = options.preprocessing ?? null;
+  }
+}
 
 export async function uploadSourceFile({
   sourceType,
@@ -26,10 +46,29 @@ export async function uploadSourceFile({
   });
 
   if (!response.ok) {
-    throw new Error(await getErrorMessage(response, "Upload failed"));
+    const { detail, preprocessing } = await readUploadErrorBody(response);
+    throw new UploadError(detail, { status: response.status, preprocessing });
   }
 
   return response.json() as Promise<UploadResponse>;
+}
+
+async function readUploadErrorBody(
+  response: Response,
+): Promise<{ detail: string; preprocessing: UploadPreprocessingMetadata | null }> {
+  try {
+    const body = (await response.json()) as {
+      detail?: unknown;
+      preprocessing?: UploadPreprocessingMetadata | null;
+    };
+    const detail =
+      typeof body.detail === "string" ? body.detail : `Upload failed: ${response.status}`;
+    const preprocessing =
+      body.preprocessing && typeof body.preprocessing === "object" ? body.preprocessing : null;
+    return { detail, preprocessing };
+  } catch {
+    return { detail: `Upload failed: ${response.status}`, preprocessing: null };
+  }
 }
 
 export async function listSourceFiles(

@@ -426,6 +426,94 @@ describe("app", () => {
     });
   });
 
+  test("POST /upload returns 422 with preprocessing metadata for true .xlsx OOXML uploads", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    // OOXML zip signature ("PK\x03\x04"). The detector only sniffs the
+    // leading bytes; the rest of the buffer can be opaque since the native
+    // xlsx parser is not implemented yet.
+    const xlsxBuffer = Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("synthetic-ooxml-stub"),
+    ]);
+
+    // Use the .xls extension because the upload filter only permits the
+    // CSV/XLS/XML/HTML extension set; real OOXML workbooks frequently
+    // arrive renamed as .xls.
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .attach("file", xlsxBuffer, "boa.xls");
+
+    expect(response.status).toBe(422);
+    expect(typeof response.body.detail).toBe("string");
+    expect(response.body.detail.length).toBeGreaterThan(0);
+    expect(response.body.preprocessing).toMatchObject({
+      detected_format: "xlsx_ooxml",
+      detection_confidence: expect.any(String),
+      detection_reason: expect.any(String),
+      parser_route: "xlsx_native",
+      legacy_csv_path: false,
+      unsupported_reason: expect.any(String),
+      diagnostics: expect.any(Array),
+      summary: null,
+    });
+    expect(response.body.preprocessing.unsupported_reason).toBe(response.body.detail);
+  });
+
+  test("POST /upload returns 422 with preprocessing metadata for mismatched source/file route", async () => {
+    // Dealertrack SpreadsheetML XML uploaded under source_type=boa; the
+    // router resolves to `unsupported` because xml_spreadsheet only routes
+    // for source_type=dealertrack.
+    const app = createApp(new MemoryTransactionRepository());
+    const buffer = await loadFixture("sample-data/synthetic/dealertrack_floorplan_sample.xml");
+
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .attach("file", buffer, "dealertrack.xml");
+
+    expect(response.status).toBe(422);
+    expect(response.body.preprocessing).toMatchObject({
+      detected_format: "xml_spreadsheet",
+      detection_confidence: expect.any(String),
+      detection_reason: expect.any(String),
+      parser_route: "unsupported",
+      legacy_csv_path: false,
+      unsupported_reason: expect.any(String),
+      diagnostics: expect.any(Array),
+      summary: null,
+    });
+    expect(response.body.preprocessing.unsupported_reason).toBe(response.body.detail);
+  });
+
+  test("POST /upload returns 422 with preprocessing metadata for unknown/malformed parser route", async () => {
+    // A binary blob with no known signature and no recognizable leading
+    // text; the detector classifies it as `unknown` and the router falls
+    // through to `unsupported`.
+    const app = createApp(new MemoryTransactionRepository());
+    const opaqueBytes = Buffer.from([
+      0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+      0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+      0x1e, 0x1f,
+    ]);
+
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .attach("file", opaqueBytes, "boa.xls");
+
+    expect(response.status).toBe(422);
+    expect(response.body.preprocessing).toMatchObject({
+      detected_format: "unknown",
+      parser_route: "unsupported",
+      legacy_csv_path: false,
+      unsupported_reason: expect.any(String),
+      diagnostics: expect.any(Array),
+      summary: null,
+    });
+    expect(response.body.preprocessing.unsupported_reason).toBe(response.body.detail);
+  });
+
   test("POST /upload rejects invalid source_type", async () => {
     const app = createApp(new MemoryTransactionRepository());
 
