@@ -34,7 +34,7 @@ import {
 
 const VIN_FULL_RE = /\b(?=[A-HJ-NPR-Z0-9]{17}\b)(?=[A-HJ-NPR-Z0-9]*[A-Z])(?=[A-HJ-NPR-Z0-9]*\d)[A-HJ-NPR-Z0-9]{17}\b/i;
 const STOCK_RE = /\bM\d{4,6}\b/i;
-const STRAIGHTLINE_TOKEN = "straightline";
+const STRAIGHTLINE_TOKENS = ["straightline", "straight line"];
 
 const HEADER_FINGERPRINT_TOKENS = [
   "vin",
@@ -184,7 +184,7 @@ export function preprocessBoa(parsed: ParsedTable): PreprocessingResult {
       return;
     }
 
-    if (rowText.includes(STRAIGHTLINE_TOKEN)) {
+    if (STRAIGHTLINE_TOKENS.some((token) => rowText.includes(token))) {
       rowsRemovedStraightline += 1;
       diagnostics.push({
         kind: "straightline_row_removed",
@@ -318,8 +318,10 @@ export function preprocessBoa(parsed: ParsedTable): PreprocessingResult {
       });
     }
 
+    const rawTransactionDate =
+      headerLookup ? findCellByAliases(cleaned, headerLookup, TRANSACTION_DATE_ALIASES) : null;
     const transactionDate =
-      (headerLookup ? findCellByAliases(cleaned, headerLookup, TRANSACTION_DATE_ALIASES) : null) ??
+      (rawTransactionDate ? normalizeIsoDate(rawTransactionDate) : null) ??
       findFirstDateLike(cleaned);
 
     acceptedRows.push({
@@ -554,14 +556,23 @@ function looksLikeTotalsRow(rowText: string): boolean {
 
 function findFirstDateLike(cells: string[]): string | null {
   for (const cell of cells) {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(cell)) {
-      return cell;
+    const iso = normalizeIsoDate(cell);
+    if (iso) {
+      return iso;
     }
-    const m = cell.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-    if (m) {
-      const year = m[3].length === 2 ? `20${m[3]}` : m[3];
-      return `${year}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`;
-    }
+  }
+  return null;
+}
+
+function normalizeIsoDate(value: string): string | null {
+  const v = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+    return v;
+  }
+  const m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (m) {
+    const year = m[3].length === 2 ? `20${m[3]}` : m[3];
+    return `${year}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`;
   }
   return null;
 }

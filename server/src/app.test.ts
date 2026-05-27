@@ -13,13 +13,83 @@ async function loadFixture(relativePath: string): Promise<Buffer> {
   return readFile(new URL(relativePath, FIXTURE_ROOT));
 }
 
+const BOA_CSV_HEADER =
+  "Location,Manufacturer Name,Plant Name,Invoice Date,Invoice Number,Interest Start Date,Maturity Date,Description,Type,Model Number,Serial No/VIN,Stock/Lease No,Original Amount,Beginning Balance,Advances,Last Advance Date,Principal Payments,Principal Adjustments,Monthly Activity,Ending Balance,Current Curtailments,Past Due Curtailments,Current Maturities,Past Due Maturities,Total Principal Due,Interest Amount,Prior Period Interest Billed Current Month,Flat Charges Amount,Item Fee Amount,Total Interest / Charges / Fees Due,Inception to Date Interest,Average Daily Billing Balance";
+
+const DEALERTRACK_CSV_HEADER = "Control,Description,2100,2110";
+
+function boaUploadRow(
+  stockNumber: string,
+  vin: string,
+  amount: string,
+  reference = "382882",
+): string {
+  return [
+    "storeA",
+    "Mazda",
+    "Auto - Mazda Plant",
+    "9/26/2025",
+    reference,
+    "9/26/2025",
+    "5/26/2027",
+    "Vehicle",
+    "Automobile",
+    "M-MODEL",
+    vin,
+    stockNumber,
+    `"${amount}"`,
+    `"${amount}"`,
+    "$0.00",
+    "",
+    "$0.00",
+    "$0.00",
+    "$0.00",
+    `"${amount}"`,
+    "$0.00",
+    "$0.00",
+    "$0.00",
+    "$0.00",
+    "$0.00",
+    "$0.00",
+    "$0.00",
+    "$0.00",
+    "$0.00",
+    "$0.00",
+    "$0.00",
+    `"${amount}"`,
+  ].join(",");
+}
+
+function dealertrackUploadRow(stockNumber: string, amount: string, vin?: string): string {
+  const desc = vin ? `"BOA FLOORPLAN ${vin}"` : '"BOA FLOORPLAN"';
+  return `${stockNumber},${desc},${amount},0`;
+}
+
+// Single-upload helpers that include the header so each call produces a
+// well-formed CSV the source-specific preprocessor can ingest.
 const boaUploadCsv = (stockNumber: string, vin: string, amount: string, reference = "382882") =>
-  [`,,,9/26/2025,${reference},,${stockNumber},,${vin},,"${amount}",`].join("\n");
+  [BOA_CSV_HEADER, boaUploadRow(stockNumber, vin, amount, reference)].join("\n");
 
 const dealertrackUploadCsv = (stockNumber: string, amount: string, vin?: string) =>
-  vin
-    ? `${stockNumber},"BOA FLOORPLAN ${vin}",${amount},0`
-    : `${stockNumber},"BOA FLOORPLAN",${amount},0`;
+  [DEALERTRACK_CSV_HEADER, dealertrackUploadRow(stockNumber, amount, vin)].join("\n");
+
+function boaUploadCsvMulti(
+  rows: Array<{ stock: string; vin: string; amount: string; reference?: string }>,
+): string {
+  return [
+    BOA_CSV_HEADER,
+    ...rows.map((r) => boaUploadRow(r.stock, r.vin, r.amount, r.reference ?? "382882")),
+  ].join("\n");
+}
+
+function dealertrackUploadCsvMulti(
+  rows: Array<{ stock: string; amount: string; vin?: string }>,
+): string {
+  return [
+    DEALERTRACK_CSV_HEADER,
+    ...rows.map((r) => dealertrackUploadRow(r.stock, r.amount, r.vin)),
+  ].join("\n");
+}
 
 describe("app", () => {
   test("POST /login authenticates a local user and GET /me returns the user", async () => {
@@ -407,7 +477,7 @@ describe("app", () => {
     });
   });
 
-  test("POST /upload flags legacy CSV path for CSV BOA uploads", async () => {
+  test("POST /upload routes BOA CSV uploads through source-specific preprocessing (not legacy)", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const response = await request(app)
       .post("/upload")
@@ -420,9 +490,32 @@ describe("app", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.preprocessing).toMatchObject({
-      legacy_csv_path: true,
-      summary: null,
-      diagnostics: [],
+      legacy_csv_path: false,
+      parser_route: "boa_csv",
+      preprocessing_version: expect.any(String),
+      summary: expect.objectContaining({ source_kind: "boa" }),
+      diagnostics: expect.any(Array),
+    });
+  });
+
+  test("POST /upload routes Dealertrack CSV uploads through source-specific preprocessing (not legacy)", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "dealertrack")
+      .attach(
+        "file",
+        Buffer.from(dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352")),
+        "dealertrack.csv",
+      );
+
+    expect(response.status).toBe(200);
+    expect(response.body.preprocessing).toMatchObject({
+      legacy_csv_path: false,
+      parser_route: "dealertrack_csv",
+      preprocessing_version: expect.any(String),
+      summary: expect.objectContaining({ source_kind: "dealertrack" }),
+      diagnostics: expect.any(Array),
     });
   });
 
@@ -703,8 +796,10 @@ describe("app", () => {
     const storeId = createStoreResponse.body.id as number;
 
     await createReconciliationWithRows(app, {
-      boaRows: [boaUploadCsv("M50101", "1HGCM82633A004352", "$501.00", "50101")],
-      dealertrackRows: [dealertrackUploadCsv("M50101", "-501")],
+      boaCsv: boaUploadCsvMulti([
+        { stock: "M50101", vin: "1HGCM82633A004352", amount: "$501.00", reference: "50101" },
+      ]),
+      dealertrackCsv: dealertrackUploadCsvMulti([{ stock: "M50101", amount: "-501" }]),
       boaFilename: "boa-test-store.csv",
       dealertrackFilename: "dealertrack-test-store.csv",
       storeId,
@@ -923,9 +1018,12 @@ describe("app", () => {
     expect(response.body.match_groups).toHaveLength(1);
     expect(response.body.match_groups[0]).toMatchObject({
       match_group_id: expect.any(Number),
-      match_type: "derived_vin_abs_amount",
-      confidence: 0.98,
-      reason: "derived_vin_abs_amount",
+      // Source-specific BOA CSV preprocessing now extracts the raw VIN from
+      // the Serial No/VIN column directly, so the engine promotes this match
+      // from Tier 2 (derived_vin_abs_amount) to Tier 1 (vin_abs_amount).
+      match_type: "vin_abs_amount",
+      confidence: 1,
+      reason: "vin_abs_amount",
       transactions: [
         expect.objectContaining({
           side: "left",
@@ -1198,14 +1296,14 @@ describe("app", () => {
     const app = createApp(new MemoryTransactionRepository());
     const previous = await createReconciliation(app);
     const current = await createReconciliationWithRows(app, {
-      boaRows: [
-        boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30109"),
-        boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30209"),
-      ],
-      dealertrackRows: [
-        dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
-        dealertrackUploadCsv("M40404", "-404"),
-      ],
+      boaCsv: boaUploadCsvMulti([
+        { stock: "M30101", vin: "1HGCM82633A004352", amount: "$301.00", reference: "30109" },
+        { stock: "M30202", vin: "2HGCM82633A004352", amount: "$302.00", reference: "30209" },
+      ]),
+      dealertrackCsv: dealertrackUploadCsvMulti([
+        { stock: "M30101", amount: "-301", vin: "1HGCM82633A004352" },
+        { stock: "M40404", amount: "-404" },
+      ]),
       boaFilename: "boa-current-trend.csv",
       dealertrackFilename: "dealertrack-current-trend.csv",
     });
@@ -1582,11 +1680,11 @@ describe("app", () => {
     const boaUpload = await uploadCsv(
       app,
       "boa",
-      [
-        boaUploadCsv("M30101", "1HGCM82633A004352", "$100.00", "30101"),
-        boaUploadCsv("M30202", "2HGCM82633A004352", "$200.00", "30202"),
-        boaUploadCsv("M30404", "4HGCM82633A004352", "$300.00", "30404"),
-      ].join("\n"),
+      boaUploadCsvMulti([
+        { stock: "M30101", vin: "1HGCM82633A004352", amount: "$100.00", reference: "30101" },
+        { stock: "M30202", vin: "2HGCM82633A004352", amount: "$200.00", reference: "30202" },
+        { stock: "M30404", vin: "4HGCM82633A004352", amount: "$300.00", reference: "30404" },
+      ]),
       "boa-report.csv",
     );
     const dealertrackUpload = await uploadCsv(
@@ -1792,7 +1890,10 @@ describe("app", () => {
     const secondDealertrackUpload = await uploadCsv(
       app,
       "dealertrack",
-      'M22222,"BOA FLOORPLAN SECOND 2HGCM82633A004352",-222,0',
+      [
+        "Control,Description,2100,2110",
+        'M22222,"BOA FLOORPLAN SECOND 2HGCM82633A004352",-222,0',
+      ].join("\n"),
       "dealertrack-second.csv",
     );
 
@@ -1877,14 +1978,14 @@ describe("app", () => {
   test("hurst-fp-rec carries forward unresolved items from a prior run for the same store", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const first = await createReconciliationWithRows(app, {
-      boaRows: [
-        boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"),
-        boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30202"),
-      ],
-      dealertrackRows: [
-        dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
-        dealertrackUploadCsv("M99999", "-999"),
-      ],
+      boaCsv: boaUploadCsvMulti([
+        { stock: "M30101", vin: "1HGCM82633A004352", amount: "$301.00", reference: "30101" },
+        { stock: "M30202", vin: "2HGCM82633A004352", amount: "$302.00", reference: "30202" },
+      ]),
+      dealertrackCsv: dealertrackUploadCsvMulti([
+        { stock: "M30101", amount: "-301", vin: "1HGCM82633A004352" },
+        { stock: "M99999", amount: "-999" },
+      ]),
       boaFilename: "boa-first.csv",
       dealertrackFilename: "dt-first.csv",
       storeId: 1,
@@ -1904,16 +2005,16 @@ describe("app", () => {
       .send({ review_notes: "carry me forward" });
 
     const second = await createReconciliationWithRows(app, {
-      boaRows: [
-        boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"),
-        boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30202"),
-        boaUploadCsv("M40404", "4HGCM82633A004352", "$404.00", "40404"),
-      ],
-      dealertrackRows: [
-        dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
-        dealertrackUploadCsv("M99999", "-999"),
-        dealertrackUploadCsv("M77777", "-777"),
-      ],
+      boaCsv: boaUploadCsvMulti([
+        { stock: "M30101", vin: "1HGCM82633A004352", amount: "$301.00", reference: "30101" },
+        { stock: "M30202", vin: "2HGCM82633A004352", amount: "$302.00", reference: "30202" },
+        { stock: "M40404", vin: "4HGCM82633A004352", amount: "$404.00", reference: "40404" },
+      ]),
+      dealertrackCsv: dealertrackUploadCsvMulti([
+        { stock: "M30101", amount: "-301", vin: "1HGCM82633A004352" },
+        { stock: "M99999", amount: "-999" },
+        { stock: "M77777", amount: "-777" },
+      ]),
       boaFilename: "boa-second.csv",
       dealertrackFilename: "dt-second.csv",
       storeId: 1,
@@ -1963,18 +2064,18 @@ async function uploadCsv(
 
 async function createReconciliation(app: ReturnType<typeof createApp>) {
   return createReconciliationWithRows(app, {
-    boaRows: [
-      boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"),
-      boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30202"),
-    ],
-    dealertrackRows: [
-      // Embed BOA VIN in the Dealertrack description so the v2 engine can
-      // auto-match by derived full VIN + amount (Tier 2). Without the VIN, the
-      // pair would be demoted to Needs Review under v2 because stock alone is
-      // not a trusted match key.
-      dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
-      dealertrackUploadCsv("M30303", "-303"),
-    ],
+    boaCsv: boaUploadCsvMulti([
+      { stock: "M30101", vin: "1HGCM82633A004352", amount: "$301.00", reference: "30101" },
+      { stock: "M30202", vin: "2HGCM82633A004352", amount: "$302.00", reference: "30202" },
+    ]),
+    // Embed BOA VIN in the Dealertrack description so the v2 engine can
+    // auto-match by derived full VIN + amount (Tier 2). Without the VIN, the
+    // pair would be demoted to Needs Review under v2 because stock alone is
+    // not a trusted match key.
+    dealertrackCsv: dealertrackUploadCsvMulti([
+      { stock: "M30101", amount: "-301", vin: "1HGCM82633A004352" },
+      { stock: "M30303", amount: "-303" },
+    ]),
     boaFilename: "boa-run.csv",
     dealertrackFilename: "dealertrack-run.csv",
     storeId: undefined,
@@ -1989,10 +2090,10 @@ async function createReconciliationWithAgent(agent: ReturnType<typeof request.ag
     .attach(
       "file",
       Buffer.from(
-        [
-          boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"),
-          boaUploadCsv("M30202", "2HGCM82633A004352", "$302.00", "30202"),
-        ].join("\n"),
+        boaUploadCsvMulti([
+          { stock: "M30101", vin: "1HGCM82633A004352", amount: "$301.00", reference: "30101" },
+          { stock: "M30202", vin: "2HGCM82633A004352", amount: "$302.00", reference: "30202" },
+        ]),
       ),
       "boa-run.csv",
     );
@@ -2003,10 +2104,10 @@ async function createReconciliationWithAgent(agent: ReturnType<typeof request.ag
     .attach(
       "file",
       Buffer.from(
-        [
-          dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
-          dealertrackUploadCsv("M30303", "-303"),
-        ].join("\n"),
+        dealertrackUploadCsvMulti([
+          { stock: "M30101", amount: "-301", vin: "1HGCM82633A004352" },
+          { stock: "M30303", amount: "-303" },
+        ]),
       ),
       "dealertrack-run.csv",
     );
@@ -2022,24 +2123,24 @@ async function createReconciliationWithAgent(agent: ReturnType<typeof request.ag
 async function createReconciliationWithRows(
   app: ReturnType<typeof createApp>,
   {
-    boaRows,
-    dealertrackRows,
+    boaCsv,
+    dealertrackCsv,
     boaFilename,
     dealertrackFilename,
     storeId,
   }: {
-    boaRows: string[];
-    dealertrackRows: string[];
+    boaCsv: string;
+    dealertrackCsv: string;
     boaFilename: string;
     dealertrackFilename: string;
     storeId?: number;
   },
 ) {
-  const boaUpload = await uploadCsv(app, "boa", boaRows.join("\n"), boaFilename, storeId);
+  const boaUpload = await uploadCsv(app, "boa", boaCsv, boaFilename, storeId);
   const dealertrackUpload = await uploadCsv(
     app,
     "dealertrack",
-    dealertrackRows.join("\n"),
+    dealertrackCsv,
     dealertrackFilename,
     storeId,
   );
