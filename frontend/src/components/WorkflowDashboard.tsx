@@ -100,6 +100,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
   const [exceptionFilters, setExceptionFilters] = useState<ReconciliationRunFilters>({});
   const [reviewUpdatingId, setReviewUpdatingId] = useState<number | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [isReconciliationStale, setIsReconciliationStale] = useState(false);
 
   const canReconcile = Boolean(boaUpload.upload?.source_file_id && dealertrackUpload.upload?.source_file_id);
   const canModify = currentUser?.role !== "read_only_auditor";
@@ -201,6 +202,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       setActiveRunDiagnostics(result.vin_presence_diagnostics);
       setActiveRunAnalytics(analytics);
       setActiveRunReplay(null);
+      setIsReconciliationStale(false);
       setReconciliationRuns(await listReconciliationRuns(selectedStoreId));
       setGroupAnalytics(await getDealerGroupAnalytics());
       await refreshAutomationPanels(selectedStoreId);
@@ -445,8 +447,18 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
             }
             onUpload={() => void handleUpload("dealertrack")}
             canModify={canModify}
+            onVinEnriched={() => setIsReconciliationStale(true)}
           />
         </div>
+
+        {isReconciliationStale && activeRun ? (
+          <div
+            className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+            data-testid="reconciliation-stale-banner"
+          >
+            VIN repaired. Re-run reconciliation to apply the corrected VIN.
+          </div>
+        ) : null}
 
         <RecentUploads sourceFiles={sourceFiles} />
       </section>
@@ -742,6 +754,7 @@ function UploadPanel({
   canModify,
   onFileChange,
   onUpload,
+  onVinEnriched,
 }: {
   kind: SourceKind;
   label: string;
@@ -749,6 +762,7 @@ function UploadPanel({
   canModify: boolean;
   onFileChange: (file: File | null) => void;
   onUpload: () => void;
+  onVinEnriched?: () => void;
 }) {
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     onFileChange(event.target.files?.[0] ?? null);
@@ -783,7 +797,14 @@ function UploadPanel({
         {slot.file ? <span className="text-sm text-slate-600">{slot.file.name}</span> : null}
       </div>
 
-      {slot.upload ? <UploadReceipt sourceLabel={label} upload={slot.upload} /> : null}
+      {slot.upload ? (
+        <UploadReceipt
+          sourceLabel={label}
+          upload={slot.upload}
+          sourceType={kind}
+          onVinEnriched={onVinEnriched}
+        />
+      ) : null}
       {slot.error ? <ErrorBanner message={slot.error} /> : null}
       {slot.errorPreprocessing ? (
         <PreprocessingDiagnosticsPanel
@@ -795,7 +816,17 @@ function UploadPanel({
   );
 }
 
-function UploadReceipt({ sourceLabel, upload }: { sourceLabel: string; upload: UploadResponse }) {
+function UploadReceipt({
+  sourceLabel,
+  upload,
+  sourceType,
+  onVinEnriched,
+}: {
+  sourceLabel: string;
+  upload: UploadResponse;
+  sourceType?: SourceKind;
+  onVinEnriched?: () => void;
+}) {
   return (
     <div className="grid gap-3">
       <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
@@ -824,6 +855,9 @@ function UploadReceipt({ sourceLabel, upload }: { sourceLabel: string; upload: U
       <PreprocessingDiagnosticsPanel
         preprocessing={upload.preprocessing ?? null}
         sourceLabel={sourceLabel}
+        sourceFileId={upload.source_file_id}
+        sourceType={sourceType ?? null}
+        onVinEnriched={onVinEnriched}
       />
     </div>
   );

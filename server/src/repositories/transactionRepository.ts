@@ -109,6 +109,15 @@ export interface TransactionRepository {
   listAuditEvents(dealershipId: number, limit?: number): Promise<AuditEvent[]>;
   listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]>;
   listBySourceFile(dealershipId: number, sourceFileId: number): Promise<Transaction[]>;
+  getTransactionById(
+    dealershipId: number,
+    transactionId: number,
+  ): Promise<Transaction | null>;
+  updateTransactionVinAndRawData(
+    dealershipId: number,
+    transactionId: number,
+    update: { vin: string; raw_data: Record<string, unknown> },
+  ): Promise<Transaction | null>;
   listAccountsSummary(dealershipId: number): Promise<AccountSummary[]>;
   getAccountDetail(dealershipId: number, accountIdentifier: string): Promise<AccountDetail | null>;
   getMonthEndReport(
@@ -482,6 +491,34 @@ export class MemoryTransactionRepository implements TransactionRepository {
           transaction.dealership_id === dealershipId && transaction.source_file_id === sourceFileId,
       )
       .sort((left, right) => left.id - right.id);
+  }
+
+  async getTransactionById(
+    dealershipId: number,
+    transactionId: number,
+  ): Promise<Transaction | null> {
+    const transaction = this.transactions.find(
+      (candidate) =>
+        candidate.id === transactionId && candidate.dealership_id === dealershipId,
+    );
+    return transaction ? cloneTransaction(transaction) : null;
+  }
+
+  async updateTransactionVinAndRawData(
+    dealershipId: number,
+    transactionId: number,
+    update: { vin: string; raw_data: Record<string, unknown> },
+  ): Promise<Transaction | null> {
+    const transaction = this.transactions.find(
+      (candidate) =>
+        candidate.id === transactionId && candidate.dealership_id === dealershipId,
+    );
+    if (!transaction) {
+      return null;
+    }
+    transaction.vin = update.vin;
+    transaction.raw_data = cloneJson(update.raw_data);
+    return cloneTransaction(transaction);
   }
 
   async listAccountsSummary(dealershipId: number): Promise<AccountSummary[]> {

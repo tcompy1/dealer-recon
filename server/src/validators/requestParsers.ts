@@ -372,6 +372,67 @@ export function parseExceptionReviewUpdate(
   };
 }
 
+const VIN_ENRICHMENT_SOURCES = [
+  "manual_enrichment",
+  "dms_assisted_reconstruction",
+  "stock_number_lookup",
+] as const;
+
+export type VinEnrichmentSource = (typeof VIN_ENRICHMENT_SOURCES)[number];
+
+export type ParsedVinEnrichmentRequest = {
+  vin: string;
+  source: VinEnrichmentSource;
+  reason: string;
+  dms_reference: string | null;
+};
+
+const VIN_FULL_RE = /^[A-HJ-NPR-Z0-9]{17}$/i;
+
+export function parseVinEnrichmentRequest(
+  value: unknown,
+): ParsedVinEnrichmentRequest | { error: "invalid_vin" | "invalid_source" | "missing_reason" | "invalid_body" | "invalid_dms_reference" } {
+  if (typeof value !== "object" || value === null) {
+    return { error: "invalid_body" };
+  }
+  const body = value as {
+    vin?: unknown;
+    source?: unknown;
+    reason?: unknown;
+    dms_reference?: unknown;
+  };
+  if (typeof body.vin !== "string") {
+    return { error: "invalid_vin" };
+  }
+  const vin = body.vin.trim().toUpperCase();
+  if (!VIN_FULL_RE.test(vin)) {
+    return { error: "invalid_vin" };
+  }
+  if (
+    typeof body.source !== "string" ||
+    !VIN_ENRICHMENT_SOURCES.includes(body.source as VinEnrichmentSource)
+  ) {
+    return { error: "invalid_source" };
+  }
+  if (typeof body.reason !== "string" || body.reason.trim().length === 0) {
+    return { error: "missing_reason" };
+  }
+  let dmsReference: string | null = null;
+  if (body.dms_reference !== undefined && body.dms_reference !== null) {
+    if (typeof body.dms_reference !== "string") {
+      return { error: "invalid_dms_reference" };
+    }
+    const trimmed = body.dms_reference.trim();
+    dmsReference = trimmed.length > 0 ? trimmed : null;
+  }
+  return {
+    vin,
+    source: body.source as VinEnrichmentSource,
+    reason: body.reason.trim(),
+    dms_reference: dmsReference,
+  };
+}
+
 export function parseMonthEndReportQuery(
   query: express.Request["query"],
 ): { startDate: string; endDate: string; format: "json" | "csv" } | false {
