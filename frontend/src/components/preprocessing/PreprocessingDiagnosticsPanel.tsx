@@ -13,6 +13,7 @@ import {
   type DiagnosticGroup,
   type DiagnosticHeadlineMetrics,
 } from "./groupDiagnostics";
+import { canRepairVinForDiagnosticKind } from "./vinEnrichmentMatching";
 import { VinEnrichmentModal } from "./VinEnrichmentModal";
 
 type Props = {
@@ -94,7 +95,7 @@ export function PreprocessingDiagnosticsPanel({
           <DiagnosticGroupCard
             group={group}
             key={group.id}
-            sourceFileId={canRepairVin ? sourceFileId : null}
+            repairSourceFileId={canRepairVin ? sourceFileId : null}
             onVinEnriched={onVinEnriched}
           />
         ))}
@@ -180,11 +181,11 @@ function MetricChip({
 
 function DiagnosticGroupCard({
   group,
-  sourceFileId,
+  repairSourceFileId,
   onVinEnriched,
 }: {
   group: DiagnosticGroup;
-  sourceFileId: number | null;
+  repairSourceFileId: number | null;
   onVinEnriched?: () => void;
 }) {
   const toneClass =
@@ -224,7 +225,7 @@ function DiagnosticGroupCard({
       ) : (
         <DiagnosticList
           diagnostics={group.diagnostics}
-          sourceFileId={group.id === "vin_cleanup" ? sourceFileId : null}
+          repairSourceFileId={repairSourceFileId}
           onVinEnriched={onVinEnriched}
         />
       )}
@@ -234,11 +235,11 @@ function DiagnosticGroupCard({
 
 function DiagnosticList({
   diagnostics,
-  sourceFileId,
+  repairSourceFileId,
   onVinEnriched,
 }: {
   diagnostics: PreprocessingDiagnostic[];
-  sourceFileId: number | null;
+  repairSourceFileId: number | null;
   onVinEnriched?: () => void;
 }) {
   const PREVIEW_COUNT = 6;
@@ -252,7 +253,7 @@ function DiagnosticList({
           <DiagnosticRow
             diagnostic={diagnostic}
             key={`${diagnostic.kind}-${index}`}
-            sourceFileId={sourceFileId}
+            repairSourceFileId={repairSourceFileId}
             onVinEnriched={onVinEnriched}
           />
         ))}
@@ -267,7 +268,7 @@ function DiagnosticList({
               <DiagnosticRow
                 diagnostic={diagnostic}
                 key={`extra-${diagnostic.kind}-${index}`}
-                sourceFileId={sourceFileId}
+                repairSourceFileId={repairSourceFileId}
                 onVinEnriched={onVinEnriched}
               />
             ))}
@@ -278,24 +279,18 @@ function DiagnosticList({
   );
 }
 
-const VIN_CLEANUP_KINDS = new Set([
-  "untrusted_vin",
-  "duplicate_vin",
-  "manual_enrichment_applied",
-]);
-
 function DiagnosticRow({
   diagnostic,
-  sourceFileId,
+  repairSourceFileId,
   onVinEnriched,
 }: {
   diagnostic: PreprocessingDiagnostic;
-  sourceFileId: number | null;
+  repairSourceFileId: number | null;
   onVinEnriched?: () => void;
 }) {
   const canRepair =
-    sourceFileId !== null &&
-    VIN_CLEANUP_KINDS.has(diagnostic.kind) &&
+    repairSourceFileId !== null &&
+    canRepairVinForDiagnosticKind(diagnostic.kind) &&
     diagnostic.source_row_number !== null;
   const rowLabel =
     diagnostic.source_row_number === null
@@ -319,10 +314,10 @@ function DiagnosticRow({
           {diagnostic.vin6 ? <>VIN6: {diagnostic.vin6}</> : null}
         </p>
       ) : null}
-      {canRepair && sourceFileId !== null ? (
+      {canRepair && repairSourceFileId !== null ? (
         <RepairVinButton
           diagnostic={diagnostic}
-          sourceFileId={sourceFileId}
+          sourceFileId={repairSourceFileId}
           onVinEnriched={onVinEnriched}
         />
       ) : null}
@@ -363,11 +358,8 @@ function describeVinStatus(kind: PreprocessingDiagnostic["kind"]): string {
   if (kind === "untrusted_vin") {
     return "Untrusted / dirty VIN";
   }
-  if (kind === "duplicate_vin") {
-    return "Duplicate VIN6 on this file";
-  }
-  if (kind === "manual_enrichment_applied") {
-    return "Manual VIN enrichment already applied";
+  if (kind === "manual_enrichment_required") {
+    return "Needs manual VIN enrichment";
   }
   return "Needs VIN review";
 }

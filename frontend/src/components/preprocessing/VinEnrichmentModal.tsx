@@ -6,6 +6,10 @@ import {
   type SourceFileTransaction,
   type VinEnrichmentSource,
 } from "../../api/vinEnrichment";
+import {
+  matchDiagnosticToTransaction,
+  UNSAFE_DIAGNOSTIC_MATCH_MESSAGE,
+} from "./vinEnrichmentMatching";
 
 const VIN_FULL_RE = /^[A-HJ-NPR-Z0-9]{17}$/;
 
@@ -61,9 +65,12 @@ export function VinEnrichmentModal({
     };
   }, [isOpen, sourceFileId]);
 
-  const matchedTransaction = transactions
-    ? findMatchedTransaction(transactions, sourceRowNumber, stockNumber)
+  const matchResult = transactions
+    ? matchDiagnosticToTransaction(transactions, sourceRowNumber, stockNumber)
     : null;
+  const matchedTransaction =
+    matchResult && matchResult.status === "matched" ? matchResult.transaction : null;
+  const isMatchUnsafe = matchResult !== null && matchResult.status !== "matched";
   const trimmedVin = vin.trim().toUpperCase();
   const isVinValid = VIN_FULL_RE.test(trimmedVin);
   const isReasonProvided = reason.trim().length > 0;
@@ -78,9 +85,7 @@ export function VinEnrichmentModal({
     event.preventDefault();
     setSubmitError(null);
     if (!matchedTransaction) {
-      setSubmitError(
-        "Could not match this diagnostic row to a transaction. Re-upload the file or contact support.",
-      );
+      setSubmitError(UNSAFE_DIAGNOSTIC_MATCH_MESSAGE);
       return;
     }
     if (!isVinValid) {
@@ -170,13 +175,28 @@ export function VinEnrichmentModal({
           </div>
           <div className="flex justify-between gap-2">
             <dt className="font-semibold">Matched transaction id</dt>
-            <dd>{matchedTransaction?.id ?? (transactions === null ? "loading…" : "not found")}</dd>
+            <dd>
+              {matchedTransaction
+                ? matchedTransaction.id
+                : transactions === null
+                  ? "loading…"
+                  : "not safely identified"}
+            </dd>
           </div>
         </dl>
 
         {transactionsError ? (
           <p className="mt-3 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-900">
             {transactionsError}
+          </p>
+        ) : null}
+
+        {isMatchUnsafe ? (
+          <p
+            className="mt-3 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-900"
+            data-testid="unsafe-match-notice"
+          >
+            {UNSAFE_DIAGNOSTIC_MATCH_MESSAGE}
           </p>
         ) : null}
 
@@ -290,28 +310,3 @@ export function VinEnrichmentModal({
   );
 }
 
-function findMatchedTransaction(
-  transactions: SourceFileTransaction[],
-  sourceRowNumber: number | null,
-  stockNumber: string | null,
-): SourceFileTransaction | null {
-  if (sourceRowNumber !== null) {
-    const byRow = transactions.find(
-      (transaction) => transaction.source_row_number === sourceRowNumber,
-    );
-    if (byRow) {
-      return byRow;
-    }
-  }
-  if (stockNumber) {
-    const byStock = transactions.find(
-      (transaction) =>
-        transaction.stock_number !== null &&
-        transaction.stock_number.toLowerCase() === stockNumber.toLowerCase(),
-    );
-    if (byStock) {
-      return byStock;
-    }
-  }
-  return null;
-}
