@@ -1,5 +1,8 @@
+import { useMemo } from "react";
+
 import type {
   PreprocessingDiagnostic,
+  SourceType,
   UploadPreprocessingMetadata,
 } from "../../types/sourceFile";
 import {
@@ -10,14 +13,27 @@ import {
   type DiagnosticGroup,
   type DiagnosticHeadlineMetrics,
 } from "./groupDiagnostics";
+import { VinEnrichmentModal } from "./VinEnrichmentModal";
 
 type Props = {
   preprocessing: UploadPreprocessingMetadata | null | undefined;
   /** "BOA" / "Dealertrack" — used in the heading. */
   sourceLabel: string;
+  /** Source file id corresponding to this preprocessing run. */
+  sourceFileId?: number | null;
+  /** Source type for the upload (used to gate the repair action). */
+  sourceType?: SourceType | null;
+  /** Notifies the parent that the user successfully enriched a VIN. */
+  onVinEnriched?: () => void;
 };
 
-export function PreprocessingDiagnosticsPanel({ preprocessing, sourceLabel }: Props) {
+export function PreprocessingDiagnosticsPanel({
+  preprocessing,
+  sourceLabel,
+  sourceFileId = null,
+  sourceType = null,
+  onVinEnriched,
+}: Props) {
   if (!preprocessing) {
     return null;
   }
@@ -50,6 +66,7 @@ export function PreprocessingDiagnosticsPanel({ preprocessing, sourceLabel }: Pr
   const metrics = computeHeadlineMetrics(preprocessing);
   const groups = groupDiagnostics(preprocessing.diagnostics ?? []);
   const amountColumnNote = describeAmountColumnChoice(preprocessing);
+  const canRepairVin = sourceType === "dealertrack" && typeof sourceFileId === "number";
 
   return (
     <section className="grid gap-3 rounded-md border border-cyan-200 bg-cyan-50 p-4 text-sm text-cyan-950">
@@ -74,7 +91,12 @@ export function PreprocessingDiagnosticsPanel({ preprocessing, sourceLabel }: Pr
 
       <div className="grid gap-3">
         {groups.map((group) => (
-          <DiagnosticGroupCard group={group} key={group.id} />
+          <DiagnosticGroupCard
+            group={group}
+            key={group.id}
+            sourceFileId={canRepairVin ? sourceFileId : null}
+            onVinEnriched={onVinEnriched}
+          />
         ))}
       </div>
     </section>
@@ -156,7 +178,15 @@ function MetricChip({
   );
 }
 
-function DiagnosticGroupCard({ group }: { group: DiagnosticGroup }) {
+function DiagnosticGroupCard({
+  group,
+  sourceFileId,
+  onVinEnriched,
+}: {
+  group: DiagnosticGroup;
+  sourceFileId: number | null;
+  onVinEnriched?: () => void;
+}) {
   const toneClass =
     group.tone === "urgent"
       ? "border-red-300 bg-red-50"
@@ -192,13 +222,25 @@ function DiagnosticGroupCard({ group }: { group: DiagnosticGroup }) {
       {group.diagnostics.length === 0 ? (
         <p className="mt-2 text-sm text-slate-600">None.</p>
       ) : (
-        <DiagnosticList diagnostics={group.diagnostics} />
+        <DiagnosticList
+          diagnostics={group.diagnostics}
+          sourceFileId={group.id === "vin_cleanup" ? sourceFileId : null}
+          onVinEnriched={onVinEnriched}
+        />
       )}
     </section>
   );
 }
 
-function DiagnosticList({ diagnostics }: { diagnostics: PreprocessingDiagnostic[] }) {
+function DiagnosticList({
+  diagnostics,
+  sourceFileId,
+  onVinEnriched,
+}: {
+  diagnostics: PreprocessingDiagnostic[];
+  sourceFileId: number | null;
+  onVinEnriched?: () => void;
+}) {
   const PREVIEW_COUNT = 6;
   const preview = diagnostics.slice(0, PREVIEW_COUNT);
   const remaining = diagnostics.slice(PREVIEW_COUNT);
@@ -207,7 +249,12 @@ function DiagnosticList({ diagnostics }: { diagnostics: PreprocessingDiagnostic[
     <div className="mt-2 grid gap-2">
       <ul className="grid gap-1">
         {preview.map((diagnostic, index) => (
-          <DiagnosticRow diagnostic={diagnostic} key={`${diagnostic.kind}-${index}`} />
+          <DiagnosticRow
+            diagnostic={diagnostic}
+            key={`${diagnostic.kind}-${index}`}
+            sourceFileId={sourceFileId}
+            onVinEnriched={onVinEnriched}
+          />
         ))}
       </ul>
       {remaining.length > 0 ? (
@@ -217,7 +264,12 @@ function DiagnosticList({ diagnostics }: { diagnostics: PreprocessingDiagnostic[
           </summary>
           <ul className="mt-2 grid gap-1">
             {remaining.map((diagnostic, index) => (
-              <DiagnosticRow diagnostic={diagnostic} key={`extra-${diagnostic.kind}-${index}`} />
+              <DiagnosticRow
+                diagnostic={diagnostic}
+                key={`extra-${diagnostic.kind}-${index}`}
+                sourceFileId={sourceFileId}
+                onVinEnriched={onVinEnriched}
+              />
             ))}
           </ul>
         </details>
@@ -226,7 +278,25 @@ function DiagnosticList({ diagnostics }: { diagnostics: PreprocessingDiagnostic[
   );
 }
 
-function DiagnosticRow({ diagnostic }: { diagnostic: PreprocessingDiagnostic }) {
+const VIN_CLEANUP_KINDS = new Set([
+  "untrusted_vin",
+  "duplicate_vin",
+  "manual_enrichment_applied",
+]);
+
+function DiagnosticRow({
+  diagnostic,
+  sourceFileId,
+  onVinEnriched,
+}: {
+  diagnostic: PreprocessingDiagnostic;
+  sourceFileId: number | null;
+  onVinEnriched?: () => void;
+}) {
+  const canRepair =
+    sourceFileId !== null &&
+    VIN_CLEANUP_KINDS.has(diagnostic.kind) &&
+    diagnostic.source_row_number !== null;
   const rowLabel =
     diagnostic.source_row_number === null
       ? "File-level"
@@ -249,6 +319,55 @@ function DiagnosticRow({ diagnostic }: { diagnostic: PreprocessingDiagnostic }) 
           {diagnostic.vin6 ? <>VIN6: {diagnostic.vin6}</> : null}
         </p>
       ) : null}
+      {canRepair && sourceFileId !== null ? (
+        <RepairVinButton
+          diagnostic={diagnostic}
+          sourceFileId={sourceFileId}
+          onVinEnriched={onVinEnriched}
+        />
+      ) : null}
     </li>
   );
+}
+
+function RepairVinButton({
+  diagnostic,
+  sourceFileId,
+  onVinEnriched,
+}: {
+  diagnostic: PreprocessingDiagnostic;
+  sourceFileId: number;
+  onVinEnriched?: () => void;
+}) {
+  const initial = useMemo(
+    () => ({
+      sourceRowNumber: diagnostic.source_row_number,
+      stockNumber: diagnostic.stock_number ?? null,
+      currentVin6: diagnostic.vin6 ?? null,
+    }),
+    [diagnostic],
+  );
+  return (
+    <VinEnrichmentModal
+      sourceFileId={sourceFileId}
+      sourceRowNumber={initial.sourceRowNumber}
+      stockNumber={initial.stockNumber}
+      currentVin6={initial.currentVin6}
+      currentVinStatus={describeVinStatus(diagnostic.kind)}
+      onSuccess={onVinEnriched}
+    />
+  );
+}
+
+function describeVinStatus(kind: PreprocessingDiagnostic["kind"]): string {
+  if (kind === "untrusted_vin") {
+    return "Untrusted / dirty VIN";
+  }
+  if (kind === "duplicate_vin") {
+    return "Duplicate VIN6 on this file";
+  }
+  if (kind === "manual_enrichment_applied") {
+    return "Manual VIN enrichment already applied";
+  }
+  return "Needs VIN review";
 }

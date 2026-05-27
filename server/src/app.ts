@@ -59,7 +59,16 @@ import {
   parseSourceFileId,
   parseSourceTypeQuery,
   parseStoreCreateRequest,
+  parseVinEnrichmentRequest,
 } from "./validators/requestParsers.js";
+import {
+  applyManualVinEnrichment,
+  type ManualVinEnrichmentInput,
+} from "./services/preprocessing/manualVinEnrichment.js";
+import {
+  readLineage,
+  type RawDataLineage,
+} from "./services/preprocessing/types.js";
 import {
   canAccessStore,
   canWrite,
@@ -1230,6 +1239,161 @@ export function createApp(
     },
   );
 
+  app.get(
+    "/source-files/:sourceFileId/transactions",
+    async (request, response, next) => {
+      try {
+        const sourceFileId = parsePositiveInteger(request.params.sourceFileId);
+        if (sourceFileId === null) {
+          response.status(404).json({ detail: "Source file was not found." });
+          return;
+        }
+        const dealershipId = getRequestDealershipId(response);
+        const sourceFile = await repository.getSourceFile(sourceFileId);
+        if (!sourceFile || sourceFile.dealership_id !== dealershipId) {
+          response.status(404).json({ detail: "Source file was not found." });
+          return;
+        }
+        if (
+          !(await canAccessStore(
+            repository,
+            getAuthenticatedUser(response),
+            sourceFile.dealership_store_id,
+          ))
+        ) {
+          response.status(403).json({ detail: "Not authorized for this store." });
+          return;
+        }
+        const transactions = await repository.listBySourceFile(dealershipId, sourceFileId);
+        response.json(
+          transactions.map((transaction) => {
+            const lineage = readLineage(transaction.raw_data ?? {});
+            return {
+              id: transaction.id,
+              source_type: transaction.source_type,
+              source_file_id: transaction.source_file_id,
+              stock_number: transaction.stock_number,
+              vin: transaction.vin,
+              source_row_number: lineage?.source_row_number ?? null,
+              vin_provenance: lineage?.vin_provenance ?? null,
+            };
+          }),
+        );
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.post(
+    "/transactions/:transactionId/vin-enrichment",
+    async (request, response, next) => {
+      try {
+        const transactionId = parsePositiveInteger(request.params.transactionId);
+        if (transactionId === null) {
+          response.status(404).json({ detail: "Transaction was not found." });
+          return;
+        }
+        if (!canWrite(getAuthenticatedUser(response))) {
+          response.status(403).json({ detail: "Read-only users cannot enrich VINs." });
+          return;
+        }
+
+        const parsed = parseVinEnrichmentRequest(request.body);
+        if ("error" in parsed) {
+          response.status(422).json({ detail: vinEnrichmentErrorMessage(parsed.error) });
+          return;
+        }
+
+        const dealershipId = getRequestDealershipId(response);
+        const transaction = await repository.getTransactionById(dealershipId, transactionId);
+        if (!transaction) {
+          response.status(404).json({ detail: "Transaction was not found." });
+          return;
+        }
+        if (transaction.source_type !== "dealertrack") {
+          response.status(422).json({
+            detail: "Manual VIN enrichment is only supported for Dealertrack transactions.",
+          });
+          return;
+        }
+
+        const sourceFile = transaction.source_file_id
+          ? await repository.getSourceFile(transaction.source_file_id)
+          : null;
+        const storeId = sourceFile?.dealership_store_id ?? null;
+        if (!(await canAccessStore(repository, getAuthenticatedUser(response), storeId))) {
+          response.status(403).json({ detail: "Not authorized for this store." });
+          return;
+        }
+
+        const user = getAuthenticatedUser(response);
+        const enrichmentInput: ManualVinEnrichmentInput = {
+          vin: parsed.vin,
+          source: parsed.source,
+          enriched_by: user.email || `user:${user.id}`,
+          note: parsed.dms_reference
+            ? `${parsed.reason} dms_reference=${parsed.dms_reference}`
+            : parsed.reason,
+        };
+        const result = applyManualVinEnrichment(transaction, enrichmentInput);
+        if (!result.ok) {
+          if (result.reason === "no_change") {
+            response.status(409).json({
+              detail: "VIN is already set to the requested value.",
+            });
+            return;
+          }
+          response.status(422).json({ detail: "Invalid VIN." });
+          return;
+        }
+
+        const previousLineage = readLineage(transaction.raw_data ?? {});
+        const updated = await repository.updateTransactionVinAndRawData(
+          dealershipId,
+          transactionId,
+          { vin: result.vin, raw_data: result.raw_data },
+        );
+        if (!updated) {
+          response.status(404).json({ detail: "Transaction was not found." });
+          return;
+        }
+
+        const auditEvent = await repository.createAuditEvent(dealershipId, {
+          actor_user_id: user.id === 0 ? null : user.id,
+          action_type: "vin_enrichment_applied",
+          entity_type: "transaction",
+          entity_id: String(transactionId),
+          previous_state: toAuditState({
+            vin: transaction.vin,
+            lineage_summary: summarizeLineage(previousLineage),
+          }),
+          new_state: toAuditState({
+            transaction_id: transactionId,
+            source_file_id: transaction.source_file_id,
+            dealership_store_id: storeId,
+            vin: result.vin,
+            vin6: result.vin6,
+            source: parsed.source,
+            reason: parsed.reason,
+            dms_reference: parsed.dms_reference,
+          }),
+        });
+
+        response.json({
+          transaction: updated,
+          enrichment_applied: true,
+          vin6: result.vin6,
+          source: parsed.source,
+          audit_event_id: auditEvent?.id ?? null,
+          requires_rerun: true,
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   app.use(
     (
       error: unknown,
@@ -1398,6 +1562,37 @@ function uploadErrorMessage(error: MulterError): string {
     return `CSV file exceeds the ${MAX_UPLOAD_BYTES} byte upload limit.`;
   }
   return error.message;
+}
+
+function vinEnrichmentErrorMessage(
+  error: "invalid_vin" | "invalid_source" | "missing_reason" | "invalid_body" | "invalid_dms_reference",
+): string {
+  switch (error) {
+    case "invalid_vin":
+      return "VIN must be a valid 17-character VIN.";
+    case "invalid_source":
+      return "source must be one of manual_enrichment, dms_assisted_reconstruction, stock_number_lookup.";
+    case "missing_reason":
+      return "reason is required.";
+    case "invalid_dms_reference":
+      return "dms_reference must be a string.";
+    case "invalid_body":
+    default:
+      return "Invalid VIN enrichment request.";
+  }
+}
+
+function summarizeLineage(lineage: RawDataLineage | null): Record<string, unknown> | null {
+  if (!lineage) {
+    return null;
+  }
+  return {
+    source_kind: lineage.source_kind,
+    source_row_number: lineage.source_row_number,
+    retained_reason: lineage.retained_reason,
+    vin_provenance: lineage.vin_provenance,
+    transformations_count: lineage.transformations.length,
+  };
 }
 
 class AppHttpError extends Error {

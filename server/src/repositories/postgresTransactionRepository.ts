@@ -577,6 +577,32 @@ export class PostgresTransactionRepository implements TransactionRepository {
     return result.rows.map(toTransaction);
   }
 
+  async getTransactionById(
+    dealershipId: number,
+    transactionId: number,
+  ): Promise<Transaction | null> {
+    const result = await this.pool.query<TransactionRow>(
+      "SELECT * FROM transactions WHERE dealership_id = $1 AND id = $2",
+      [dealershipId, transactionId],
+    );
+    return result.rows[0] ? toTransaction(result.rows[0]) : null;
+  }
+
+  async updateTransactionVinAndRawData(
+    dealershipId: number,
+    transactionId: number,
+    update: { vin: string; raw_data: Record<string, unknown> },
+  ): Promise<Transaction | null> {
+    const result = await this.pool.query<TransactionRow>(
+      `UPDATE transactions
+       SET vin = $3, raw_data = $4
+       WHERE dealership_id = $1 AND id = $2
+       RETURNING *`,
+      [dealershipId, transactionId, update.vin, update.raw_data],
+    );
+    return result.rows[0] ? toTransaction(result.rows[0]) : null;
+  }
+
   async listAccountsSummary(dealershipId: number): Promise<AccountSummary[]> {
     return buildAccountSummaries(
       await this.listAccountSourceTotals(dealershipId),
