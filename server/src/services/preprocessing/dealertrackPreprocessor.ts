@@ -441,7 +441,10 @@ function normalizeStock(value: string | null): string | null {
   if (match) {
     return match[0].toUpperCase();
   }
-  if (/^[A-Z0-9]+$/i.test(cleaned)) {
+  // Reject pure-letter offset rows like "BOA" / "BANK". Dealertrack vehicle
+  // controls always contain at least one digit; alpha-only tokens are
+  // statement offsets/headings, not stocks.
+  if (/^[A-Z0-9]+$/i.test(cleaned) && /\d/.test(cleaned)) {
     return cleaned.toUpperCase();
   }
   return null;

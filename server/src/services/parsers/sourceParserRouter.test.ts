@@ -18,8 +18,18 @@ describe("resolveParserRoute", () => {
     expect(route.kind).toBe("unsupported");
   });
 
-  test("keeps CSV uploads on the existing path", () => {
+  test("routes BOA CSV uploads through the source-specific BOA CSV parser", () => {
     const route = resolveParserRoute("csv", "boa");
+    expect(route.kind).toBe("boa_csv");
+  });
+
+  test("routes Dealertrack CSV uploads through the source-specific DT CSV parser", () => {
+    const route = resolveParserRoute("csv", "dealertrack");
+    expect(route.kind).toBe("dealertrack_csv");
+  });
+
+  test("keeps non-floorplan CSV uploads on the legacy generic CSV path", () => {
+    const route = resolveParserRoute("csv", "bank");
     expect(route.kind).toBe("csv");
   });
 

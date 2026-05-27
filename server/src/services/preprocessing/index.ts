@@ -7,11 +7,13 @@
  *   1. sniffs the file format via the existing fileFormatDetector
  *   2. routes through the existing parser modules
  *   3. invokes the deterministic per-source preprocessor
- *   4. for unsupported formats (or CSV uploads, which keep the legacy
- *      transactionNormalizer path), returns null so the caller can fall back
+ *   4. for unsupported formats (or general legacy CSV uploads where no
+ *      source-specific preprocessor applies), returns a fallback decision
+ *      so the caller can use the legacy CSV normalizer.
  *
- * The orchestrator is intentionally narrow: it only wires what already
- * exists. It does not invent new parser abstractions.
+ * BOA and Dealertrack CSV uploads go through the source-specific CSV
+ * routes (`boa_csv` / `dealertrack_csv`) so they receive the same
+ * deterministic preprocessing as the SpreadsheetML / HTML-as-XLS variants.
  */
 
 import type { NewTransaction, SourceType, ValidationError } from "../../domain/types.js";
@@ -102,8 +104,8 @@ function runPreprocessor(sourceType: SourceType, parsed: ParsedTable): Preproces
   }
   // For non-floorplan source types we don't currently preprocess. This
   // branch exists to keep the function total — the orchestrator's route
-  // resolution will only pick `boa_html` / `dealertrack_xml` for floorplan
-  // sources, so in practice this is unreachable.
+  // resolution will only pick source-specific routes for floorplan sources,
+  // so in practice this is unreachable.
   return {
     transactions: [],
     validationErrors: [],

@@ -11,11 +11,14 @@
 import type { SourceType } from "../../domain/types.js";
 import type { DetectedFileFormat } from "../fileFormatDetector.js";
 import { parseBoaHtmlXls } from "./boaHtmlXlsParser.js";
+import { parseCsvToTable } from "./csvTableParser.js";
 import { parseDealertrackXml } from "./dealertrackXmlParser.js";
 import type { ParsedTable } from "./types.js";
 
 export type ParserRoute =
   | { kind: "csv"; format: "csv" }
+  | { kind: "boa_csv"; format: "csv" }
+  | { kind: "dealertrack_csv"; format: "csv" }
   | { kind: "dealertrack_xml"; format: "xml_spreadsheet" }
   | { kind: "boa_html"; format: "html_table_xls" }
   | { kind: "xlsx_native"; format: "xlsx_ooxml" }
@@ -26,6 +29,12 @@ export function resolveParserRoute(
   sourceType: SourceType,
 ): ParserRoute {
   if (detectedFormat === "csv") {
+    if (sourceType === "boa") {
+      return { kind: "boa_csv", format: "csv" };
+    }
+    if (sourceType === "dealertrack") {
+      return { kind: "dealertrack_csv", format: "csv" };
+    }
     return { kind: "csv", format: "csv" };
   }
   if (detectedFormat === "xml_spreadsheet") {
@@ -55,6 +64,10 @@ export function parseWithRoute(
       return parseDealertrackXml(buffer);
     case "boa_html":
       return parseBoaHtmlXls(buffer);
+    case "boa_csv":
+      return parseCsvToTable(buffer, "no_header");
+    case "dealertrack_csv":
+      return parseCsvToTable(buffer, "with_header");
     case "csv":
     case "xlsx_native":
     case "unsupported":
