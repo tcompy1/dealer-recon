@@ -400,12 +400,15 @@ describe("buildHurstFpRecWorkbook", () => {
     expect(html).toContain("Reviewed by");
   });
 
-  test("Difference and Variance rows carry yellow fill", () => {
+  test("Difference and Net adjustments rows carry yellow fill; Variance does not", () => {
     const detail = buildDetail({ exceptions: [exception({})] });
     const html = toHurstFpRecXlsHtml(buildHurstFpRecWorkbook(detail));
     expect(html).toContain('class="summary-row yellow"');
+    expect(html).toContain('class="adjustments-row"');
     expect(html).toContain('class="variance-row"');
     expect(html).toContain("FFFF00");
+    expect(html).toMatch(/tr\.summary-row\.yellow td, tr\.adjustments-row td \{ background-color: #FFFF00/);
+    expect(html).toMatch(/tr\.variance-row td \{ background-color: #ffffff/);
   });
 
   test("renders accounting parentheses for negative amounts", () => {

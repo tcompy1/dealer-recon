@@ -231,8 +231,8 @@ export function toHurstFpRecXlsHtml(workbook: HurstFpRecWorkbook): string {
     tr.section-total td { background-color: #f1f5f9; font-weight: bold; }
     tr.summary-row td { background-color: #ffffff; }
     tr.summary-row.subheader td { font-weight: bold; background-color: #f1f5f9; }
-    tr.summary-row.yellow td, tr.variance-row td { background-color: #FFFF00; font-weight: bold; }
-    tr.adjustments-row td { background-color: #f1f5f9; font-weight: bold; }
+    tr.summary-row.yellow td, tr.adjustments-row td { background-color: #FFFF00; font-weight: bold; }
+    tr.variance-row td { background-color: #ffffff; font-weight: bold; }
     td.amount { text-align: right; font-family: 'Consolas', 'Menlo', monospace; mso-number-format: '${accountingFormat}'; }
     td.amount-negative { color: #b91c1c; }
     td.date { mso-number-format: '${dateFormat}'; }
