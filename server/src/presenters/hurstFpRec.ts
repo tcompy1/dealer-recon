@@ -567,12 +567,24 @@ function withSignedAmount(row: HurstFpRecRow, sign: 1 | -1): HurstFpRecRow {
 }
 
 function buildSection(title: string, caption: string, rows: HurstFpRecRow[]): HurstFpRecSection {
+  // Mirror the clerk's Excel working sort: ascending by amount position. Rows
+  // carry signed amounts (sign convention already applied per section), so we
+  // sort by absolute magnitude to place rows at their dollar position the same
+  // way the clerk sorts col D / col E ascending. VIN6 is a stable tiebreaker so
+  // the order is deterministic when two rows share an amount.
+  const sortedRows = [...rows].sort((left, right) => {
+    const magnitudeDelta = Math.abs(left.amount_cents) - Math.abs(right.amount_cents);
+    if (magnitudeDelta !== 0) {
+      return magnitudeDelta;
+    }
+    return left.vin6.localeCompare(right.vin6);
+  });
   // Subtotal preserves signed amounts on the rows (sign convention already applied).
-  const totalCents = rows.reduce((total, row) => total + row.amount_cents, 0);
+  const totalCents = sortedRows.reduce((total, row) => total + row.amount_cents, 0);
   return {
     title,
     caption,
-    rows,
+    rows: sortedRows,
     total_amount: formatCents(totalCents),
     total_amount_cents: totalCents,
   };

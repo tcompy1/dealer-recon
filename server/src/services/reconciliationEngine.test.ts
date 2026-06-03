@@ -451,6 +451,65 @@ describe("reconcileTransactions", () => {
     expect(bucketCounts.size).toBe(transactions.length);
     expect([...bucketCounts.values()].every((count) => count === 1)).toBe(true);
   });
+
+  test("amount-mismatch pair: VIN6 matches but amounts differ -> two exceptions, never merged", async () => {
+    // April ground-truth case: BOA shows $32,283 for JM1BPBLL0T1870612, but the
+    // Dealertrack 2100 entry for the same VIN is -$31,771 (a $512 curtailment
+    // delta). The clerk does NOT merge these onto one matched row - each side is
+    // surfaced as its own exception.
+    const repository = new MemoryTransactionRepository();
+    await repository.insertMany(
+      normalizeTransactionsFromCsv(
+        [
+          "transaction_date,post_date,amount,reference_number,description,account,stock_number,vin",
+          '2026-04-30,2026-04-30,"$32,283.00",,2026 Mazda M3H CE XA,Floorplan Payable,,JM1BPBLL0T1870612',
+        ].join("\n"),
+        "boa",
+      ).transactions,
+    );
+    await repository.insertMany([
+      {
+        source_file_id: null,
+        source_type: "dealertrack",
+        transaction_date: "2026-03-11",
+        post_date: null,
+        amount_cents: -3177100,
+        reference_number: "M21326",
+        description: "2026 MAZDA MAZDA3 HAT   3/11/26  JM1BPBLL0T1870612",
+        account: "Floorplan Payable",
+        stock_number: null,
+        vin: null,
+        raw_data: {},
+      },
+    ]);
+
+    const result = await reconcileTransactions(repository);
+
+    // Must NOT be classified as matched.
+    expect(result.matched_count).toBe(0);
+    expect(result.match_groups).toHaveLength(0);
+
+    // Exactly one exception for the BOA side and one for the Dealertrack side.
+    const boaExceptions = result.exceptions.filter(
+      (exception) => exception.source_type === "boa",
+    );
+    const dealertrackExceptions = result.exceptions.filter(
+      (exception) => exception.source_type === "dealertrack",
+    );
+    expect(boaExceptions).toHaveLength(1);
+    expect(dealertrackExceptions).toHaveLength(1);
+
+    // Both sides are tagged as the VIN6-match/amount-mismatch pair so the
+    // worksheet can link them while keeping them on separate rows.
+    expect(boaExceptions[0].exception_type).toBe("needs_review_vin6_only");
+    expect(boaExceptions[0].exception_category).toBe("vin6_match_amount_mismatch");
+    expect(dealertrackExceptions[0].exception_type).toBe("needs_review_vin6_only");
+    expect(dealertrackExceptions[0].exception_category).toBe("vin6_match_amount_mismatch");
+
+    // The amounts are preserved unmodified - nothing is collapsed.
+    expect(boaExceptions[0].transaction.amount_cents).toBe(3228300);
+    expect(dealertrackExceptions[0].transaction.amount_cents).toBe(-3177100);
+  });
 });
 
 async function loadFloorplanSamples() {

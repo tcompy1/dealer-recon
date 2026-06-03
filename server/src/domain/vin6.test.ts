@@ -38,4 +38,22 @@ describe("extractVin6FromDescription", () => {
     expect(extractVin6FromDescription("no vin here")).toBeNull();
     expect(extractVin6FromDescription(null)).toBeNull();
   });
+
+  test("extracts VIN6 from the trailing token of a Dealertrack description", () => {
+    expect(
+      extractVin6FromDescription("2026 MAZDA MAZDA3 SED   3/14/26  JM1BPAAL7T1869826"),
+    ).toBe("869826");
+  });
+
+  test("uses the trailing VIN token even when the prefix is a customer name", () => {
+    expect(
+      extractVin6FromDescription("DUNCAN, WILLIAM RAYMO   3/11/26  JM1BPAAL7T1870555"),
+    ).toBe("870555");
+  });
+
+  test("uses the trailing VIN token even when the prefix is another dealer rooftop", () => {
+    expect(
+      extractVin6FromDescription("HILEY MAZDA OF ARLING   2/17/26  JM1BPAAL8T1866286"),
+    ).toBe("866286");
+  });
 });
