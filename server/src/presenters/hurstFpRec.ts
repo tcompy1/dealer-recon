@@ -310,9 +310,6 @@ function sectionHtml(section: HurstFpRecSection, kind: "schedule" | "statement" 
     "BOA Floored",
     "GL Notes",
     "BOA Notes",
-    "Carry-fwd",
-    "First Seen",
-    "Prior Notes",
     "Review Status",
   ];
   const header = headers.map((label) => `<th>${escapeHtml(label)}</th>`).join("");
@@ -334,9 +331,6 @@ function sectionHtml(section: HurstFpRecSection, kind: "schedule" | "statement" 
               <td class="date">${escapeHtml(row.boa_floored_date)}</td>
               <td>${escapeHtml(row.gl_notes)}</td>
               <td>${escapeHtml(row.boa_notes)}</td>
-              <td>${escapeHtml(formatCarryForward(row))}</td>
-              <td>${escapeHtml(formatFirstSeen(row))}</td>
-              <td>${escapeHtml(formatPriorNotes(row))}</td>
               <td>${escapeHtml(row.review_status)}</td>
             </tr>`,
         )

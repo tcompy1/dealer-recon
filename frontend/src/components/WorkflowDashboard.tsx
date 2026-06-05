@@ -27,6 +27,7 @@ import {
 } from "../api/stores";
 import { UploadError, listSourceFiles, uploadSourceFile } from "../api/uploads";
 import { PreprocessingDiagnosticsPanel } from "./preprocessing/PreprocessingDiagnosticsPanel";
+import { RemovedRowsAuditPanel } from "./preprocessing/RemovedRowsAuditPanel";
 import { VinPresenceDiagnosticsPanel } from "./VinPresenceDiagnosticsPanel";
 import type {
   ReconciledTransaction,
@@ -412,7 +413,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
         <div className="flex flex-col gap-1">
           <p className="text-xs font-semibold uppercase text-cyan-700">Step 1</p>
-          <h2 className="text-lg font-semibold text-slate-950">Upload BOA and Dealertrack CSVs</h2>
+          <h2 className="text-lg font-semibold text-slate-950">Upload source files</h2>
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
@@ -462,6 +463,11 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
         <RecentUploads sourceFiles={sourceFiles} />
       </section>
+
+      <RemovedRowsAuditPanel
+        boaPreprocessing={boaUpload.upload?.preprocessing}
+        dealertrackPreprocessing={dealertrackUpload.upload?.preprocessing}
+      />
 
       <section className="flex flex-col gap-3 rounded-md border border-slate-200 bg-white p-5 shadow-sm md:flex-row md:items-center md:justify-between">
         <div>
@@ -590,8 +596,6 @@ function GroupAnalyticsSummary({
     <div className="grid gap-3 sm:grid-cols-4">
       <Metric label="Store runs" value={selectedStore.run_count} />
       <Metric label="Store unresolved" value={selectedStore.unresolved_count} />
-      <Metric label="Store match rate" value={`${selectedStore.match_rate_percent.toFixed(2)}%`} />
-      <Metric label="Recurring at store" value={selectedStore.recurring_exception_count} />
     </div>
   );
 }
@@ -1015,7 +1019,6 @@ function ResultsSection({
           </div>
 
           <ExceptionBreakdown run={run} />
-          <RunTrendAnalyticsPanel analytics={analytics} />
           <HistoricalReplayPanel
             replay={replay}
             isReplaying={isReplaying}
@@ -1591,7 +1594,6 @@ function ExceptionsTable({
               <th className="px-3 py-2 font-semibold">VIN</th>
               <th className="px-3 py-2 font-semibold">Amount</th>
               <th className="px-3 py-2 font-semibold">Reason</th>
-              <th className="px-3 py-2 font-semibold">Carry-fwd</th>
               <th className="px-3 py-2 font-semibold">Note</th>
               <th className="px-3 py-2 font-semibold">Actions</th>
             </tr>
@@ -1599,7 +1601,7 @@ function ExceptionsTable({
           <tbody className="divide-y divide-slate-200 bg-white">
             {run.exceptions.length === 0 ? (
               <tr>
-                <td className="px-3 py-3 text-slate-600" colSpan={13}>
+                <td className="px-3 py-3 text-slate-600" colSpan={12}>
                   No unmatched items.
                 </td>
               </tr>
@@ -1664,9 +1666,6 @@ function ExceptionsTable({
                   <td className="px-3 py-2">{exception.transaction.vin ?? "n/a"}</td>
                   <td className="px-3 py-2">{formatAmount(exception.transaction)}</td>
                   <td className="px-3 py-2">{exception.reason}</td>
-                  <td className="px-3 py-2 text-xs">
-                    {renderCarryForward(exception.carry_forward)}
-                  </td>
                   <td className="min-w-56 px-3 py-2">
                     <input
                       className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
@@ -1682,7 +1681,6 @@ function ExceptionsTable({
                         }
                       }}
                     />
-                    {renderPriorNotes(exception.carry_forward)}
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-2">

@@ -576,9 +576,12 @@ describe("buildHurstFpRecWorkbook", () => {
     expect(workbook.carried_forward_count).toBe(1);
 
     const html = toHurstFpRecXlsHtml(workbook);
+    // Summary table still shows the carry-forward count.
     expect(html).toContain("Carried forward from prior runs");
-    expect(html).toContain("Yes (3x)");
-    expect(html).toContain("Prior Notes");
-    expect(html).toContain("April note");
+    // Carry-fwd / First Seen / Prior Notes columns are no longer rendered in
+    // the exception section tables per Hiley feedback (2026-06-05). The data
+    // model fields are preserved so they remain accessible programmatically.
+    expect(html).not.toContain("Prior Notes");
+    expect(html).not.toContain("Carry-fwd");
   });
 });

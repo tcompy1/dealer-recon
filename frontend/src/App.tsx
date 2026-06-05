@@ -65,7 +65,7 @@ export default function App() {
             <p className="text-sm font-semibold text-cyan-700">Dealer Recon</p>
             <h1 className="text-3xl font-semibold text-slate-950">
               {section === "reconciliation"
-                ? "Floorplan reconciliation"
+                ? "Monthly reconciliation workpaper"
                 : section === "accounts"
                   ? "Account close support"
                   : "Month-end reports"}
