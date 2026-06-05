@@ -1714,6 +1714,8 @@ function runUploadPreprocessing(
   }
   if (decision.kind === "fallback_legacy_csv") {
     const legacy = normalizeTransactionsFromCsv(buffer, sourceType);
+    const csvSourceKind =
+      sourceType === "boa" || sourceType === "dealertrack" ? sourceType : "boa";
     return {
       kind: "ok",
       transactions: legacy.transactions,
@@ -1725,8 +1727,8 @@ function runUploadPreprocessing(
         parser_route: decision.route.kind,
         preprocessing_version: null,
         summary: null,
-        diagnostics: [],
-        removed_rows: [],
+        diagnostics: legacy.diagnostics,
+        removed_rows: buildRemovedRows(legacy.diagnostics, csvSourceKind),
         legacy_csv_path: true,
         unsupported_reason: null,
       },

@@ -312,7 +312,10 @@ function sectionHtml(section: HurstFpRecSection, kind: "schedule" | "statement" 
     "BOA Notes",
     "Review Status",
   ];
-  const header = headers.map((label) => `<th>${escapeHtml(label)}</th>`).join("");
+  // Column widths (px): Descriptor, Stock#, VIN6, VIN, Amount, GL Floored, BOA Floored, GL Notes, BOA Notes, Review Status
+  const colWidths = [160, 70, 60, 130, 80, 90, 90, 160, 160, 100];
+  const colgroup = `<colgroup>${colWidths.map((w) => `<col style="width:${w}px;mso-width-source:userset;mso-width-alt:${Math.round(w * 36.576)}"/>`).join("")}</colgroup>`;
+  const header = headers.map((label, i) => `<th style="width:${colWidths[i]}px">${escapeHtml(label)}</th>`).join("");
 
   const body = section.rows.length === 0
     ? `<tr><td colspan="${headers.length}">No items</td></tr>`
@@ -346,7 +349,7 @@ function sectionHtml(section: HurstFpRecSection, kind: "schedule" | "statement" 
   return [
     `<h2>${escapeHtml(section.title)}</h2>`,
     `<p class="caption">${escapeHtml(section.caption)}</p>`,
-    `<table><thead><tr>${header}</tr></thead><tbody>${body}${totalRow}</tbody></table>`,
+    `<table>${colgroup}<thead><tr>${header}</tr></thead><tbody>${body}${totalRow}</tbody></table>`,
   ].join("");
 }
 

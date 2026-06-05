@@ -18,7 +18,8 @@ export function RemovedRowsAuditPanel({ boaPreprocessing, dealertrackPreprocessi
   const dtRows = dealertrackPreprocessing?.removed_rows ?? [];
   const totalRemoved = boaRows.length + dtRows.length;
 
-  if (totalRemoved === 0 && !boaPreprocessing && !dealertrackPreprocessing) {
+  // Don't render until at least one file has been uploaded.
+  if (!boaPreprocessing && !dealertrackPreprocessing) {
     return null;
   }
 
