@@ -42,6 +42,7 @@ import {
 import { preprocessUpload } from "./services/preprocessing/index.js";
 import type {
   PreprocessingDiagnostic,
+  PreprocessingDiagnosticKind,
   PreprocessingSummary,
 } from "./services/preprocessing/types.js";
 import { toExceptionsCsv, toMonthEndReportCsv } from "./presenters/csv.js";
@@ -1604,6 +1605,57 @@ class AppHttpError extends Error {
   }
 }
 
+/** A single row that was removed during preprocessing — surfaced for audit. */
+type RemovedRow = {
+  source: "boa" | "dealertrack";
+  source_row_number: number | null;
+  removal_reason: string;
+  key_values: Record<string, string>;
+};
+
+const REMOVAL_KINDS = new Set<PreprocessingDiagnosticKind>([
+  "banner_row_removed",
+  "zero_balance_row_removed",
+  "straightline_row_removed",
+  "row_skipped_unknown_structure",
+  "row_skipped_malformed",
+  "missing_amount",
+]);
+
+const REMOVAL_REASON_LABELS: Record<string, string> = {
+  banner_row_removed: "Banner/header/subtotal row",
+  zero_balance_row_removed: "Zero balance — excluded from reconciliation",
+  straightline_row_removed: "Straightline row — excluded from reconciliation",
+  row_skipped_unknown_structure: "Unrecognized row structure",
+  row_skipped_malformed: "Malformed row",
+  missing_amount: "No valid amount found",
+};
+
+function buildRemovedRows(
+  diagnostics: PreprocessingDiagnostic[],
+  sourceKind: "boa" | "dealertrack",
+): RemovedRow[] {
+  return diagnostics
+    .filter((d) => REMOVAL_KINDS.has(d.kind as PreprocessingDiagnosticKind))
+    .map((d) => ({
+      source: sourceKind,
+      source_row_number: d.source_row_number,
+      removal_reason: REMOVAL_REASON_LABELS[d.kind] ?? d.kind.replace(/_/g, " "),
+      key_values: {
+        ...(d.stock_number ? { stock: d.stock_number } : {}),
+        ...(d.vin6 ? { vin6: d.vin6 } : {}),
+        ...(d.details
+          ? Object.fromEntries(
+              Object.entries(d.details)
+                .filter(([, v]) => v !== null && v !== undefined)
+                .map(([k, v]) => [k, String(v)]),
+            )
+          : {}),
+        message: d.message,
+      },
+    }));
+}
+
 type UploadPreprocessingMetadata = {
   detected_format: string;
   detection_confidence: string;
@@ -1612,6 +1664,7 @@ type UploadPreprocessingMetadata = {
   preprocessing_version: string | null;
   summary: PreprocessingSummary | null;
   diagnostics: PreprocessingDiagnostic[];
+  removed_rows: RemovedRow[];
   legacy_csv_path: boolean;
   unsupported_reason: string | null;
 };
@@ -1650,6 +1703,10 @@ function runUploadPreprocessing(
         preprocessing_version: output.summary.preprocessing_version,
         summary: output.summary,
         diagnostics: output.diagnostics,
+        removed_rows: buildRemovedRows(
+          output.diagnostics,
+          output.summary.source_kind,
+        ),
         legacy_csv_path: false,
         unsupported_reason: null,
       },
@@ -1657,6 +1714,8 @@ function runUploadPreprocessing(
   }
   if (decision.kind === "fallback_legacy_csv") {
     const legacy = normalizeTransactionsFromCsv(buffer, sourceType);
+    const csvSourceKind =
+      sourceType === "boa" || sourceType === "dealertrack" ? sourceType : "boa";
     return {
       kind: "ok",
       transactions: legacy.transactions,
@@ -1668,7 +1727,8 @@ function runUploadPreprocessing(
         parser_route: decision.route.kind,
         preprocessing_version: null,
         summary: null,
-        diagnostics: [],
+        diagnostics: legacy.diagnostics,
+        removed_rows: buildRemovedRows(legacy.diagnostics, csvSourceKind),
         legacy_csv_path: true,
         unsupported_reason: null,
       },
@@ -1686,6 +1746,7 @@ function runUploadPreprocessing(
       preprocessing_version: null,
       summary: null,
       diagnostics: [],
+      removed_rows: [],
       legacy_csv_path: false,
       unsupported_reason: decision.reason,
     },

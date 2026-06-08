@@ -13,7 +13,6 @@ import {
   getHurstFpRecExportUrl,
   getReconciliationExceptionsCsvUrl,
   getReconciliationRun,
-  getReconciliationRunAnalytics,
   listReconciliationRuns,
   reconcileSourceFiles,
   replayReconciliationRun,
@@ -27,14 +26,13 @@ import {
 } from "../api/stores";
 import { UploadError, listSourceFiles, uploadSourceFile } from "../api/uploads";
 import { PreprocessingDiagnosticsPanel } from "./preprocessing/PreprocessingDiagnosticsPanel";
+import { RemovedRowsAuditPanel } from "./preprocessing/RemovedRowsAuditPanel";
 import { VinPresenceDiagnosticsPanel } from "./VinPresenceDiagnosticsPanel";
 import type {
   ReconciledTransaction,
-  ReconciliationExceptionCarryForward,
   ReconciliationExceptionStatus,
   ReconciliationExceptionReviewUpdate,
   ReconciliationExceptionReviewStatus,
-  ReconciliationRunComparison,
   ReconciliationRunFilters,
   ReconciliationRunDetail,
   ReconciliationRunListItem,
@@ -92,7 +90,6 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
   const [operationalMetrics, setOperationalMetrics] = useState<OperationalMetrics | null>(null);
   const [activeRun, setActiveRun] = useState<ReconciliationRunDetail | null>(null);
   const [activeRunDiagnostics, setActiveRunDiagnostics] = useState<VinPresenceDiagnostics | null>(null);
-  const [activeRunAnalytics, setActiveRunAnalytics] = useState<ReconciliationRunComparison | null>(null);
   const [activeRunReplay, setActiveRunReplay] = useState<ReconciliationReplayResponse | null>(null);
   const [isReconciling, setIsReconciling] = useState(false);
   const [isReplaying, setIsReplaying] = useState(false);
@@ -197,10 +194,8 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         dealershipStoreId: selectedStoreId,
       });
       const detail = await getReconciliationRun(result.reconciliation_run_id, exceptionFilters);
-      const analytics = await getReconciliationRunAnalytics(result.reconciliation_run_id);
       setActiveRun(detail);
       setActiveRunDiagnostics(result.vin_presence_diagnostics);
-      setActiveRunAnalytics(analytics);
       setActiveRunReplay(null);
       setIsReconciliationStale(false);
       setReconciliationRuns(await listReconciliationRuns(selectedStoreId));
@@ -217,7 +212,6 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     setSelectedStoreId(storeId);
     setActiveRun(null);
     setActiveRunDiagnostics(null);
-    setActiveRunAnalytics(null);
     setActiveRunReplay(null);
     setBoaUpload(initialUploadSlot);
     setDealertrackUpload(initialUploadSlot);
@@ -265,13 +259,9 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     setWorkflowError(null);
 
     try {
-      const [detail, analytics] = await Promise.all([
-        getReconciliationRun(reconciliationRunId, exceptionFilters),
-        getReconciliationRunAnalytics(reconciliationRunId),
-      ]);
+      const detail = await getReconciliationRun(reconciliationRunId, exceptionFilters);
       setActiveRun(detail);
       setActiveRunDiagnostics(null);
-      setActiveRunAnalytics(analytics);
       setActiveRunReplay(null);
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Run detail could not be loaded.");
@@ -310,12 +300,8 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         exceptionId,
         update,
       });
-      const [detail, analytics] = await Promise.all([
-        getReconciliationRun(activeRun.reconciliation_run_id, exceptionFilters),
-        getReconciliationRunAnalytics(activeRun.reconciliation_run_id),
-      ]);
+      const detail = await getReconciliationRun(activeRun.reconciliation_run_id, exceptionFilters);
       setActiveRun(detail);
-      setActiveRunAnalytics(analytics);
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Exception review could not be saved.");
     } finally {
@@ -412,7 +398,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
         <div className="flex flex-col gap-1">
           <p className="text-xs font-semibold uppercase text-cyan-700">Step 1</p>
-          <h2 className="text-lg font-semibold text-slate-950">Upload BOA and Dealertrack CSVs</h2>
+          <h2 className="text-lg font-semibold text-slate-950">Upload source files</h2>
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
@@ -463,6 +449,11 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         <RecentUploads sourceFiles={sourceFiles} />
       </section>
 
+      <RemovedRowsAuditPanel
+        boaPreprocessing={boaUpload.upload?.preprocessing}
+        dealertrackPreprocessing={dealertrackUpload.upload?.preprocessing}
+      />
+
       <section className="flex flex-col gap-3 rounded-md border border-slate-200 bg-white p-5 shadow-sm md:flex-row md:items-center md:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase text-cyan-700">Step 2</p>
@@ -485,7 +476,6 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       {workflowError ? <ErrorBanner message={workflowError} /> : null}
 
       <ResultsSection
-        analytics={activeRunAnalytics}
         diagnostics={activeRunDiagnostics}
         filters={exceptionFilters}
         replay={activeRunReplay}
@@ -590,8 +580,6 @@ function GroupAnalyticsSummary({
     <div className="grid gap-3 sm:grid-cols-4">
       <Metric label="Store runs" value={selectedStore.run_count} />
       <Metric label="Store unresolved" value={selectedStore.unresolved_count} />
-      <Metric label="Store match rate" value={`${selectedStore.match_rate_percent.toFixed(2)}%`} />
-      <Metric label="Recurring at store" value={selectedStore.recurring_exception_count} />
     </div>
   );
 }
@@ -625,7 +613,7 @@ function AutomationOverview({
         <Metric label="Scheduled jobs" value={jobs.length} />
         <Metric label="Enabled jobs" value={jobs.filter((job) => job.enabled).length} />
         <Metric
-          label="Avg completion"
+          label="Avg reconciliation time"
           value={
             metrics?.average_reconciliation_completion_time_ms === null ||
             metrics?.average_reconciliation_completion_time_ms === undefined
@@ -634,7 +622,7 @@ function AutomationOverview({
           }
         />
         <Metric
-          label="Auto reconciliation"
+          label="Auto-matched"
           value={`${metrics?.auto_vs_manual_reconciliation_rates.automated_percent.toFixed(2) ?? "0.00"}%`}
         />
       </div>
@@ -643,10 +631,7 @@ function AutomationOverview({
         <section className="rounded-md border border-slate-200 bg-white p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-slate-950">Scheduled Jobs</h3>
-              <p className="mt-1 text-sm text-slate-600">
-                Store-level automation rules for recurring reconciliation.
-              </p>
+              <h3 className="text-sm font-semibold text-slate-950">Upload Schedule</h3>
             </div>
             <button
               className="inline-flex h-9 items-center justify-center rounded-md bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
@@ -690,7 +675,7 @@ function AutomationOverview({
         </section>
 
         <section className="rounded-md border border-slate-200 bg-white p-4">
-          <h3 className="text-sm font-semibold text-slate-950">Store Automation Status</h3>
+          <h3 className="text-sm font-semibold text-slate-950">Upload Status</h3>
           {selectedStatus ? (
             <div className="mt-3 grid gap-2 text-sm text-slate-700">
               <p>Last upload: {selectedStatus.last_upload_at ? formatDateTime(selectedStatus.last_upload_at) : "None"}</p>
@@ -712,8 +697,8 @@ function AutomationOverview({
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <EventList title="Recent Ingestion Events" rows={ingestionEvents} />
-        <EventList title="Operational Alerts" rows={events} />
+        <EventList title="Recent Activity" rows={ingestionEvents} />
+        <EventList title="Recent Alerts" rows={events} />
       </div>
     </div>
   );
@@ -832,7 +817,7 @@ function UploadReceipt({
       <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
         <div className="grid gap-1 sm:grid-cols-2">
           <p>
-            <span className="font-medium">source_file_id:</span> {upload.source_file_id}
+            <span className="font-medium">File ID:</span> {upload.source_file_id}
           </p>
           <p>
             <span className="font-medium">filename:</span> {upload.filename}
@@ -906,7 +891,7 @@ function RecentUploads({ sourceFiles }: { sourceFiles: SourceFileSummary[] }) {
       <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
         <thead className="bg-slate-50 text-slate-600">
           <tr>
-            <th className="px-3 py-2 font-semibold">source_file_id</th>
+            <th className="px-3 py-2 font-semibold">File ID</th>
             <th className="px-3 py-2 font-semibold">Store</th>
             <th className="px-3 py-2 font-semibold">Source</th>
             <th className="px-3 py-2 font-semibold">Filename</th>
@@ -932,7 +917,6 @@ function RecentUploads({ sourceFiles }: { sourceFiles: SourceFileSummary[] }) {
 }
 
 function ResultsSection({
-  analytics,
   diagnostics,
   filters,
   replay,
@@ -945,7 +929,6 @@ function ResultsSection({
   reviewUpdatingId,
   canModify,
 }: {
-  analytics: ReconciliationRunComparison | null;
   diagnostics: VinPresenceDiagnostics | null;
   filters: ReconciliationRunFilters;
   replay: ReconciliationReplayResponse | null;
@@ -1015,7 +998,6 @@ function ResultsSection({
           </div>
 
           <ExceptionBreakdown run={run} />
-          <RunTrendAnalyticsPanel analytics={analytics} />
           <HistoricalReplayPanel
             replay={replay}
             isReplaying={isReplaying}
@@ -1058,64 +1040,6 @@ function ExceptionBreakdown({ run }: { run: ReconciliationRunDetail }) {
   );
 }
 
-function RunTrendAnalyticsPanel({ analytics }: { analytics: ReconciliationRunComparison | null }) {
-  if (!analytics) {
-    return null;
-  }
-
-  const summary = analytics.run_comparison_summary;
-  const current = summary.current;
-
-  return (
-    <div className="grid gap-3">
-      <div>
-        <h3 className="text-base font-semibold text-slate-950">Run trend analytics</h3>
-        <p className="mt-1 text-sm text-slate-600">
-          Compared with {analytics.previous_run_id ? `run #${analytics.previous_run_id}` : "no previous run"}.
-        </p>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Metric label="Match rate" value={`${current.match_rate_percent.toFixed(2)}%`} />
-        <Metric label="Unresolved" value={current.unresolved_count} />
-        <Metric
-          label="Match rate change"
-          value={formatNullablePercentDelta(summary.match_rate_delta_percent)}
-        />
-        <Metric
-          label="Avg resolution"
-          value={formatHours(current.average_time_to_resolution_hours)}
-        />
-      </div>
-
-      <div className="grid gap-3 lg:grid-cols-3">
-        <TrendSummaryCard
-          label="Improved Since Last Run"
-          value={summary.newly_resolved_count}
-          detail="Prior exceptions absent from this run"
-          tone="positive"
-        />
-        <TrendSummaryCard
-          label="New Exceptions"
-          value={summary.newly_created_count}
-          detail="Current exceptions absent from the prior run"
-          tone={summary.newly_created_count > 0 ? "attention" : "neutral"}
-        />
-        <TrendSummaryCard
-          label="Recurring Operational Problems"
-          value={summary.recurring_count}
-          detail="Same VIN or reference and category across runs"
-          tone={summary.recurring_count > 0 ? "attention" : "neutral"}
-        />
-      </div>
-
-      <div className="grid gap-3 lg:grid-cols-2">
-        <CategoryTrendTable rows={analytics.category_delta_summary} />
-        <ReviewerWorkloadTable rows={analytics.reviewer_workload_trends} />
-      </div>
-    </div>
-  );
-}
 
 function HistoricalReplayPanel({
   replay,
@@ -1258,118 +1182,8 @@ function ReplayKeyList({ label, rows }: { label: string; rows: string[] }) {
   );
 }
 
-function TrendSummaryCard({
-  label,
-  value,
-  detail,
-  tone,
-}: {
-  label: string;
-  value: number;
-  detail: string;
-  tone: "positive" | "attention" | "neutral";
-}) {
-  const toneClass =
-    tone === "positive"
-      ? "border-emerald-200 bg-emerald-50 text-emerald-950"
-      : tone === "attention"
-        ? "border-amber-200 bg-amber-50 text-amber-950"
-        : "border-slate-200 bg-slate-50 text-slate-950";
 
-  return (
-    <div className={`rounded-md border p-4 ${toneClass}`}>
-      <p className="text-sm font-semibold">{label}</p>
-      <p className="mt-1 text-2xl font-semibold">{value}</p>
-      <p className="mt-1 text-sm">{detail}</p>
-    </div>
-  );
-}
 
-function CategoryTrendTable({
-  rows,
-}: {
-  rows: ReconciliationRunComparison["category_delta_summary"];
-}) {
-  return (
-    <div className="overflow-hidden rounded-md border border-slate-200">
-      <div className="border-b border-slate-200 bg-slate-50 px-3 py-2">
-        <h4 className="text-sm font-semibold text-slate-950">Category trend</h4>
-      </div>
-      <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-        <thead className="bg-white text-slate-600">
-          <tr>
-            <th className="px-3 py-2 font-semibold">Category</th>
-            <th className="px-3 py-2 font-semibold">Previous</th>
-            <th className="px-3 py-2 font-semibold">Current</th>
-            <th className="px-3 py-2 font-semibold">Delta</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-200 bg-white">
-          {rows.length === 0 ? (
-            <tr>
-              <td className="px-3 py-3 text-slate-600" colSpan={4}>
-                No category movement.
-              </td>
-            </tr>
-          ) : (
-            rows.map((row) => (
-              <tr key={row.exception_category}>
-                <td className="px-3 py-2 font-medium text-slate-950">
-                  {formatReason(row.exception_category)}
-                </td>
-                <td className="px-3 py-2 text-slate-700">{row.previous_count}</td>
-                <td className="px-3 py-2 text-slate-700">{row.current_count}</td>
-                <td className="px-3 py-2 text-slate-700">{formatSignedDelta(row.delta)}</td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function ReviewerWorkloadTable({
-  rows,
-}: {
-  rows: ReconciliationRunComparison["reviewer_workload_trends"];
-}) {
-  return (
-    <div className="overflow-hidden rounded-md border border-slate-200">
-      <div className="border-b border-slate-200 bg-slate-50 px-3 py-2">
-        <h4 className="text-sm font-semibold text-slate-950">Reviewer workload</h4>
-      </div>
-      <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-        <thead className="bg-white text-slate-600">
-          <tr>
-            <th className="px-3 py-2 font-semibold">Reviewer</th>
-            <th className="px-3 py-2 font-semibold">Previous</th>
-            <th className="px-3 py-2 font-semibold">Current</th>
-            <th className="px-3 py-2 font-semibold">Delta</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-200 bg-white">
-          {rows.length === 0 ? (
-            <tr>
-              <td className="px-3 py-3 text-slate-600" colSpan={4}>
-                No assigned reviewer workload yet.
-              </td>
-            </tr>
-          ) : (
-            rows.map((row) => (
-              <tr key={row.reviewer}>
-                <td className="px-3 py-2 font-medium text-slate-950">{row.reviewer}</td>
-                <td className="px-3 py-2 text-slate-700">{row.previous_count}</td>
-                <td className="px-3 py-2 text-slate-700">{row.current_count}</td>
-                <td className="px-3 py-2 text-slate-700">{formatSignedDelta(row.delta)}</td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 function MatchGroupsTable({ run }: { run: ReconciliationRunDetail }) {
   return (
@@ -1591,15 +1405,14 @@ function ExceptionsTable({
               <th className="px-3 py-2 font-semibold">VIN</th>
               <th className="px-3 py-2 font-semibold">Amount</th>
               <th className="px-3 py-2 font-semibold">Reason</th>
-              <th className="px-3 py-2 font-semibold">Carry-fwd</th>
-              <th className="px-3 py-2 font-semibold">Note</th>
+              <th className="px-3 py-2 font-semibold">BOA Notes / GL Notes</th>
               <th className="px-3 py-2 font-semibold">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 bg-white">
             {run.exceptions.length === 0 ? (
               <tr>
-                <td className="px-3 py-3 text-slate-600" colSpan={13}>
+                <td className="px-3 py-3 text-slate-600" colSpan={12}>
                   No unmatched items.
                 </td>
               </tr>
@@ -1664,25 +1477,38 @@ function ExceptionsTable({
                   <td className="px-3 py-2">{exception.transaction.vin ?? "n/a"}</td>
                   <td className="px-3 py-2">{formatAmount(exception.transaction)}</td>
                   <td className="px-3 py-2">{exception.reason}</td>
-                  <td className="px-3 py-2 text-xs">
-                    {renderCarryForward(exception.carry_forward)}
-                  </td>
                   <td className="min-w-56 px-3 py-2">
-                    <input
-                      className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
-                      defaultValue={exception.review_notes}
-                      disabled={!canModify || reviewUpdatingId === exception.exception_id}
-                      placeholder="Add review notes"
-                      type="text"
-                      onBlur={(event) => {
-                        if (event.currentTarget.value !== exception.review_notes) {
-                          onReviewUpdate(exception.exception_id, {
-                            review_notes: event.currentTarget.value,
-                          });
-                        }
-                      }}
-                    />
-                    {renderPriorNotes(exception.carry_forward)}
+                    {exception.source_type === "boa" ? (
+                      <input
+                        className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
+                        defaultValue={exception.boa_notes}
+                        disabled={!canModify || reviewUpdatingId === exception.exception_id}
+                        placeholder="BOA Notes"
+                        type="text"
+                        onBlur={(event) => {
+                          if (event.currentTarget.value !== exception.boa_notes) {
+                            onReviewUpdate(exception.exception_id, {
+                              boa_notes: event.currentTarget.value,
+                            });
+                          }
+                        }}
+                      />
+                    ) : (
+                      <input
+                        className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
+                        defaultValue={exception.gl_notes}
+                        disabled={!canModify || reviewUpdatingId === exception.exception_id}
+                        placeholder="GL Notes"
+                        type="text"
+                        onBlur={(event) => {
+                          if (event.currentTarget.value !== exception.gl_notes) {
+                            onReviewUpdate(exception.exception_id, {
+                              gl_notes: event.currentTarget.value,
+                            });
+                          }
+                        }}
+                      />
+                    )}
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-2">
@@ -1847,46 +1673,7 @@ function computeDisplayVin6(transaction: ReconciledTransaction): string {
   return "n/a";
 }
 
-function renderCarryForward(carry: ReconciliationExceptionCarryForward | undefined) {
-  if (!carry || !carry.carried_forward) {
-    return null;
-  }
-  const firstSeen = carry.first_seen_at ? carry.first_seen_at.slice(0, 10) : null;
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="inline-flex w-fit items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-900">
-        Carried forward ({carry.occurrence_count}x)
-      </span>
-      {firstSeen ? (
-        <span className="text-[11px] text-slate-500">
-          since {firstSeen}
-          {carry.first_seen_run_id ? ` (run #${carry.first_seen_run_id})` : ""}
-        </span>
-      ) : null}
-    </div>
-  );
-}
 
-function renderPriorNotes(carry: ReconciliationExceptionCarryForward | undefined) {
-  if (!carry || !carry.carried_forward) {
-    return null;
-  }
-  const parts: string[] = [];
-  if (carry.prior_boa_notes) {
-    parts.push(`BOA: ${carry.prior_boa_notes}`);
-  }
-  if (carry.prior_gl_notes) {
-    parts.push(`GL: ${carry.prior_gl_notes}`);
-  }
-  if (parts.length === 0) {
-    return null;
-  }
-  return (
-    <p className="mt-1 text-[11px] text-slate-500">
-      <span className="font-semibold text-slate-600">Prior notes:</span> {parts.join(" | ")}
-    </p>
-  );
-}
 
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString(undefined, {
@@ -1899,19 +1686,7 @@ function formatSignedDelta(value: number) {
   return value > 0 ? `+${value}` : `${value}`;
 }
 
-function formatNullablePercentDelta(value: number | null) {
-  if (value === null) {
-    return "n/a";
-  }
-  return `${formatSignedDelta(value)}%`;
-}
 
-function formatHours(value: number | null) {
-  if (value === null) {
-    return "n/a";
-  }
-  return `${value.toFixed(2)}h`;
-}
 
 function exceptionRowClassName(status: string, reason: string) {
   if (status === "resolved") {

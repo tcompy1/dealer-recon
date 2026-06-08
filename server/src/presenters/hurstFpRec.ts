@@ -310,12 +310,12 @@ function sectionHtml(section: HurstFpRecSection, kind: "schedule" | "statement" 
     "BOA Floored",
     "GL Notes",
     "BOA Notes",
-    "Carry-fwd",
-    "First Seen",
-    "Prior Notes",
     "Review Status",
   ];
-  const header = headers.map((label) => `<th>${escapeHtml(label)}</th>`).join("");
+  // Column widths (px): Descriptor, Stock#, VIN6, VIN, Amount, GL Floored, BOA Floored, GL Notes, BOA Notes, Review Status
+  const colWidths = [160, 70, 60, 130, 80, 90, 90, 160, 160, 100];
+  const colgroup = `<colgroup>${colWidths.map((w) => `<col style="width:${w}px;mso-width-source:userset;mso-width-alt:${Math.round(w * 36.576)}"/>`).join("")}</colgroup>`;
+  const header = headers.map((label, i) => `<th style="width:${colWidths[i]}px">${escapeHtml(label)}</th>`).join("");
 
   const body = section.rows.length === 0
     ? `<tr><td colspan="${headers.length}">No items</td></tr>`
@@ -334,9 +334,6 @@ function sectionHtml(section: HurstFpRecSection, kind: "schedule" | "statement" 
               <td class="date">${escapeHtml(row.boa_floored_date)}</td>
               <td>${escapeHtml(row.gl_notes)}</td>
               <td>${escapeHtml(row.boa_notes)}</td>
-              <td>${escapeHtml(formatCarryForward(row))}</td>
-              <td>${escapeHtml(formatFirstSeen(row))}</td>
-              <td>${escapeHtml(formatPriorNotes(row))}</td>
               <td>${escapeHtml(row.review_status)}</td>
             </tr>`,
         )
@@ -352,7 +349,7 @@ function sectionHtml(section: HurstFpRecSection, kind: "schedule" | "statement" 
   return [
     `<h2>${escapeHtml(section.title)}</h2>`,
     `<p class="caption">${escapeHtml(section.caption)}</p>`,
-    `<table><thead><tr>${header}</tr></thead><tbody>${body}${totalRow}</tbody></table>`,
+    `<table>${colgroup}<thead><tr>${header}</tr></thead><tbody>${body}${totalRow}</tbody></table>`,
   ].join("");
 }
 
@@ -390,31 +387,8 @@ function signOffHtml(workbook: HurstFpRecWorkbook): string {
   ].join("");
 }
 
-function formatCarryForward(row: HurstFpRecRow): string {
-  if (!row.carried_forward) {
-    return "";
-  }
-  return `Yes (${row.occurrence_count}x)`;
-}
 
-function formatFirstSeen(row: HurstFpRecRow): string {
-  if (!row.first_seen_at) {
-    return "";
-  }
-  const date = row.first_seen_at.slice(0, 10);
-  return row.first_seen_run_id ? `${date} (run #${row.first_seen_run_id})` : date;
-}
 
-function formatPriorNotes(row: HurstFpRecRow): string {
-  const parts: string[] = [];
-  if (row.prior_boa_notes) {
-    parts.push(`BOA: ${row.prior_boa_notes}`);
-  }
-  if (row.prior_gl_notes) {
-    parts.push(`GL: ${row.prior_gl_notes}`);
-  }
-  return parts.join(" | ");
-}
 
 function buildRow(exception: DetailException): HurstFpRecRow {
   const transaction = exception.transaction;

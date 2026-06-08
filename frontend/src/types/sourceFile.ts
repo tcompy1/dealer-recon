@@ -49,6 +49,13 @@ export type PreprocessingSummary = {
   preprocessed_at: string;
 };
 
+export type RemovedRow = {
+  source: "boa" | "dealertrack";
+  source_row_number: number | null;
+  removal_reason: string;
+  key_values: Record<string, string>;
+};
+
 export type UploadPreprocessingMetadata = {
   detected_format: string;
   detection_confidence: string;
@@ -57,6 +64,7 @@ export type UploadPreprocessingMetadata = {
   preprocessing_version: string | null;
   summary: PreprocessingSummary | null;
   diagnostics: PreprocessingDiagnostic[];
+  removed_rows: RemovedRow[];
   legacy_csv_path: boolean;
   unsupported_reason: string | null;
 };

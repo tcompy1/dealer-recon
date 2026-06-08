@@ -2,10 +2,17 @@ import { parse } from "csv-parse/sync";
 
 import { parseAmountToCents } from "../domain/money.js";
 import type { NewTransaction, SourceType, ValidationError } from "../domain/types.js";
+import type { PreprocessingDiagnostic } from "./preprocessing/types.js";
 
 type NormalizationResult = {
   transactions: NewTransaction[];
   validationErrors: ValidationError[];
+  /**
+   * Row-level diagnostics for removed/skipped rows. Mirrors the same
+   * PreprocessingDiagnostic shape used by the structured (HTML/XML)
+   * preprocessors so the upload handler can build removed_rows uniformly.
+   */
+  diagnostics: PreprocessingDiagnostic[];
 };
 
 export const TRANSACTION_NORMALIZER_VERSION = "transaction-normalizer-v1";
@@ -100,6 +107,7 @@ function normalizeHeaderTransactionsFromCsv(
     return {
       transactions: [],
       validationErrors: [{ row: null, field: "file", message: "CSV file is empty or missing a header row." }],
+      diagnostics: [],
     };
   }
 
@@ -117,7 +125,7 @@ function normalizeHeaderTransactionsFromCsv(
     }
   });
 
-  return { transactions, validationErrors };
+  return { transactions, validationErrors, diagnostics: [] };
 }
 
 function normalizeBoaTransactionsFromCsv(text: string, sourceType: SourceType): NormalizationResult {
@@ -126,12 +134,14 @@ function normalizeBoaTransactionsFromCsv(text: string, sourceType: SourceType): 
     return {
       transactions: [],
       validationErrors: [{ row: null, field: "file", message: "CSV file is empty." }],
+      diagnostics: [],
     };
   }
 
   const header = looksLikeHeader(rows[0]) ? rows[0] : null;
   const transactions: NewTransaction[] = [];
   const validationErrors: ValidationError[] = [];
+  const diagnostics: PreprocessingDiagnostic[] = [];
   let rowsScanned = 0;
   let rowsAccepted = 0;
   let rowsSkipped = 0;
@@ -142,12 +152,68 @@ function normalizeBoaTransactionsFromCsv(text: string, sourceType: SourceType): 
     const rowNumber = index + 1;
     if (header && rowNumber === 1) {
       rowsSkipped += 1;
+      diagnostics.push({
+        kind: "header_row_detected",
+        message: "Header row detected and excluded from reconciliation data.",
+        source_row_number: rowNumber,
+      });
       return;
     }
 
     const cleanedRow = row.map(cleanCell);
+
+    // Detect Straightline rows before general rejection.
+    const rowText = cleanedRow.join(" ").toLowerCase();
+    if (rowText.includes("straightline") || rowText.includes("straight line")) {
+      rowsSkipped += 1;
+      diagnostics.push({
+        kind: "straightline_row_removed",
+        message: "Straightline row excluded from reconciliation.",
+        source_row_number: rowNumber,
+        stock_number: findPatternValue(cleanedRow, stockPattern) ?? undefined,
+      });
+      return;
+    }
+
+    // Check for a zero-balance row specifically.
+    const amountForCheck = header
+      ? findBoaAmountCents(cleanedRow, header)
+      : findCurrencyAmountCents(cleanedRow);
+    if (amountForCheck === 0) {
+      rowsSkipped += 1;
+      diagnostics.push({
+        kind: "zero_balance_row_removed",
+        message: "Zero-balance row excluded from reconciliation.",
+        source_row_number: rowNumber,
+        stock_number: findPatternValue(cleanedRow, stockPattern) ?? undefined,
+      });
+      return;
+    }
+
     if (!isBoaTransactionRow(cleanedRow, header)) {
       rowsSkipped += 1;
+      // Banner rows (totals, subtotals, empty) — record for audit.
+      if (!cleanedRow.some(Boolean)) {
+        // empty row — no diagnostic needed, fully invisible
+      } else if (rowText.includes("total") || rowText.includes("subtotal")) {
+        diagnostics.push({
+          kind: "banner_row_removed",
+          message: "Total/subtotal row excluded from reconciliation.",
+          source_row_number: rowNumber,
+        });
+      } else if (amountForCheck === null) {
+        diagnostics.push({
+          kind: "missing_amount",
+          message: "Row excluded: no valid amount found.",
+          source_row_number: rowNumber,
+        });
+      } else {
+        diagnostics.push({
+          kind: "row_skipped_unknown_structure",
+          message: "Row excluded: does not match expected BOA transaction structure (no VIN or stock number).",
+          source_row_number: rowNumber,
+        });
+      }
       return;
     }
 
@@ -164,7 +230,7 @@ function normalizeBoaTransactionsFromCsv(text: string, sourceType: SourceType): 
   });
 
   printParserDebug("BOA", rowsScanned, rowsAccepted, rowsSkipped, sampleAcceptedRows);
-  return { transactions, validationErrors };
+  return { transactions, validationErrors, diagnostics };
 }
 
 function normalizeDealertrackTransactionsFromCsv(
@@ -174,6 +240,7 @@ function normalizeDealertrackTransactionsFromCsv(
   const rows = parseCsv(text);
   const header = looksLikeDealertrackHeader(rows[0] ?? []) ? rows[0] : null;
   const transactions: NewTransaction[] = [];
+  const diagnostics: PreprocessingDiagnostic[] = [];
   let rowsScanned = 0;
   let rowsAccepted = 0;
   let rowsSkipped = 0;
@@ -181,17 +248,51 @@ function normalizeDealertrackTransactionsFromCsv(
 
   rows.forEach((row, index) => {
     rowsScanned += 1;
+    const rowNumber = index + 1;
     if (header && index === 0) {
       rowsSkipped += 1;
+      diagnostics.push({
+        kind: "header_row_detected",
+        message: "Header row detected and excluded from reconciliation data.",
+        source_row_number: rowNumber,
+      });
       return;
     }
 
     const cleanedRow = row.map(cleanCell);
+
+    // Detect zero-amount rows for the header-based path before calling normalizer.
+    if (header) {
+      const amountForCheck = findDealertrackAccountAmountCents(cleanedRow, header);
+      if (amountForCheck === 0) {
+        rowsSkipped += 1;
+        const control = cleanCell(cleanedRow[0]);
+        diagnostics.push({
+          kind: "zero_balance_row_removed",
+          message: "Zero-amount Dealertrack row excluded from reconciliation.",
+          source_row_number: rowNumber,
+          stock_number: control || undefined,
+        });
+        return;
+      }
+    }
+
     const normalized = header
       ? normalizeDealertrackHeaderRow(cleanedRow, header, sourceType)
       : normalizeDealertrackPositionalRow(cleanedRow, sourceType);
     if (!normalized) {
       rowsSkipped += 1;
+      const control = cleanCell(cleanedRow[0]);
+      if (!cleanedRow.some(Boolean)) {
+        // empty row — silent
+      } else {
+        diagnostics.push({
+          kind: "row_skipped_unknown_structure",
+          message: "Row excluded: does not match expected Dealertrack transaction structure.",
+          source_row_number: rowNumber,
+          stock_number: control || undefined,
+        });
+      }
       return;
     }
 
@@ -204,7 +305,7 @@ function normalizeDealertrackTransactionsFromCsv(
   });
 
   printParserDebug("Dealertrack", rowsScanned, rowsAccepted, rowsSkipped, sampleAcceptedRows);
-  return { transactions, validationErrors: [] };
+  return { transactions, validationErrors: [], diagnostics };
 }
 
 function normalizeDealertrackPositionalRow(
