@@ -387,31 +387,8 @@ function signOffHtml(workbook: HurstFpRecWorkbook): string {
   ].join("");
 }
 
-function formatCarryForward(row: HurstFpRecRow): string {
-  if (!row.carried_forward) {
-    return "";
-  }
-  return `Yes (${row.occurrence_count}x)`;
-}
 
-function formatFirstSeen(row: HurstFpRecRow): string {
-  if (!row.first_seen_at) {
-    return "";
-  }
-  const date = row.first_seen_at.slice(0, 10);
-  return row.first_seen_run_id ? `${date} (run #${row.first_seen_run_id})` : date;
-}
 
-function formatPriorNotes(row: HurstFpRecRow): string {
-  const parts: string[] = [];
-  if (row.prior_boa_notes) {
-    parts.push(`BOA: ${row.prior_boa_notes}`);
-  }
-  if (row.prior_gl_notes) {
-    parts.push(`GL: ${row.prior_gl_notes}`);
-  }
-  return parts.join(" | ");
-}
 
 function buildRow(exception: DetailException): HurstFpRecRow {
   const transaction = exception.transaction;

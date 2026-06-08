@@ -13,7 +13,6 @@ import {
   getHurstFpRecExportUrl,
   getReconciliationExceptionsCsvUrl,
   getReconciliationRun,
-  getReconciliationRunAnalytics,
   listReconciliationRuns,
   reconcileSourceFiles,
   replayReconciliationRun,
@@ -34,7 +33,6 @@ import type {
   ReconciliationExceptionStatus,
   ReconciliationExceptionReviewUpdate,
   ReconciliationExceptionReviewStatus,
-  ReconciliationRunComparison,
   ReconciliationRunFilters,
   ReconciliationRunDetail,
   ReconciliationRunListItem,
@@ -92,7 +90,6 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
   const [operationalMetrics, setOperationalMetrics] = useState<OperationalMetrics | null>(null);
   const [activeRun, setActiveRun] = useState<ReconciliationRunDetail | null>(null);
   const [activeRunDiagnostics, setActiveRunDiagnostics] = useState<VinPresenceDiagnostics | null>(null);
-  const [activeRunAnalytics, setActiveRunAnalytics] = useState<ReconciliationRunComparison | null>(null);
   const [activeRunReplay, setActiveRunReplay] = useState<ReconciliationReplayResponse | null>(null);
   const [isReconciling, setIsReconciling] = useState(false);
   const [isReplaying, setIsReplaying] = useState(false);
@@ -197,10 +194,8 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         dealershipStoreId: selectedStoreId,
       });
       const detail = await getReconciliationRun(result.reconciliation_run_id, exceptionFilters);
-      const analytics = await getReconciliationRunAnalytics(result.reconciliation_run_id);
       setActiveRun(detail);
       setActiveRunDiagnostics(result.vin_presence_diagnostics);
-      setActiveRunAnalytics(analytics);
       setActiveRunReplay(null);
       setIsReconciliationStale(false);
       setReconciliationRuns(await listReconciliationRuns(selectedStoreId));
@@ -217,7 +212,6 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     setSelectedStoreId(storeId);
     setActiveRun(null);
     setActiveRunDiagnostics(null);
-    setActiveRunAnalytics(null);
     setActiveRunReplay(null);
     setBoaUpload(initialUploadSlot);
     setDealertrackUpload(initialUploadSlot);
@@ -265,13 +259,9 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     setWorkflowError(null);
 
     try {
-      const [detail, analytics] = await Promise.all([
-        getReconciliationRun(reconciliationRunId, exceptionFilters),
-        getReconciliationRunAnalytics(reconciliationRunId),
-      ]);
+      const detail = await getReconciliationRun(reconciliationRunId, exceptionFilters);
       setActiveRun(detail);
       setActiveRunDiagnostics(null);
-      setActiveRunAnalytics(analytics);
       setActiveRunReplay(null);
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Run detail could not be loaded.");
@@ -310,12 +300,8 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         exceptionId,
         update,
       });
-      const [detail, analytics] = await Promise.all([
-        getReconciliationRun(activeRun.reconciliation_run_id, exceptionFilters),
-        getReconciliationRunAnalytics(activeRun.reconciliation_run_id),
-      ]);
+      const detail = await getReconciliationRun(activeRun.reconciliation_run_id, exceptionFilters);
       setActiveRun(detail);
-      setActiveRunAnalytics(analytics);
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Exception review could not be saved.");
     } finally {
@@ -490,7 +476,6 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       {workflowError ? <ErrorBanner message={workflowError} /> : null}
 
       <ResultsSection
-        analytics={activeRunAnalytics}
         diagnostics={activeRunDiagnostics}
         filters={exceptionFilters}
         replay={activeRunReplay}
@@ -932,7 +917,6 @@ function RecentUploads({ sourceFiles }: { sourceFiles: SourceFileSummary[] }) {
 }
 
 function ResultsSection({
-  analytics,
   diagnostics,
   filters,
   replay,
@@ -945,7 +929,6 @@ function ResultsSection({
   reviewUpdatingId,
   canModify,
 }: {
-  analytics: ReconciliationRunComparison | null;
   diagnostics: VinPresenceDiagnostics | null;
   filters: ReconciliationRunFilters;
   replay: ReconciliationReplayResponse | null;
@@ -1703,19 +1686,7 @@ function formatSignedDelta(value: number) {
   return value > 0 ? `+${value}` : `${value}`;
 }
 
-function formatNullablePercentDelta(value: number | null) {
-  if (value === null) {
-    return "n/a";
-  }
-  return `${formatSignedDelta(value)}%`;
-}
 
-function formatHours(value: number | null) {
-  if (value === null) {
-    return "n/a";
-  }
-  return `${value.toFixed(2)}h`;
-}
 
 function exceptionRowClassName(status: string, reason: string) {
   if (status === "resolved") {
