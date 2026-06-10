@@ -4,12 +4,14 @@
  * Mirrors the Hiley office-manager Excel preprocessing pass for Dealertrack
  * 2100 floorplan schedules:
  *
- *   - prefer the `2100` four-digit account column as the canonical amount.
- *     If 2100 exists but is zero, fall back to the next non-zero four-digit
- *     account column and record the fall-through in diagnostics.
+ *   - use the `2100` four-digit account column as the canonical GL amount.
+ *     For Hiley Hurst, account/column 2110 is removed from the working output
+ *     and is never used as a fallback amount.
+ *   - remove Straightline rows
  *   - extract VIN from the Description, compute VIN6, normalize stock/control
  *   - surface dirty / missing / untrusted VIN rows as manual_enrichment_required
- *   - sort retained rows by 2100 amount descending, then VIN6 ascending
+ *   - sort retained rows by largest 2100 balance, then VIN6 ascending
+ *   - retain worksheet helper columns matching the manual DT workflow
  *
  * As with BOA preprocessing, every transformation is captured in the
  * per-row lineage and the file-level diagnostics list.
@@ -33,11 +35,20 @@ import {
 const VIN_FULL_RE = /\b(?=[A-HJ-NPR-Z0-9]{17}\b)(?=[A-HJ-NPR-Z0-9]*[A-Z])(?=[A-HJ-NPR-Z0-9]*\d)[A-HJ-NPR-Z0-9]{17}\b/i;
 const STOCK_RE = /\bM\d{3,6}\b/i;
 const CANONICAL_2100 = "2100";
+const REMOVED_2110 = "2110";
 const FOUR_DIGIT_RE = /^\d{4}$/;
+const STRAIGHTLINE_TOKENS = ["straightline", "straight line"];
 
 const CONTROL_ALIASES = ["control", "control#", "controlnumber", "stock", "stocknumber", "stockcontrol"];
 const DESCRIPTION_ALIASES = ["description", "memo", "details", "vehicle"];
 const VIN_ALIASES = ["vin", "vehicleidentificationnumber", "serial"];
+
+type DealertrackAmountInfo = {
+  amountCents: number;
+  source: string;
+  account2100Cents: number;
+  account2110Cents: number;
+};
 
 type DealertrackWorkingRow = {
   sourceRowNumber: number;
@@ -45,6 +56,8 @@ type DealertrackWorkingRow = {
   rawSnapshot: Record<string, string>;
   amountCents: number;
   amountSource: string;
+  account2100Cents: number;
+  account2110Cents: number;
   vin: string | null;
   vin6: string | null;
   vinProvenance: VinProvenance;
@@ -58,6 +71,7 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
   const validationErrors: ValidationError[] = [];
   let rowsScanned = 0;
   let rowsRemovedZero = 0;
+  let rowsRemovedStraightline = 0;
   let rowsSkippedUnknown = 0;
   let rowsRequiringEnrichment = 0;
 
@@ -74,6 +88,7 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
   const headerLookup = header ? buildHeaderLookup(header) : null;
   const fourDigitColumns = header ? findFourDigitColumns(header) : [];
   const has2100 = fourDigitColumns.some(({ name }) => name === CANONICAL_2100);
+  const has2110 = fourDigitColumns.some(({ name }) => name === REMOVED_2110);
 
   if (header) {
     diagnostics.push({
@@ -82,7 +97,11 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
         ? "Header row detected; 2100 account column present."
         : "Header row detected; no 2100 column present.",
       source_row_number: 1,
-      details: { has_2100: has2100, four_digit_columns: fourDigitColumns.length },
+      details: {
+        has_2100: has2100,
+        removed_2110: has2110,
+        four_digit_columns: fourDigitColumns.length,
+      },
     });
   }
 
@@ -104,6 +123,17 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
 
     const rawSnapshot = buildRawSnapshot(cleaned, header);
     const lineage: RowLineageEntry[] = [{ stage: "raw_parsed" }];
+    const rowText = cleaned.join(" ").toLowerCase();
+
+    if (STRAIGHTLINE_TOKENS.some((token) => rowText.includes(token))) {
+      rowsRemovedStraightline += 1;
+      diagnostics.push({
+        kind: "straightline_row_removed",
+        message: "Straightline Dealertrack row removed.",
+        source_row_number: sourceRowNumber,
+      });
+      return;
+    }
 
     const control = headerLookup
       ? findCellByAliases(cleaned, headerLookup, CONTROL_ALIASES)
@@ -147,14 +177,6 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
       return;
     }
     lineage.push({ stage: "amount_resolved", detail: amountInfo.source });
-    if (amountInfo.source !== CANONICAL_2100 && has2100) {
-      diagnostics.push({
-        kind: "ambiguous_amount_column",
-        message: `2100 column was zero/blank — used ${amountInfo.source} column instead.`,
-        source_row_number: sourceRowNumber,
-        stock_number: stockNumber,
-      });
-    }
 
     const description = headerLookup
       ? findCellByAliases(cleaned, headerLookup, DESCRIPTION_ALIASES)
@@ -230,6 +252,8 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
       rawSnapshot,
       amountCents: amountInfo.amountCents,
       amountSource: amountInfo.source,
+      account2100Cents: amountInfo.account2100Cents,
+      account2110Cents: amountInfo.account2110Cents,
       vin,
       vin6,
       vinProvenance,
@@ -265,10 +289,11 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
     }
   }
 
-  // deterministic sort: amount desc, vin6 asc
+  // deterministic sort: largest balance first, vin6 asc
   acceptedRows.sort((a, b) => {
-    if (a.amountCents !== b.amountCents) {
-      return b.amountCents - a.amountCents;
+    const magnitudeDelta = Math.abs(b.amountCents) - Math.abs(a.amountCents);
+    if (magnitudeDelta !== 0) {
+      return magnitudeDelta;
     }
     const va = a.vin6 ?? "";
     const vb = b.vin6 ?? "";
@@ -278,15 +303,19 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
     return a.sourceRowNumber - b.sourceRowNumber;
   });
   for (const row of acceptedRows) {
-    row.lineage.push({ stage: "sorted", detail: "amount_desc_then_vin6_asc" });
+    row.lineage.push({ stage: "sorted", detail: "largest_2100_then_vin6_asc" });
   }
   diagnostics.push({
     kind: "sort_applied",
-    message: "Rows sorted descending by 2100 amount, then VIN6 ascending.",
+    message: "Rows sorted largest-to-smallest by 2100 balance, then VIN6 ascending.",
     source_row_number: null,
   });
 
-  const transactions: NewTransaction[] = acceptedRows.map((row) => {
+  const transactions: NewTransaction[] = acceptedRows.map((row, index) => {
+    row.lineage.push({
+      stage: "working_columns_pruned",
+      detail: "hiley_dealertrack_2100_without_2110",
+    });
     const lineage: RawDataLineage = {
       source_kind: "dealertrack",
       preprocessing_version: PREPROCESSING_VERSION,
@@ -311,7 +340,7 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
       stock_number: row.stockNumber,
       vin: row.vin,
       raw_data: {
-        ...row.rawSnapshot,
+        ...buildWorkingOutputSnapshot(row, index + 2),
         [LINEAGE_RAW_DATA_KEY]: lineage,
       },
     };
@@ -325,7 +354,7 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
     rows_scanned: rowsScanned,
     rows_accepted: transactions.length,
     rows_removed_zero_balance: rowsRemovedZero,
-    rows_removed_straightline: 0,
+    rows_removed_straightline: rowsRemovedStraightline,
     rows_removed_banner: 0,
     rows_skipped_unknown: rowsSkippedUnknown,
     rows_requiring_manual_enrichment: rowsRequiringEnrichment,
@@ -381,42 +410,92 @@ function findCellByAliases(
 
 function findFourDigitColumns(header: string[]): Array<{ name: string; index: number }> {
   return header
-    .map((name, index) => ({ name: normalizeHeaderName(name), index }))
+    .map((name, index) => ({ name: normalizeAccountHeaderName(name), index }))
     .filter(({ name }) => FOUR_DIGIT_RE.test(name));
+}
+
+function normalizeAccountHeaderName(value: string): string {
+  const numeric = cleanCell(value).replace(/[$,\s]/g, "");
+  if (/^\d+(?:\.0+)?$/.test(numeric)) {
+    return numeric.replace(/\.0+$/, "");
+  }
+  return normalizeHeaderName(value);
 }
 
 function resolveDealertrackAmount(
   cells: string[],
   header: string[] | null,
   fourDigitColumns: Array<{ name: string; index: number }>,
-): { amountCents: number; source: string } | null {
+): DealertrackAmountInfo | null {
   if (header && fourDigitColumns.length > 0) {
-    const sorted = [...fourDigitColumns].sort((a, b) => {
-      if (a.name === CANONICAL_2100) return -1;
-      if (b.name === CANONICAL_2100) return 1;
-      return a.name.localeCompare(b.name);
-    });
-    for (const { name, index } of sorted) {
-      const cents = parseAmountToCents(cells[index]);
-      if (cents !== null && cents !== 0) {
-        return { amountCents: cents, source: name };
-      }
+    const account2100Index = fourDigitColumns.find(({ name }) => name === CANONICAL_2100)?.index;
+    if (account2100Index === undefined) {
+      return null;
     }
-    for (const { name, index } of sorted) {
-      const cents = parseAmountToCents(cells[index]);
-      if (cents !== null) {
-        return { amountCents: cents, source: name };
-      }
+    const account2100Cents = parseRequiredAccountAmount(cells[account2100Index]);
+    if (account2100Cents === null) {
+      return null;
     }
-    return null;
+    const account2110Index = fourDigitColumns.find(({ name }) => name === REMOVED_2110)?.index;
+    const account2110Cents =
+      account2110Index === undefined ? 0 : parseOptionalAccountAmount(cells[account2110Index]);
+    return {
+      amountCents: account2100Cents,
+      source: CANONICAL_2100,
+      account2100Cents,
+      account2110Cents,
+    };
   }
 
   // positional fallback: legacy DT CSV with no header
   const amountCents = parseAmountToCents(cells[2]);
   if (amountCents !== null) {
-    return { amountCents, source: "positional_col_3" };
+    return {
+      amountCents,
+      source: "positional_col_3",
+      account2100Cents: amountCents,
+      account2110Cents: parseOptionalAccountAmount(cells[3]),
+    };
   }
   return null;
+}
+
+function parseRequiredAccountAmount(value: string | undefined): number | null {
+  const cleaned = cleanCell(value);
+  if (!cleaned) {
+    return 0;
+  }
+  return parseAmountToCents(cleaned);
+}
+
+function parseOptionalAccountAmount(value: string | undefined): number {
+  const cents = parseAmountToCents(cleanCell(value));
+  return cents ?? 0;
+}
+
+function buildWorkingOutputSnapshot(
+  row: DealertrackWorkingRow,
+  workingRowNumber: number,
+): Record<string, string> {
+  return {
+    Control: row.stockNumber,
+    "2100": formatAccountingCents(row.account2100Cents),
+    "DT total helper": `=D${workingRowNumber} + E${workingRowNumber}`,
+    "VIN6 description variance/helper": `=C${workingRowNumber} - F${workingRowNumber}`,
+    VIN6: row.vin6 ?? "",
+    Description: row.description ?? "",
+  };
+}
+
+function formatAccountingCents(amountCents: number): string {
+  const absCents = Math.abs(amountCents);
+  const dollars = Math.floor(absCents / 100);
+  const cents = String(absCents % 100).padStart(2, "0");
+  const dollarsWithCommas = String(dollars).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  if (amountCents < 0) {
+    return `(${dollarsWithCommas}.${cents})`;
+  }
+  return `${dollarsWithCommas}.${cents}`;
 }
 
 function findPatternValue(values: string[], pattern: RegExp): string | null {

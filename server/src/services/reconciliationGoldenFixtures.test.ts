@@ -149,7 +149,7 @@ function buildSourcesForMonth(month: string): {
 }
 
 // Map engine output into the clerk's spec buckets. The engine routes a VIN6
-// match with a differing amount to Needs Review (needs_review_vin6_only) rather
+// match with a differing amount to manual review (needs_review_vin6_only) rather
 // than auto-confirming - that is the "amount mismatch pair" treatment: both
 // sides survive as independent exceptions and are never merged onto one row.
 function summarize(result: ReconciliationResponse): {

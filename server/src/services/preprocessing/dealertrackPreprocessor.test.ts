@@ -22,14 +22,36 @@ describe("preprocessDealertrack", () => {
     ).toBe("2100");
   });
 
-  test("falls back to a sibling 4-digit column when 2100 is zero/empty and records diagnostic", () => {
+  test("does not fall back to sibling account columns when 2100 is zero", () => {
     const parsed = table(["Control", "Description", "2100", "9999"], [
       ["M20000", "FLOORPLAN ADV 1FAKEVN0000A0002X", "0.00", "-12345.00"],
     ]);
     const result = preprocessDealertrack(parsed);
+    expect(result.transactions).toHaveLength(0);
+    expect(result.summary.rows_removed_zero_balance).toBe(1);
+    expect(result.diagnostics.some((d) => d.kind === "ambiguous_amount_column")).toBe(false);
+  });
+
+  test("removes 2110 from the working output and keeps 2100 as accounting-formatted basis", () => {
+    const parsed = table(["Control", "Description", "2100", "2110"], [
+      ["M20001", "FLOORPLAN ADV 1FAKEVN0000A0002X", "-12345.00", "-999.00"],
+    ]);
+    const result = preprocessDealertrack(parsed);
+
     expect(result.transactions).toHaveLength(1);
     expect(result.transactions[0].amount_cents).toBe(-1_234_500);
-    expect(result.diagnostics.some((d) => d.kind === "ambiguous_amount_column")).toBe(true);
+    expect(result.transactions[0].raw_data).toMatchObject({
+      Control: "M20001",
+      "2100": "(12,345.00)",
+      "DT total helper": "=D2 + E2",
+      "VIN6 description variance/helper": "=C2 - F2",
+      VIN6: "A0002X",
+    });
+    expect(result.transactions[0].raw_data).not.toHaveProperty("2110");
+    const lineage = result.transactions[0].raw_data[LINEAGE_RAW_DATA_KEY] as RawDataLineage;
+    expect(
+      lineage.transformations.some((stage) => stage.stage === "working_columns_pruned"),
+    ).toBe(true);
   });
 
   test("removes zero-amount rows with diagnostic", () => {
@@ -39,6 +61,19 @@ describe("preprocessDealertrack", () => {
     const result = preprocessDealertrack(parsed);
     expect(result.transactions).toHaveLength(0);
     expect(result.summary.rows_removed_zero_balance).toBe(1);
+  });
+
+  test("removes Straightline rows with diagnostic", () => {
+    const parsed = table(["Control", "Description", "2100", "2110"], [
+      ["M30001", "Straightline depreciation 1FAKEVN0000A0001X", "-25000.00", "0.00"],
+      ["M30002", "FLOORPLAN ADV 1FAKEVN0000A0002X", "-26000.00", "0.00"],
+    ]);
+    const result = preprocessDealertrack(parsed);
+
+    expect(result.transactions).toHaveLength(1);
+    expect(result.transactions[0].stock_number).toBe("M30002");
+    expect(result.summary.rows_removed_straightline).toBe(1);
+    expect(result.diagnostics.some((d) => d.kind === "straightline_row_removed")).toBe(true);
   });
 
   test("treats whitespace-padded VINs as trusted when matching is anchored", () => {
@@ -60,7 +95,7 @@ describe("preprocessDealertrack", () => {
     expect(result.diagnostics.some((d) => d.kind === "manual_enrichment_required")).toBe(true);
   });
 
-  test("sorts retained rows by amount descending then VIN6 ascending", () => {
+  test("sorts retained rows by largest amount then VIN6 ascending", () => {
     const parsed = table(["Control", "Description", "2100"], [
       ["M001", "FLOORPLAN 1FAKEVN0000A00ZZZ", "-10000.00"],
       ["M002", "FLOORPLAN 1FAKEVN0000A00AAA", "-30000.00"],
@@ -68,14 +103,14 @@ describe("preprocessDealertrack", () => {
     ]);
     const result = preprocessDealertrack(parsed);
     expect(result.transactions.map((t) => t.amount_cents)).toEqual([
-      -1_000_000,
-      -1_000_000,
       -3_000_000,
+      -1_000_000,
+      -1_000_000,
     ]);
     expect(result.transactions.map((t) => t.vin)).toEqual([
+      "1FAKEVN0000A00AAA",
       "1FAKEVN0000A00BBB",
       "1FAKEVN0000A00ZZZ",
-      "1FAKEVN0000A00AAA",
     ]);
   });
 

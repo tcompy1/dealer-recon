@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type {
   PreprocessingDiagnostic,
@@ -35,6 +35,8 @@ export function PreprocessingDiagnosticsPanel({
   sourceType = null,
   onVinEnriched,
 }: Props) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
   if (!preprocessing) {
     return null;
   }
@@ -70,36 +72,57 @@ export function PreprocessingDiagnosticsPanel({
   const canRepairVin = sourceType === "dealertrack" && typeof sourceFileId === "number";
 
   return (
-    <section className="grid gap-3 rounded-md border border-cyan-200 bg-cyan-50 p-4 text-sm text-cyan-950">
-      <header className="flex flex-col gap-1">
-        <h4 className="text-base font-semibold text-slate-950">
-          What the system did with this {sourceLabel} file
-        </h4>
-        <p className="text-sm text-slate-700">
-          Plain-language summary of preprocessing. Use this to confirm the system handled the file
-          the way you would have.
-        </p>
-        <FormatLine preprocessing={preprocessing} />
-      </header>
-
-      <HeadlineMetrics metrics={metrics} />
-
-      {amountColumnNote ? (
-        <div className="rounded-md border border-cyan-300 bg-white px-3 py-2 text-sm font-medium text-slate-800">
-          {amountColumnNote}
+    <section className="grid gap-3 rounded-md border border-cyan-200 bg-cyan-50 text-sm text-cyan-950">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex w-full items-center justify-between gap-3 p-4 text-left transition hover:bg-cyan-100/50"
+        type="button"
+      >
+        <div className="flex flex-col gap-1">
+          <h4 className="text-base font-semibold text-slate-950">
+            What the system did with this {sourceLabel} file
+          </h4>
+          <p className="text-sm text-slate-700">
+            {isExpanded ? "Click to collapse details" : "Click to expand preprocessing details"}
+          </p>
         </div>
-      ) : null}
+        <svg
+          className={`h-5 w-5 flex-shrink-0 text-slate-600 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
 
-      <div className="grid gap-3">
-        {groups.map((group) => (
-          <DiagnosticGroupCard
-            group={group}
-            key={group.id}
-            repairSourceFileId={canRepairVin ? sourceFileId : null}
-            onVinEnriched={onVinEnriched}
-          />
-        ))}
-      </div>
+      {isExpanded ? (
+        <div className="grid gap-3 px-4 pb-4">
+          <FormatLine preprocessing={preprocessing} />
+          <HeadlineMetrics metrics={metrics} />
+
+          {amountColumnNote ? (
+            <div className="rounded-md border border-cyan-300 bg-white px-3 py-2 text-sm font-medium text-slate-800">
+              {amountColumnNote}
+            </div>
+          ) : null}
+
+          <div className="grid gap-3">
+            {groups.map((group) => (
+              <DiagnosticGroupCard
+                group={group}
+                key={group.id}
+                repairSourceFileId={canRepairVin ? sourceFileId : null}
+                onVinEnriched={onVinEnriched}
+              />
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="px-4 pb-4">
+          <HeadlineMetrics metrics={metrics} />
+        </div>
+      )}
     </section>
   );
 }

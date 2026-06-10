@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import request from "supertest";
@@ -375,7 +376,7 @@ describe("app", () => {
     const response = await request(app).get("/ready");
 
     expect(response.status).toBe(503);
-    expect(response.body).toEqual({ status: "not_ready" });
+    expect(response.body.error.message).toBe("Service not ready.");
     expect(response.header["x-request-id"]).toEqual(expect.any(String));
   });
 
@@ -538,9 +539,9 @@ describe("app", () => {
       .attach("file", xlsxBuffer, "boa.xls");
 
     expect(response.status).toBe(422);
-    expect(typeof response.body.detail).toBe("string");
-    expect(response.body.detail.length).toBeGreaterThan(0);
-    expect(response.body.preprocessing).toMatchObject({
+    expect(typeof response.body.error.message).toBe("string");
+    expect(response.body.error.message.length).toBeGreaterThan(0);
+    expect(response.body.error.details.preprocessing).toMatchObject({
       detected_format: "xlsx_ooxml",
       detection_confidence: expect.any(String),
       detection_reason: expect.any(String),
@@ -550,7 +551,7 @@ describe("app", () => {
       diagnostics: expect.any(Array),
       summary: null,
     });
-    expect(response.body.preprocessing.unsupported_reason).toBe(response.body.detail);
+    expect(response.body.error.details.preprocessing.unsupported_reason).toBe(response.body.error.message);
   });
 
   test("POST /upload returns 422 with preprocessing metadata for mismatched source/file route", async () => {
@@ -566,7 +567,7 @@ describe("app", () => {
       .attach("file", buffer, "dealertrack.xml");
 
     expect(response.status).toBe(422);
-    expect(response.body.preprocessing).toMatchObject({
+    expect(response.body.error.details.preprocessing).toMatchObject({
       detected_format: "xml_spreadsheet",
       detection_confidence: expect.any(String),
       detection_reason: expect.any(String),
@@ -576,7 +577,7 @@ describe("app", () => {
       diagnostics: expect.any(Array),
       summary: null,
     });
-    expect(response.body.preprocessing.unsupported_reason).toBe(response.body.detail);
+    expect(response.body.error.details.preprocessing.unsupported_reason).toBe(response.body.error.message);
   });
 
   test("POST /upload returns 422 with preprocessing metadata for unknown/malformed parser route", async () => {
@@ -596,7 +597,7 @@ describe("app", () => {
       .attach("file", opaqueBytes, "boa.xls");
 
     expect(response.status).toBe(422);
-    expect(response.body.preprocessing).toMatchObject({
+    expect(response.body.error.details.preprocessing).toMatchObject({
       detected_format: "unknown",
       parser_route: "unsupported",
       legacy_csv_path: false,
@@ -604,7 +605,7 @@ describe("app", () => {
       diagnostics: expect.any(Array),
       summary: null,
     });
-    expect(response.body.preprocessing.unsupported_reason).toBe(response.body.detail);
+    expect(response.body.error.details.preprocessing.unsupported_reason).toBe(response.body.error.message);
   });
 
   test("POST /upload rejects invalid source_type", async () => {
@@ -626,7 +627,7 @@ describe("app", () => {
     expect(response.status).toBe(422);
   });
 
-  test("POST /upload rejects duplicate file contents for the same source type", async () => {
+  test("POST /upload reuses duplicate file contents for the same source type", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const csv = [
       "transaction_date,post_date,amount,reference_number,description,account,stock_number,vin",
@@ -639,11 +640,91 @@ describe("app", () => {
       .field("source_type", "bank")
       .attach("file", Buffer.from(csv), "bank-copy.csv");
 
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
       source_file_id: firstUpload.source_file_id,
+      source_type: "bank",
       filename: "bank.csv",
+      transaction_count: 1,
+      validation_errors: [],
+      reused_existing_file: true,
+      existing_file: {
+        source_file_id: firstUpload.source_file_id,
+        filename: "bank.csv",
+        source_type: "bank",
+        created_at: expect.any(String),
+      },
     });
+  });
+
+  test("POST /upload reprocesses unhealthy duplicate Dealertrack source files", async () => {
+    const repository = new MemoryTransactionRepository();
+    const app = createApp(repository);
+    const dealertrackFixture = await loadFixture(
+      "server/src/services/__fixtures__/DT HURST APRIL (1).csv",
+    );
+    const fileHash = createHash("sha256").update(dealertrackFixture).digest("hex");
+    const badImport = await repository.createSourceFileWithTransactions(
+      1,
+      {
+        source_type: "dealertrack",
+        dealership_store_id: 1,
+        original_filename: "DT HURST APRIL (1).csv",
+        stored_filename: null,
+        file_hash: fileHash,
+        row_count: 0,
+        validation_error_count: 201,
+      },
+      [],
+    );
+
+    const uploadResponse = await request(app)
+      .post("/upload")
+      .field("source_type", "dealertrack")
+      .field("store_id", "1")
+      .attach("file", dealertrackFixture, "DT HURST APRIL (1).csv");
+
+    expect(uploadResponse.status).toBe(200);
+    expect(uploadResponse.body).toMatchObject({
+      source_file_id: badImport.sourceFile.id,
+      reused_existing_file: false,
+      transaction_count: expect.any(Number),
+      stored_row_count: expect.any(Number),
+      stored_validation_error_count: 0,
+      source_file_health: expect.objectContaining({
+        status: "reprocessed",
+        healthy: true,
+        reasons: [],
+      }),
+    });
+    expect(uploadResponse.body.transaction_count).toBeGreaterThan(0);
+    expect(uploadResponse.body.stored_row_count).toBeGreaterThan(0);
+
+    const repairedTransactions = await repository.listBySourceFile(1, badImport.sourceFile.id);
+    expect(repairedTransactions.length).toBeGreaterThan(0);
+
+    const boaUpload = await uploadCsv(
+      app,
+      "boa",
+      boaUploadCsv("M21324", "JM1BPAAL7T1869826", "$25,895.00", "M21324"),
+      "boa-april-match.csv",
+      1,
+    );
+    const reconciliation = await request(app)
+      .post("/reconcile")
+      .send({
+        boa_source_file_id: boaUpload.source_file_id,
+        dealertrack_source_file_id: badImport.sourceFile.id,
+        dealership_store_id: 1,
+      });
+
+    expect(reconciliation.status).toBe(200);
+    const snapshot = await repository.getReconciliationRunSnapshot(
+      1,
+      reconciliation.body.reconciliation_run_id,
+    );
+    const dealertrackInput = snapshot?.inputs.find((input) => input.side === "dealertrack");
+    expect(dealertrackInput?.transactions.length).toBeGreaterThan(0);
   });
 
   test("uploads are scoped by dealership and attach dealership_id", async () => {
@@ -908,10 +989,10 @@ describe("app", () => {
     );
   });
 
-  test("duplicate uploads create ingestion failure and operational warning events", async () => {
+  test("duplicate uploads reuse the existing source file and create a warning event", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const csv = boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101");
-    await uploadCsv(app, "boa", csv, "duplicate-boa.csv", 1);
+    const firstUpload = await uploadCsv(app, "boa", csv, "duplicate-boa.csv", 1);
 
     const duplicateResponse = await request(app)
       .post("/upload")
@@ -919,11 +1000,28 @@ describe("app", () => {
       .field("store_id", "1")
       .attach("file", Buffer.from(csv), "duplicate-boa-again.csv");
 
-    expect(duplicateResponse.status).toBe(409);
+    expect(duplicateResponse.status).toBe(200);
+    expect(duplicateResponse.body).toEqual(
+      expect.objectContaining({
+        source_file_id: firstUpload.source_file_id,
+        source_type: "boa",
+        filename: "duplicate-boa.csv",
+        transaction_count: 1,
+        validation_errors: [],
+        reused_existing_file: true,
+        existing_file: expect.objectContaining({
+          source_file_id: firstUpload.source_file_id,
+          filename: "duplicate-boa.csv",
+          store_name: "Hiley Mazda of Hurst",
+          source_type: "boa",
+          created_at: expect.any(String),
+        }),
+      }),
+    );
     const ingestionResponse = await request(app).get("/automation/ingestion-events").query({ store_id: 1 });
     expect(ingestionResponse.body).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ state: "failed", message: "Duplicate upload detected." }),
+        expect.objectContaining({ state: "uploaded", message: "Existing upload reused." }),
       ]),
     );
     const eventsResponse = await request(app).get("/automation/events").query({ store_id: 1 });
@@ -969,7 +1067,7 @@ describe("app", () => {
     const response = await request(app).post("/reconcile").send({});
 
     expect(response.status).toBe(422);
-    expect(response.body.detail).toBe("boa_source_file_id is required.");
+    expect(response.body.error.message).toBe("boa_source_file_id is required.");
   });
 
   test("GET /reconciliation-runs lists persisted runs", async () => {
@@ -1308,15 +1406,6 @@ describe("app", () => {
       dealertrackFilename: "dealertrack-current-trend.csv",
     });
 
-    const currentDetail = await request(app).get(
-      `/reconciliation-runs/${current.reconciliation_run_id}`,
-    );
-    const assignedException = currentDetail.body.exceptions[0].exception_id as number;
-    await request(app)
-      .patch(`/reconciliation-runs/${current.reconciliation_run_id}/exceptions/${assignedException}`)
-      .send({ review_status: "investigating", assigned_to: "Tara" })
-      .expect(200);
-
     const response = await request(app).get(
       `/reconciliation-runs/${current.reconciliation_run_id}/analytics`,
     );
@@ -1330,34 +1419,21 @@ describe("app", () => {
           total_matched_transactions: 1,
           total_exception_count: 2,
           unresolved_count: 2,
-          match_rate_percent: expect.any(Number),
         },
-        newly_resolved_count: 1,
         newly_created_count: 1,
         recurring_count: 1,
       },
     });
     expect(response.body.newly_created_exception_ids).toHaveLength(1);
-    expect(response.body.newly_resolved_exception_ids).toHaveLength(1);
     expect(response.body.recurring_exception_ids).toHaveLength(1);
-    expect(response.body.category_delta_summary).toEqual(
+    expect(response.body.category_summary).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           exception_category: "missing_in_boa",
           current_count: 1,
-          previous_count: 1,
-          delta: 0,
         }),
       ]),
     );
-    expect(response.body.reviewer_workload_trends).toEqual([
-      {
-        reviewer: "Tara",
-        current_count: 1,
-        previous_count: 0,
-        delta: 1,
-      },
-    ]);
   });
 
   test("GET /dealer-groups/analytics aggregates store-level trends", async () => {
@@ -1381,7 +1457,6 @@ describe("app", () => {
               store_name: "Hiley Mazda of Hurst",
               run_count: 1,
               unresolved_count: 2,
-              match_rate_percent: expect.any(Number),
               recurring_exception_count: 0,
             }),
           ]),
@@ -1407,8 +1482,7 @@ describe("app", () => {
       [
         "reconciliation_run_id",
         "exception_id",
-        "exception_type",
-        "exception_category",
+        "placement",
         "status",
         "note",
         "review_status",
@@ -1426,12 +1500,12 @@ describe("app", () => {
         "stock_number",
         "vin",
         "description",
-        "reason",
+        "research_prompt",
         "created_at",
       ].join(","),
     );
     expect(response.text).toContain(
-      "missing_in_boa,missing_in_boa,unresolved,,unreviewed,,,,,dealertrack",
+      "On schedule-not on statement,unresolved,,unreviewed,,,,,dealertrack",
     );
     expect(response.text).toContain("M30303");
     expect(response.text).not.toContain("M30202");
@@ -1975,7 +2049,7 @@ describe("app", () => {
     });
   });
 
-  test("hurst-fp-rec carries forward unresolved items from a prior run for the same store", async () => {
+  test("hurst-fp-rec returns a compact accounting worksheet export model", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const first = await createReconciliationWithRows(app, {
       boaCsv: boaUploadCsvMulti([
@@ -2025,21 +2099,30 @@ describe("app", () => {
       .query({ format: "json" });
 
     expect(workbookResponse.status).toBe(200);
-    expect(workbookResponse.body.carried_forward_count).toBeGreaterThanOrEqual(1);
-    const carriedRow =
-      workbookResponse.body.statement_not_on_gl.rows.find(
-        (row: { carried_forward: boolean }) => row.carried_forward,
-      ) ??
-      workbookResponse.body.schedule_not_on_statement.rows.find(
-        (row: { carried_forward: boolean }) => row.carried_forward,
-      );
-    expect(carriedRow).toBeDefined();
-    expect(carriedRow.previous_run_id).toBe(first.reconciliation_run_id);
-    if (carriedRow.prior_boa_notes || carriedRow.prior_gl_notes) {
-      expect(`${carriedRow.prior_boa_notes}${carriedRow.prior_gl_notes}`).toContain(
-        "carry me forward",
-      );
-    }
+    expect(workbookResponse.body.store_name).toBe("Hiley Mazda of Hurst");
+    expect(workbookResponse.body.schedule_not_on_statement).toBeDefined();
+    expect(workbookResponse.body.statement_not_on_gl).toBeDefined();
+    expect(workbookResponse.body.net_adjustments_amount_cents).toEqual(expect.any(Number));
+    expect(workbookResponse.body.variance_amount_cents).toEqual(expect.any(Number));
+    expect(workbookResponse.body).not.toHaveProperty("reconciliation_run_id");
+    expect(workbookResponse.body).not.toHaveProperty("generated_at");
+    expect(workbookResponse.body).not.toHaveProperty("boa_filename");
+    expect(workbookResponse.body).not.toHaveProperty("dealertrack_filename");
+    expect(workbookResponse.body).not.toHaveProperty("needs_review");
+    expect(workbookResponse.body).not.toHaveProperty("sign_off");
+    const row =
+      workbookResponse.body.statement_not_on_gl.rows[0] ??
+      workbookResponse.body.schedule_not_on_statement.rows[0];
+    expect(row).toEqual(
+      expect.objectContaining({
+        unit_reference: expect.any(String),
+        amount_cents: expect.any(Number),
+        gl_floored_note: expect.any(String),
+        boa_floored_note: expect.any(String),
+      }),
+    );
+    expect(row).not.toHaveProperty("vin");
+    expect(row).not.toHaveProperty("review_status");
   });
 });
 
@@ -2068,10 +2151,9 @@ async function createReconciliation(app: ReturnType<typeof createApp>) {
       { stock: "M30101", vin: "1HGCM82633A004352", amount: "$301.00", reference: "30101" },
       { stock: "M30202", vin: "2HGCM82633A004352", amount: "$302.00", reference: "30202" },
     ]),
-    // Embed BOA VIN in the Dealertrack description so the v2 engine can
-    // auto-match by derived full VIN + amount (Tier 2). Without the VIN, the
-    // pair would be demoted to Needs Review under v2 because stock alone is
-    // not a trusted match key.
+    // Embed BOA VIN in the Dealertrack description so the engine can
+    // auto-match by derived full VIN + amount. Without the VIN, stock alone is
+    // not a trusted match key and the rows stay in Hiley placement sections.
     dealertrackCsv: dealertrackUploadCsvMulti([
       { stock: "M30101", amount: "-301", vin: "1HGCM82633A004352" },
       { stock: "M30303", amount: "-303" },

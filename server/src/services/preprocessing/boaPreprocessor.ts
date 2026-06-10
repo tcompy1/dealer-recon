@@ -10,14 +10,17 @@
  *     Original Amount win even if it appears first
  *   - drop zero-balance rows (recorded as zero_balance_row_removed)
  *   - drop Straightline rows (recorded as straightline_row_removed)
- *   - extract VIN, compute VIN6, attach maturity date if present
+ *   - extract VIN, compute VIN6, evaluate maturity date against the actual
+ *     current calendar month for payoff review
+ *   - prune retained working columns to the Hiley worksheet shape
  *   - sort the retained rows by ending balance ascending, then VIN6 ascending
+ *   - calculate the retained Ending Balance autosum
  *
  * Every transformation is recorded both in the per-row lineage attached to
  * raw_data and in the file-level diagnostics list returned to the caller.
  */
 
-import { parseAmountToCents } from "../../domain/money.js";
+import { formatCents, parseAmountToCents } from "../../domain/money.js";
 import type { NewTransaction, ValidationError } from "../../domain/types.js";
 import { computeVin6, extractVin6FromDescription } from "../../domain/vin6.js";
 import type { ParsedTable } from "../parsers/types.js";
@@ -79,6 +82,43 @@ const STOCK_COLUMN_ALIASES = [
 const DESCRIPTION_ALIASES = ["description", "memo", "details"];
 const MATURITY_ALIASES = ["maturity date", "maturity", "matures"];
 const TRANSACTION_DATE_ALIASES = ["invoice date", "transaction date", "date"];
+const WORKING_OUTPUT_REMOVED_COLUMN_ALIASES = [
+  "location",
+  "manufacturer name",
+  "manufacturer",
+  "mfr name",
+  "plant name",
+  "plant",
+  "invoice date",
+  "invoice number",
+  "invoice #",
+  "interest start date",
+  "type",
+  "model #",
+  "model number",
+  "model no",
+  "model",
+  "stock/lease #",
+  "stock / lease #",
+  "stock/lease no",
+  "stock / lease no",
+  "stock/lease number",
+  "stock / lease number",
+  "stock number",
+  "stock #",
+  "original amount",
+  "beginning balance",
+  "advances",
+  "last advance date",
+  "principal payment",
+  "principal payments",
+  "principal adjustment",
+  "principal adjustments",
+];
+
+export type BoaPreprocessOptions = {
+  now?: Date;
+};
 
 type BoaWorkingRow = {
   sourceRowNumber: number;
@@ -97,9 +137,13 @@ type BoaWorkingRow = {
   lineage: RowLineageEntry[];
 };
 
-export function preprocessBoa(parsed: ParsedTable): PreprocessingResult {
+export function preprocessBoa(
+  parsed: ParsedTable,
+  options: BoaPreprocessOptions = {},
+): PreprocessingResult {
   const diagnostics: PreprocessingDiagnostic[] = [];
   const validationErrors: ValidationError[] = [];
+  const currentCalendarMonth = monthKey(options.now ?? new Date());
   let rowsScanned = 0;
   let rowsRemovedBanner = 0;
   let rowsRemovedZero = 0;
@@ -368,10 +412,45 @@ export function preprocessBoa(parsed: ParsedTable): PreprocessingResult {
     }
   }
 
+  let currentMonthMaturityCount = 0;
+  if (acceptedRows.some((row) => row.maturityDate !== null)) {
+    acceptedRows.sort(compareByMaturityDate);
+    for (const row of acceptedRows) {
+      row.lineage.push({ stage: "sorted", detail: "maturity_date_asc_for_payoff_review" });
+      const normalizedMaturity = normalizeIsoDate(row.maturityDate ?? "");
+      if (normalizedMaturity?.startsWith(currentCalendarMonth)) {
+        currentMonthMaturityCount += 1;
+        row.lineage.push({
+          stage: "maturity_payoff_review_flagged",
+          detail: row.maturityDate ?? normalizedMaturity,
+        });
+        diagnostics.push({
+          kind: "current_month_maturity_payoff_review",
+          message: "BOA row has a current-calendar-month maturity and requires payoff review.",
+          source_row_number: row.sourceRowNumber,
+          vin6: row.vin6,
+          stock_number: row.stockNumber,
+          details: {
+            maturity_date: row.maturityDate,
+            calendar_month: currentCalendarMonth,
+          },
+        });
+      }
+    }
+    diagnostics.push({
+      kind: "sort_applied",
+      message: "Rows sorted ascending by maturity date for current-month payoff review.",
+      source_row_number: null,
+      details: { sort: "maturity_date_asc", calendar_month: currentCalendarMonth },
+    });
+  }
+
   // deterministic sort: ending balance ascending, then VIN6 ascending
   acceptedRows.sort((a, b) => {
-    if (a.amountCents !== b.amountCents) {
-      return a.amountCents - b.amountCents;
+    const balanceDelta =
+      (a.endingBalanceCents ?? a.amountCents) - (b.endingBalanceCents ?? b.amountCents);
+    if (balanceDelta !== 0) {
+      return balanceDelta;
     }
     const va = a.vin6 ?? "";
     const vb = b.vin6 ?? "";
@@ -389,7 +468,28 @@ export function preprocessBoa(parsed: ParsedTable): PreprocessingResult {
     source_row_number: null,
   });
 
+  const endingBalanceAutosumCents = acceptedRows.reduce(
+    (total, row) => total + row.amountCents,
+    0,
+  );
+  diagnostics.push({
+    kind: "ending_balance_autosum_applied",
+    message: "Ending Balance autosum calculated for retained BOA rows.",
+    source_row_number: null,
+    details: {
+      ending_balance_autosum_cents: endingBalanceAutosumCents,
+      ending_balance_autosum_amount: formatCents(endingBalanceAutosumCents),
+    },
+  });
+
+  const keepMaturityInWorkingOutput = currentMonthMaturityCount > 0;
   const transactions: NewTransaction[] = acceptedRows.map((row) => {
+    row.lineage.push({
+      stage: "working_columns_pruned",
+      detail: keepMaturityInWorkingOutput
+        ? "hiley_working_columns_with_payoff_review"
+        : "hiley_working_columns_without_maturity_date",
+    });
     const lineage: RawDataLineage = {
       source_kind: "boa",
       preprocessing_version: PREPROCESSING_VERSION,
@@ -414,7 +514,7 @@ export function preprocessBoa(parsed: ParsedTable): PreprocessingResult {
       stock_number: row.stockNumber,
       vin: row.vin,
       raw_data: {
-        ...row.rawSnapshot,
+        ...buildWorkingOutputSnapshot(row, header, keepMaturityInWorkingOutput),
         [LINEAGE_RAW_DATA_KEY]: lineage,
       },
     };
@@ -433,6 +533,9 @@ export function preprocessBoa(parsed: ParsedTable): PreprocessingResult {
     rows_skipped_unknown: rowsSkippedUnknown,
     rows_requiring_manual_enrichment: rowsRequiringEnrichment,
     duplicate_vin6_count: duplicateVin6Count,
+    current_month_maturity_count: currentMonthMaturityCount,
+    ending_balance_autosum_cents: endingBalanceAutosumCents,
+    ending_balance_autosum_amount: formatCents(endingBalanceAutosumCents),
     preprocessed_at: new Date().toISOString(),
   };
 
@@ -458,6 +561,74 @@ function buildHeaderLookup(header: string[]): Map<string, number> {
     lookup.set(normalizeHeaderName(name), index);
   });
   return lookup;
+}
+
+function buildWorkingOutputSnapshot(
+  row: BoaWorkingRow,
+  header: string[] | null,
+  keepMaturityDate: boolean,
+): Record<string, string> {
+  if (!header) {
+    const fallback: Record<string, string> = {};
+    if (row.vin) {
+      fallback["VIN / Serial Number"] = row.vin;
+    }
+    if (keepMaturityDate && row.maturityDate) {
+      fallback["Maturity Date"] = row.maturityDate;
+    }
+    fallback["Ending Balance"] = formatCents(row.amountCents);
+    return fallback;
+  }
+
+  const endingBalanceIndex = findHeaderIndex(header, ENDING_BALANCE_ALIASES);
+  const lastWorkingIndex = endingBalanceIndex ?? header.length - 1;
+  const output: Record<string, string> = {};
+
+  header.forEach((columnName, index) => {
+    const cleanName = cleanCell(columnName);
+    if (!cleanName || index > lastWorkingIndex) {
+      return;
+    }
+    if (isWorkingOutputRemovedColumn(cleanName)) {
+      return;
+    }
+    if (isHeaderAlias(cleanName, MATURITY_ALIASES) && !keepMaturityDate) {
+      return;
+    }
+
+    const value = cleanCell(row.cells[index]);
+    if (isHeaderAlias(cleanName, ENDING_BALANCE_ALIASES)) {
+      output["Ending Balance"] = value || formatCents(row.amountCents);
+      return;
+    }
+    if (isHeaderAlias(cleanName, MATURITY_ALIASES) && !value) {
+      return;
+    }
+    output[cleanName] = value;
+  });
+
+  if (!Object.keys(output).some((key) => isHeaderAlias(key, ENDING_BALANCE_ALIASES))) {
+    output["Ending Balance"] = formatCents(row.amountCents);
+  }
+  return output;
+}
+
+function findHeaderIndex(header: string[], aliases: string[]): number | null {
+  for (let index = 0; index < header.length; index += 1) {
+    if (isHeaderAlias(header[index] ?? "", aliases)) {
+      return index;
+    }
+  }
+  return null;
+}
+
+function isWorkingOutputRemovedColumn(columnName: string): boolean {
+  return isHeaderAlias(columnName, WORKING_OUTPUT_REMOVED_COLUMN_ALIASES);
+}
+
+function isHeaderAlias(columnName: string, aliases: string[]): boolean {
+  const normalized = normalizeHeaderName(columnName);
+  return aliases.some((alias) => normalizeHeaderName(alias) === normalized);
 }
 
 function normalizeHeaderName(value: string): string {
@@ -562,6 +733,21 @@ function findFirstDateLike(cells: string[]): string | null {
     }
   }
   return null;
+}
+
+function compareByMaturityDate(a: BoaWorkingRow, b: BoaWorkingRow): number {
+  const maturityA = normalizeIsoDate(a.maturityDate ?? "") ?? "9999-12-31";
+  const maturityB = normalizeIsoDate(b.maturityDate ?? "") ?? "9999-12-31";
+  if (maturityA !== maturityB) {
+    return maturityA < maturityB ? -1 : 1;
+  }
+  return a.sourceRowNumber - b.sourceRowNumber;
+}
+
+function monthKey(value: Date): string {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
 }
 
 function normalizeIsoDate(value: string): string | null {

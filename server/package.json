@@ -14,7 +14,8 @@
     "test": "vitest run",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "recon": "tsx src/cli/runFloorplanRecon.ts"
+    "recon": "tsx src/cli/runFloorplanRecon.ts",
+    "cleanup:unhealthy-uploads": "tsx src/cli/cleanupUnhealthyUploads.ts"
   },
   "dependencies": {
     "@types/bcryptjs": "^2.4.6",

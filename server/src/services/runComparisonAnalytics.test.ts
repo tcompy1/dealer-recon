@@ -9,7 +9,7 @@ import type {
 import { buildRunMetrics, compareReconciliationRuns } from "./runComparisonAnalytics.js";
 
 describe("compareReconciliationRuns", () => {
-  test("detects resolved, newly introduced, and recurring exceptions by stable VIN category", () => {
+  test("detects newly introduced and recurring exceptions by stable VIN category", () => {
     const previous = runDetail({
       reconciliation_run_id: 1,
       exceptions: [
@@ -28,17 +28,15 @@ describe("compareReconciliationRuns", () => {
     const comparison = compareReconciliationRuns(current, previous);
 
     expect(comparison.previous_run_id).toBe(1);
-    expect(comparison.newly_resolved_exception_ids).toEqual([11]);
     expect(comparison.newly_created_exception_ids).toEqual([22]);
     expect(comparison.recurring_exception_ids).toEqual([21]);
     expect(comparison.run_comparison_summary).toMatchObject({
-      newly_resolved_count: 1,
       newly_created_count: 1,
       recurring_count: 1,
     });
   });
 
-  test("tracks category deltas across historical runs", () => {
+  test("summarizes current category counts", () => {
     const previous = runDetail({
       reconciliation_run_id: 1,
       exceptions: [
@@ -56,53 +54,26 @@ describe("compareReconciliationRuns", () => {
 
     const comparison = compareReconciliationRuns(current, previous);
 
-    expect(comparison.category_delta_summary).toEqual(
+    expect(comparison.category_summary).toEqual(
       expect.arrayContaining([
         {
           exception_category: "missing_in_boa",
           current_count: 2,
-          previous_count: 1,
-          delta: 1,
-        },
-        {
-          exception_category: "amount_mismatch",
-          current_count: 0,
-          previous_count: 1,
-          delta: -1,
         },
       ]),
     );
-  });
-
-  test("summarizes reviewer workload trends", () => {
-    const previous = runDetail({
-      reconciliation_run_id: 1,
-      exceptions: [
-        exception({ exception_id: 11, assigned_to: "Maria" }),
-        exception({ exception_id: 12, assigned_to: "Lee" }),
-      ],
-    });
-    const current = runDetail({
-      reconciliation_run_id: 2,
-      exceptions: [
-        exception({ exception_id: 21, assigned_to: "Maria" }),
-        exception({ exception_id: 22, assigned_to: "Maria" }),
-      ],
-    });
-
-    const comparison = compareReconciliationRuns(current, previous);
-
-    expect(comparison.reviewer_workload_trends).toEqual(
+    expect(comparison.category_summary).not.toEqual(
       expect.arrayContaining([
-        { reviewer: "Maria", current_count: 2, previous_count: 1, delta: 1 },
-        { reviewer: "Lee", current_count: 0, previous_count: 1, delta: -1 },
+        expect.objectContaining({
+          exception_category: "amount_mismatch",
+        }),
       ]),
     );
   });
 });
 
 describe("buildRunMetrics", () => {
-  test("calculates match rate, unresolved count, category distribution, and average resolution time", () => {
+  test("calculates unresolved count and category distribution", () => {
     const run = runDetail({
       matched_count: 8,
       exception_count: 2,
@@ -128,12 +99,10 @@ describe("buildRunMetrics", () => {
       total_matched_transactions: 8,
       total_exception_count: 2,
       unresolved_count: 1,
-      match_rate_percent: 80,
       category_distribution: {
         missing_in_boa: 1,
         amount_mismatch: 1,
       },
-      average_time_to_resolution_hours: 6,
     });
   });
 });

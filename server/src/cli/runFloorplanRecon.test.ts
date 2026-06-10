@@ -15,15 +15,15 @@ describe("runLocalFloorplanRecon", () => {
     const result = await runLocalFloorplanRecon({ boaFile, dealertrackFile });
     const output = formatReconciliationResult(result);
 
-    // V2: BOA rows have full VINs, Dealertrack rows do not, so no tier can
-    // auto-confirm stock-only pairs. Three stock-linked pairs drop to Tier 4
-    // Needs Review (6 exceptions), the duplicate is still flagged, and the
-    // BOA-only / Dealertrack-only rows are Tier 5 missing.
+    // BOA rows have full VINs, Dealertrack rows do not, so no tier can
+    // auto-confirm stock-only pairs. Hiley rules keep amount/stock-only rows
+    // in the two worksheet placements.
     expect(output).toContain("matched count: 0");
     expect(output).toContain("exceptions count: 9");
-    expect(output).toContain("duplicates count: 1");
-    expect(output).toContain("duplicate Dealertrack rows: 1");
-    expect(output).toContain("Needs review (");
+    expect(output).toContain("duplicates count: 0");
+    expect(output).toContain("On statement-not on GL: 4");
+    expect(output).toContain("On schedule-not on statement: 5");
+    expect(output).toContain("Needs manual review: 0");
     expect(output).toContain("stock=M20657");
     expect(output).toContain("stock=M20450");
     stderr.mockRestore();

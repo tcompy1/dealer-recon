@@ -7,8 +7,7 @@ export function toExceptionsCsv(detail: ReconciliationRunDetail): string {
   const headers = [
     "reconciliation_run_id",
     "exception_id",
-    "exception_type",
-    "exception_category",
+    "placement",
     "status",
     "note",
     "review_status",
@@ -26,7 +25,7 @@ export function toExceptionsCsv(detail: ReconciliationRunDetail): string {
     "stock_number",
     "vin",
     "description",
-    "reason",
+    "research_prompt",
     "created_at",
   ];
   const rows = detail.exceptions.map((exception) => {
@@ -34,8 +33,7 @@ export function toExceptionsCsv(detail: ReconciliationRunDetail): string {
     return [
       detail.reconciliation_run_id,
       exception.exception_id,
-      exception.exception_type,
-      exception.exception_category,
+      formatExceptionPlacement(exception),
       exception.status,
       exception.note,
       exception.review_status,
@@ -53,12 +51,49 @@ export function toExceptionsCsv(detail: ReconciliationRunDetail): string {
       transaction.stock_number,
       transaction.vin,
       transaction.description,
-      exception.reason,
+      neutralExceptionPrompt(exception),
       exception.created_at,
     ];
   });
 
   return [headers, ...rows].map((row) => row.map(toCsvCell).join(",")).join("\n") + "\n";
+}
+
+function exceptionPlacement(
+  exception: ReconciliationRunDetail["exceptions"][number],
+): "statement" | "schedule" | "manual_review" {
+  if (
+    exception.exception_type === "needs_review_vin6_only" ||
+    exception.exception_category === "vin6_match_amount_mismatch"
+  ) {
+    return "manual_review";
+  }
+  if (exception.exception_type === "missing_in_dealertrack" || exception.source_type === "boa") {
+    return "statement";
+  }
+  return "schedule";
+}
+
+function formatExceptionPlacement(exception: ReconciliationRunDetail["exceptions"][number]): string {
+  const placement = exceptionPlacement(exception);
+  if (placement === "statement") {
+    return "On statement-not on GL";
+  }
+  if (placement === "schedule") {
+    return "On schedule-not on statement";
+  }
+  return "Needs manual review";
+}
+
+function neutralExceptionPrompt(exception: ReconciliationRunDetail["exceptions"][number]): string {
+  const placement = exceptionPlacement(exception);
+  if (placement === "statement") {
+    return "BOA statement row with no matching Dealertrack/GL row";
+  }
+  if (placement === "schedule") {
+    return "Dealertrack/GL row with no matching BOA statement row";
+  }
+  return "VIN appears on both sides but amount differs; review manually";
 }
 
 export function toMonthEndReportCsv(report: MonthEndReport): string {

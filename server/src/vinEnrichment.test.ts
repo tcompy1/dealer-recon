@@ -146,7 +146,7 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
       });
 
     expect(response.status).toBe(422);
-    expect(response.body.detail).toMatch(/Dealertrack/);
+    expect(response.body.error.message).toMatch(/Dealertrack/);
   });
 
   test("rejects invalid VIN", async () => {
@@ -162,7 +162,7 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
       });
 
     expect(response.status).toBe(422);
-    expect(response.body.detail).toMatch(/VIN/);
+    expect(response.body.error.message).toMatch(/VIN/);
   });
 
   test("rejects missing reason", async () => {
@@ -178,7 +178,7 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
       });
 
     expect(response.status).toBe(422);
-    expect(response.body.detail).toMatch(/reason/);
+    expect(response.body.error.message).toMatch(/reason/);
   });
 
   test("returns 409 when VIN is unchanged", async () => {

@@ -24,7 +24,7 @@ describe("categorizeReconciliationException", () => {
     ).toBe("missing_in_dealertrack");
   });
 
-  test("classifies shared VIN exceptions with different amounts as amount mismatch", () => {
+  test("classifies shared VIN exceptions as manual review without business reason labels", () => {
     const boa = boaTransaction({ amount_cents: 10_000, vin: "1FTFW1E80PFA11111" });
     const dealertrack = dealertrackTransaction({
       amount_cents: -20_000,
@@ -32,11 +32,11 @@ describe("categorizeReconciliationException", () => {
     });
 
     expect(category(exception("missing_in_dealertrack", boa), [boa], [dealertrack])).toBe(
-      "amount_mismatch",
+      "vin6_match_amount_mismatch",
     );
   });
 
-  test("classifies same signed shared VIN amounts as sign mismatch", () => {
+  test("classifies same signed shared VIN exceptions as manual review", () => {
     const boa = boaTransaction({ amount_cents: 10_000, vin: "1FTFW1E80PFA11111" });
     const dealertrack = dealertrackTransaction({
       amount_cents: 10_000,
@@ -44,21 +44,31 @@ describe("categorizeReconciliationException", () => {
     });
 
     expect(category(exception("missing_in_dealertrack", boa), [boa], [dealertrack])).toBe(
-      "sign_mismatch",
+      "vin6_match_amount_mismatch",
     );
   });
 
-  test("classifies duplicate exceptions as duplicate or one-to-many", () => {
+  test("classifies duplicate Dealertrack exceptions by Hiley worksheet placement", () => {
     expect(
       category(
         exception("duplicate_transaction", dealertrackTransaction({ vin: "1FTFW1E80PFA11111" })),
         [],
         [],
       ),
-    ).toBe("duplicate_or_one_to_many");
+    ).toBe("missing_in_boa");
   });
 
-  test("classifies repeated same-side VIN amount structure as duplicate or one-to-many", () => {
+  test("classifies duplicate BOA exceptions by Hiley worksheet placement", () => {
+    expect(
+      category(
+        exception("duplicate_transaction", boaTransaction({ vin: "1FTFW1E80PFA11111" })),
+        [],
+        [],
+      ),
+    ).toBe("missing_in_dealertrack");
+  });
+
+  test("does not convert same-side duplicate structure into a business category", () => {
     const boa = boaTransaction({ id: 1, amount_cents: 10_000, vin: "1FTFW1E80PFA11111" });
     const secondBoa = boaTransaction({ id: 2, amount_cents: 10_000, vin: "1FTFW1E80PFA11111" });
     const dealertrack = dealertrackTransaction({
@@ -67,11 +77,11 @@ describe("categorizeReconciliationException", () => {
     });
 
     expect(category(exception("missing_in_dealertrack", boa), [boa, secondBoa], [dealertrack])).toBe(
-      "duplicate_or_one_to_many",
+      "vin6_match_amount_mismatch",
     );
   });
 
-  test("classifies shared VIN absolute-amount rows with different stocks as stock mismatch", () => {
+  test("classifies shared VIN absolute-amount rows with different stocks as manual review", () => {
     const boa = boaTransaction({
       amount_cents: 10_000,
       stock_number: "M10001",
@@ -84,11 +94,11 @@ describe("categorizeReconciliationException", () => {
     });
 
     expect(category(exception("missing_in_dealertrack", boa), [boa], [dealertrack])).toBe(
-      "stock_number_mismatch",
+      "vin6_match_amount_mismatch",
     );
   });
 
-  test("classifies missing VIN rows with stock and amount counterpart as VIN missing but reference match", () => {
+  test("keeps missing VIN stock and amount counterpart as source placement", () => {
     const boa = boaTransaction({ amount_cents: 10_000, stock_number: "M10001", vin: null });
     const dealertrack = dealertrackTransaction({
       amount_cents: -10_000,
@@ -97,11 +107,11 @@ describe("categorizeReconciliationException", () => {
     });
 
     expect(category(exception("missing_in_dealertrack", boa), [boa], [dealertrack])).toBe(
-      "vin_missing_but_reference_match",
+      "missing_in_dealertrack",
     );
   });
 
-  test("classifies nearby shared VIN rows with different amounts as possible timing issue", () => {
+  test("classifies nearby shared VIN rows with different amounts as manual review", () => {
     const boa = boaTransaction({
       amount_cents: 10_000,
       transaction_date: "2026-03-01",
@@ -114,8 +124,18 @@ describe("categorizeReconciliationException", () => {
     });
 
     expect(category(exception("missing_in_dealertrack", boa), [boa], [dealertrack])).toBe(
-      "possible_timing_issue",
+      "vin6_match_amount_mismatch",
     );
+  });
+
+  test("keeps historical amount-only needs-review rows in source placement", () => {
+    expect(
+      category(
+        exception("needs_review_amount_only", boaTransaction({ vin: null })),
+        [],
+        [],
+      ),
+    ).toBe("missing_in_dealertrack");
   });
 
   test("falls back to unclassified when exception shape is unknown", () => {

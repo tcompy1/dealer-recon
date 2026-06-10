@@ -34,8 +34,8 @@ export function ReconciliationSummary() {
             BOA / Dealertrack reconciliation
           </h2>
           <p className="mt-1 text-sm text-slate-600">
-            Matches by VIN first, then stock number plus absolute amount, then lower-confidence
-            amount and context.
+            Matches by VIN and amount. Same-VIN rows that do not cleanly match stay in manual
+            review.
           </p>
         </div>
 
@@ -89,7 +89,7 @@ export function ReconciliationSummary() {
 
           <div>
             <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-              Exceptions
+              Unmatched items
             </h3>
             <div className="mt-3 grid gap-2">
               {result.exceptions.map((exception, index) => (
@@ -98,12 +98,9 @@ export function ReconciliationSummary() {
                   key={`${exception.exception_type}-${exception.transaction.id}-${index}`}
                 >
                   <div className="flex flex-wrap items-center gap-2">
-                    <p className="font-semibold">{formatReason(exception.exception_type)}</p>
-                    <span className="rounded-md bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900">
-                      {formatReason(exception.exception_category)}
-                    </span>
+                    <p className="font-semibold">{formatExceptionPlacement(exception)}</p>
                   </div>
-                  <p className="mt-1 text-amber-900">{exception.description}</p>
+                  <p className="mt-1 text-amber-900">{neutralExceptionPrompt(exception)}</p>
                   <p className="mt-2 text-amber-900">
                     {exception.source_type.toUpperCase()} stock{" "}
                     {exception.transaction.stock_number ?? "n/a"} amount{" "}
@@ -151,6 +148,43 @@ function TransactionLine({
 
 function formatReason(value: string) {
   return value.replace(/_/g, " ");
+}
+
+function exceptionPlacement(
+  exception: ReconciliationResponse["exceptions"][number],
+): "statement" | "schedule" | "manual_review" {
+  if (
+    exception.exception_type === "needs_review_vin6_only" ||
+    exception.exception_category === "vin6_match_amount_mismatch"
+  ) {
+    return "manual_review";
+  }
+  if (exception.exception_type === "missing_in_dealertrack" || exception.source_type === "boa") {
+    return "statement";
+  }
+  return "schedule";
+}
+
+function formatExceptionPlacement(exception: ReconciliationResponse["exceptions"][number]) {
+  const placement = exceptionPlacement(exception);
+  if (placement === "statement") {
+    return "On statement-not on GL";
+  }
+  if (placement === "schedule") {
+    return "On schedule-not on statement";
+  }
+  return "Needs manual review";
+}
+
+function neutralExceptionPrompt(exception: ReconciliationResponse["exceptions"][number]) {
+  const placement = exceptionPlacement(exception);
+  if (placement === "statement") {
+    return "BOA statement row with no matching Dealertrack/GL row";
+  }
+  if (placement === "schedule") {
+    return "Dealertrack/GL row with no matching BOA statement row";
+  }
+  return "VIN appears on both sides but amount differs; review manually";
 }
 
 function formatAmount(value: string | number) {

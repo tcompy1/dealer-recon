@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { getAccountDetail, listAccountSummaries } from "../api/accounts";
 import type { AccountDetail, AccountSummary, AccountTransaction } from "../types/account";
 import type { SourceType } from "../types/sourceFile";
+import { formatRunId } from "../utils/formatRunId";
 
 const sourceTypes: SourceType[] = ["bank", "boa", "dealertrack", "dms", "gl", "oem"];
 
@@ -239,7 +240,7 @@ function RelatedRuns({ runs }: { runs: AccountDetail["related_reconciliation_run
               runs.map((run) => (
                 <tr key={run.reconciliation_run_id}>
                   <td className="px-3 py-2 font-medium text-slate-950">
-                    {run.reconciliation_run_id}
+                    {formatRunId(run.created_at)}
                   </td>
                   <td className="px-3 py-2 text-slate-700">{run.matched_count}</td>
                   <td className="px-3 py-2 text-slate-700">{run.exception_count}</td>
@@ -262,10 +263,10 @@ function UnresolvedExceptions({ exceptions }: { exceptions: AccountDetail["unres
         <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
-              <th className="px-3 py-2 font-semibold">Exception</th>
+              <th className="px-3 py-2 font-semibold">Placement</th>
               <th className="px-3 py-2 font-semibold">Source</th>
               <th className="px-3 py-2 font-semibold">Amount</th>
-              <th className="px-3 py-2 font-semibold">Reason</th>
+              <th className="px-3 py-2 font-semibold">Research prompt</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 bg-white">
@@ -279,13 +280,13 @@ function UnresolvedExceptions({ exceptions }: { exceptions: AccountDetail["unres
               exceptions.map((exception) => (
                 <tr key={exception.exception_id}>
                   <td className="px-3 py-2 font-medium text-slate-950">
-                    {formatLabel(exception.exception_type)}
+                    {formatExceptionPlacement(exception)}
                   </td>
                   <td className="px-3 py-2 text-slate-700">{exception.source_type.toUpperCase()}</td>
                   <td className="px-3 py-2 text-slate-700">
                     {formatCurrency(exception.transaction.amount_cents)}
                   </td>
-                  <td className="px-3 py-2 text-slate-700">{exception.reason}</td>
+                  <td className="px-3 py-2 text-slate-700">{neutralExceptionPrompt(exception)}</td>
                 </tr>
               ))
             )}
@@ -294,6 +295,43 @@ function UnresolvedExceptions({ exceptions }: { exceptions: AccountDetail["unres
       </div>
     </div>
   );
+}
+
+function exceptionPlacement(
+  exception: AccountDetail["unresolved_exceptions"][number],
+): "statement" | "schedule" | "manual_review" {
+  if (
+    exception.exception_type === "needs_review_vin6_only" ||
+    exception.exception_category === "vin6_match_amount_mismatch"
+  ) {
+    return "manual_review";
+  }
+  if (exception.exception_type === "missing_in_dealertrack" || exception.source_type === "boa") {
+    return "statement";
+  }
+  return "schedule";
+}
+
+function formatExceptionPlacement(exception: AccountDetail["unresolved_exceptions"][number]) {
+  const placement = exceptionPlacement(exception);
+  if (placement === "statement") {
+    return "On statement-not on GL";
+  }
+  if (placement === "schedule") {
+    return "On schedule-not on statement";
+  }
+  return "Needs manual review";
+}
+
+function neutralExceptionPrompt(exception: AccountDetail["unresolved_exceptions"][number]) {
+  const placement = exceptionPlacement(exception);
+  if (placement === "statement") {
+    return "BOA statement row with no matching Dealertrack/GL row";
+  }
+  if (placement === "schedule") {
+    return "Dealertrack/GL row with no matching BOA statement row";
+  }
+  return "VIN appears on both sides but amount differs; review manually";
 }
 
 function SourceTotals({ totals }: { totals: AccountSummary["source_totals"] }) {

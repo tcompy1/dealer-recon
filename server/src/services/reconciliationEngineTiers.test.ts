@@ -9,9 +9,8 @@ import {
 // V2 engine regression suite covering the explicit tier semantics:
 //   Tier 1: VIN6 + exact amount   -> auto-match
 //   Tier 2: full VIN + exact amount -> auto-match
-//   Tier 3: VIN6 only (amount differs) -> Needs Review
-//   Tier 4: amount only with deterministic link -> Needs Review
-//   Tier 5: unmatched -> missing_in_*
+//   Tier 3: VIN6 only (amount differs) -> manual review
+//   Tier 4: unmatched -> missing_in_*
 //
 // All matching must stay deterministic on input order and replayable.
 
@@ -59,7 +58,7 @@ function dealertrack(args: Partial<Transaction> & Pick<Transaction, "id" | "amou
 
 describe("engine v2 tier behavior", () => {
   test("engine version is bumped so v1 snapshots replay with engine_version_difference.differs=true", () => {
-    expect(RECONCILIATION_ENGINE_VERSION).toBe("reconciliation-engine-v2-vin6-tiers");
+    expect(RECONCILIATION_ENGINE_VERSION).toBe("reconciliation-engine-v3-hiley-placement");
   });
 
   describe("Tier 1: VIN6 + exact amount", () => {
@@ -109,9 +108,8 @@ describe("engine v2 tier behavior", () => {
       const left = boa({ id: 1, amount_cents: 12345, vin: "ABC123", stock_number: "M10001" });
       const right = dealertrack({ id: 2, amount_cents: -12345, vin: "XYZ123", stock_number: "M10001" });
       const result = reconcileTransactionSets([left], [right]);
-      // No trusted VIN6 and the two fallback VIN6s disagree - Tier 1/2/3 all
-      // reject. With different VIN6s the engine also refuses to pair at Tier
-      // 4, so both rows fall through to Tier 5 unmatched.
+      // No trusted VIN6 and the two fallback VIN6s disagree - all match tiers
+      // reject, so both rows fall through to placement.
       expect(result.matched_count).toBe(0);
       expect(
         result.exceptions.every((exception) => exception.exception_type.startsWith("missing_in_")),
@@ -148,7 +146,7 @@ describe("engine v2 tier behavior", () => {
   });
 
   describe("Tier 3: VIN6 match but amount differs", () => {
-    test("routes both sides to Needs Review when VIN6 matches and amount differs - no auto-confirm", () => {
+    test("routes both sides to manual review when VIN6 matches and amount differs - no auto-confirm", () => {
       const left = boa({ id: 1, amount_cents: 25000, vin: STORE_VIN_A, stock_number: "M20500" });
       // Same VIN6 (A11111) but a different amount on the Dealertrack side.
       const right = dealertrack({
@@ -164,7 +162,7 @@ describe("engine v2 tier behavior", () => {
       expect(
         result.exceptions.every((exception) => exception.exception_category === "vin6_match_amount_mismatch"),
       ).toBe(true);
-      expect(result.exceptions[0].description).toContain("VIN6");
+      expect(result.exceptions[0].description).toContain("VIN appears on both sides");
       expect(result.exceptions[0].description).toContain("amount differs");
     });
 
@@ -201,30 +199,32 @@ describe("engine v2 tier behavior", () => {
     });
   });
 
-  describe("Tier 4: amount-only with deterministic link", () => {
-    test("routes same-stock + same-amount pairs to Needs Review when there is no VIN6 agreement", () => {
+  describe("Tier 4: unmatched placement", () => {
+    test("routes same-stock + same-amount rows to placement when there is no VIN6 agreement", () => {
       const left = boa({ id: 1, amount_cents: 17750, stock_number: "M20999", vin: null });
       const right = dealertrack({ id: 2, amount_cents: -17750, stock_number: "M20999", vin: null });
       const result = reconcileTransactionSets([left], [right]);
       expect(result.matched_count).toBe(0);
-      expect(result.exceptions.every((exception) => exception.exception_type === "needs_review_amount_only")).toBe(true);
-      expect(
-        result.exceptions.every((exception) => exception.exception_category === "amount_only_review"),
-      ).toBe(true);
+      expect(result.exceptions.map((exception) => exception.exception_type).sort()).toEqual([
+        "missing_in_boa",
+        "missing_in_dealertrack",
+      ]);
     });
 
-    test("routes same-reference + same-amount pairs to Needs Review when no VIN is present", () => {
+    test("routes same-reference + same-amount rows to placement when no VIN is present", () => {
       const left = boa({ id: 1, amount_cents: 12500, reference_number: "REF-1234", vin: null });
       const right = dealertrack({ id: 2, amount_cents: -12500, reference_number: "REF-1234", vin: null });
       const result = reconcileTransactionSets([left], [right]);
       expect(result.matched_count).toBe(0);
-      expect(result.exceptions.every((exception) => exception.exception_type === "needs_review_amount_only")).toBe(true);
+      expect(result.exceptions.map((exception) => exception.exception_type).sort()).toEqual([
+        "missing_in_boa",
+        "missing_in_dealertrack",
+      ]);
     });
 
     test("does not pair Tier 4 candidates when both sides carry different full VINs", () => {
-      // Same amount, same stock would have made these a Tier 4 pair, but the
-      // full VINs are present on both sides and disagree - that's a VIN
-      // conflict, not a Tier 4 case.
+      // Same amount and stock are not enough for review. The full VINs are
+      // present on both sides and disagree, so this remains placement-only.
       const left = boa({ id: 1, amount_cents: 18000, stock_number: "M10001", vin: STORE_VIN_A });
       const right = dealertrack({
         id: 2,
@@ -234,10 +234,8 @@ describe("engine v2 tier behavior", () => {
       });
       const result = reconcileTransactionSets([left], [right]);
       expect(result.matched_count).toBe(0);
-      const tier4 = result.exceptions.filter((exception) => exception.exception_type === "needs_review_amount_only");
-      expect(tier4).toHaveLength(0);
-      // Both sides should land as Tier 5 missing - the VIN conflict prevents
-      // any kind of pairing.
+      // Both sides land as placement rows - the VIN conflict prevents any kind
+      // of pairing.
       expect(
         result.exceptions.every((exception) => exception.exception_type.startsWith("missing_in_")),
       ).toBe(true);
@@ -253,7 +251,7 @@ describe("engine v2 tier behavior", () => {
       });
       const result = reconcileTransactionSets([left], [right]);
       expect(result.matched_count).toBe(0);
-      // Different VIN6 - no Tier 4 pairing. Both sides are unmatched Tier 5.
+      // Different VIN6 - both sides are unmatched placement rows.
       expect(
         result.exceptions.every((exception) => exception.exception_type.startsWith("missing_in_")),
       ).toBe(true);
@@ -409,7 +407,7 @@ describe("engine v2 tier behavior", () => {
       });
       const result = reconcileTransactionSets([left], [right]);
       expect(result.matched_count).toBe(0);
-      // Same VIN6 + amounts differ => Tier 3 Needs Review on both sides.
+      // Same VIN6 + amounts differ => Tier 3 manual review on both sides.
       expect(
         result.exceptions.every((exception) => exception.exception_type === "needs_review_vin6_only"),
       ).toBe(true);
@@ -463,13 +461,13 @@ describe("engine v2 tier behavior", () => {
   });
 
   describe("invariant: every transaction lands in exactly one bucket under v2", () => {
-    test("Tier 3/4 pairs preserve the invariant that each transaction id appears once", () => {
+    test("manual review and placement rows preserve the invariant that each transaction id appears once", () => {
       const lefts = [
         // Tier 1 match
         boa({ id: 1, amount_cents: 25000, vin: STORE_VIN_A, stock_number: "M500" }),
         // Tier 3 candidate (VIN6 matches dealertrack 12 but amount differs)
         boa({ id: 2, amount_cents: 18000, vin: STORE_VIN_B, stock_number: "M657" }),
-        // Tier 4 candidate (amount + stock match dealertrack 13)
+        // Amount + stock only: no Hiley manual-review pair without VIN.
         boa({ id: 3, amount_cents: 21100, vin: null, stock_number: "M450" }),
         // Tier 5 missing
         boa({ id: 4, amount_cents: 99999, vin: STORE_VIN_C, stock_number: "MZ" }),

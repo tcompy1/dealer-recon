@@ -102,6 +102,21 @@ describe("preprocessUpload orchestrator", () => {
     ).toBe(true);
   });
 
+  test("parses the April Hurst Dealertrack CSV account amount column", async () => {
+    const buffer = await loadFixture("server/src/services/__fixtures__/DT HURST APRIL (1).csv");
+    const decision = preprocessUpload(buffer, "dealertrack", "DT HURST APRIL (1).csv");
+    expect(decision.kind).toBe("preprocessed");
+    if (decision.kind !== "preprocessed") return;
+
+    expect(decision.output.route.kind).toBe("dealertrack_csv");
+    expect(decision.output.summary.rows_scanned).toBeGreaterThan(0);
+    expect(decision.output.summary.rows_accepted).toBeGreaterThan(0);
+    expect(decision.output.transactions.length).toBeGreaterThan(0);
+    expect(decision.output.validationErrors.length).toBeLessThan(
+      decision.output.summary.rows_scanned,
+    );
+  });
+
   test("source-specific CSV routes emit preprocessing diagnostics rather than falling back", () => {
     const dt = Buffer.from("Control,Description,2100\nM10001,FLOORPLAN 1FAKEVN0000A0001X,-25000\n");
     const decision = preprocessUpload(dt, "dealertrack", "dt.csv");

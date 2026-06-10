@@ -55,6 +55,12 @@ export interface TransactionRepository {
     sourceFile: NewSourceFile,
     transactions: NewTransaction[],
   ): Promise<SourceFileImport>;
+  replaceSourceFileWithTransactions(
+    dealershipId: number,
+    sourceFileId: number,
+    sourceFile: NewSourceFile,
+    transactions: NewTransaction[],
+  ): Promise<SourceFileImport | null>;
   insertMany(transactions: NewTransaction[]): Promise<Transaction[]>;
   getSourceFile(sourceFileId: number): Promise<SourceFile | null>;
   getSourceFileByHash(
@@ -251,6 +257,43 @@ export class MemoryTransactionRepository implements TransactionRepository {
     };
     this.sourceFiles.push(sourceFile);
 
+    const scopedTransactions = transactions.map((transaction) => ({
+      ...transaction,
+      dealership_id: dealershipId,
+      source_file_id: sourceFile.id,
+    }));
+    const inserted = await this.insertMany(scopedTransactions);
+
+    return { sourceFile, transactions: inserted };
+  }
+
+  async replaceSourceFileWithTransactions(
+    dealershipId: number,
+    sourceFileId: number,
+    sourceFileInput: NewSourceFile,
+    transactions: NewTransaction[],
+  ): Promise<SourceFileImport | null> {
+    const sourceFile = this.sourceFiles.find(
+      (candidate) => candidate.id === sourceFileId && candidate.dealership_id === dealershipId,
+    );
+    if (!sourceFile) {
+      return null;
+    }
+
+    Object.assign(sourceFile, {
+      dealership_store_id: sourceFileInput.dealership_store_id ?? sourceFile.dealership_store_id,
+      source_type: sourceFileInput.source_type,
+      original_filename: sourceFileInput.original_filename,
+      stored_filename: sourceFileInput.stored_filename,
+      file_hash: sourceFileInput.file_hash,
+      row_count: sourceFileInput.row_count,
+      validation_error_count: sourceFileInput.validation_error_count,
+    });
+
+    this.transactions = this.transactions.filter(
+      (transaction) =>
+        transaction.dealership_id !== dealershipId || transaction.source_file_id !== sourceFileId,
+    );
     const scopedTransactions = transactions.map((transaction) => ({
       ...transaction,
       dealership_id: dealershipId,

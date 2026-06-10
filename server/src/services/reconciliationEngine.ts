@@ -18,15 +18,16 @@ export const VIN6_AMOUNT_REASON = "vin6_abs_amount";
 export const VIN_AMOUNT_REASON = "vin_abs_amount";
 export const DERIVED_VIN_AMOUNT_REASON = "derived_vin_abs_amount";
 
-// Tier 3 / Tier 4 Needs-Review reasons. These are exceptions, not match groups,
-// and the categorizer maps them to dedicated categories so the presenter routes
-// them into the Needs Review section. Auto-confirmation is never allowed for
-// these reasons.
+// Tier 3 manual-review reason. This is an exception, not a match group:
+// same VIN/VIN6 appears on both sides but amount does not cleanly match.
 export const NEEDS_REVIEW_VIN6_REASON = "needs_review_vin6_only";
+
+// Retained for backwards compatibility with historical snapshots. New Hiley
+// runs do not emit amount-only manual-review exceptions.
 export const NEEDS_REVIEW_AMOUNT_REASON = "needs_review_amount_only";
 
-// Retained for backwards compatibility with any importers; both used to be
-// auto-match tiers and have been demoted to Needs Review under v2.
+// Retained for backwards compatibility with any importers; these are no longer
+// used as Hiley reconciliation exception explanations.
 export const STOCK_AMOUNT_REASON = "stock_number_amount";
 export const AMOUNT_CONTEXT_REASON = "amount_reference_context";
 
@@ -34,7 +35,7 @@ export const AMOUNT_CONTEXT_REASON = "amount_reference_context";
 // reconciliation snapshots. Replaying a v1 run under v2 will report
 // engine_version_difference.differs = true rather than silently mutating
 // historical results.
-export const RECONCILIATION_ENGINE_VERSION = "reconciliation-engine-v2-vin6-tiers";
+export const RECONCILIATION_ENGINE_VERSION = "reconciliation-engine-v3-hiley-placement";
 
 type ReconciliationScope = {
   dealershipId?: number;
@@ -153,7 +154,7 @@ export function reconcileTransactionSets(
     }
   }
 
-  // Pass 3 (Tier 3): VIN6 agrees but amounts do not. Emit Needs Review
+  // Pass 3 (Tier 3): VIN6 agrees but amounts do not. Emit manual-review
   // exceptions for both sides so the clerk can investigate without losing
   // either row to silent auto-confirmation. Only pairs where neither side has
   // already been auto-matched are considered.
@@ -184,111 +185,19 @@ export function reconcileTransactionSets(
       buildException(
         NEEDS_REVIEW_VIN6_REASON,
         leftTransaction,
-        `Needs review: VIN6 ${leftVin6} matches ${rightSourceType} transaction ${candidate.id} (${formatCents(candidate.amount_cents)}) but amount differs.`,
+        "VIN appears on both sides but amount differs; review manually.",
       ),
     );
     exceptions.push(
       buildException(
         NEEDS_REVIEW_VIN6_REASON,
         candidate,
-        `Needs review: VIN6 ${leftVin6} matches ${leftSourceType} transaction ${leftTransaction.id} (${formatCents(leftTransaction.amount_cents)}) but amount differs.`,
+        "VIN appears on both sides but amount differs; review manually.",
       ),
     );
   }
 
-  // Pass 4 (Tier 4): no VIN6 agreement but the same absolute amount appears on
-  // both sides AND a deterministic explanatory link exists (same reference or
-  // same stock number). This replaces the v1 stock_number_amount and
-  // amount_reference_context auto-tiers, which the audit and clerk interview
-  // both flag as unsafe to auto-confirm. We never auto-confirm here; the
-  // deterministic explanation is preserved in the description.
-  for (const leftTransaction of leftTransactions) {
-    if (matchedLeftIds.has(leftTransaction.id) || tier3PairedLeft.has(leftTransaction.id)) {
-      continue;
-    }
-    const candidate = rightTransactions.find((rightTransaction) => {
-      if (
-        matchedRightIds.has(rightTransaction.id) ||
-        duplicateRightIds.has(rightTransaction.id) ||
-        tier3PairedRight.has(rightTransaction.id)
-      ) {
-        return false;
-      }
-      if (!amountsMatch(leftTransaction.amount_cents, rightTransaction.amount_cents)) {
-        return false;
-      }
-      // Refuse to pair if both sides have full VINs that disagree - that's a
-      // VIN conflict, not a Tier 4 candidate. Tier 3 already handled the case
-      // where one side's VIN6 matched.
-      const leftVin = matchingVin(leftTransaction);
-      const rightVin = matchingVin(rightTransaction);
-      if (leftVin && rightVin && leftVin !== rightVin) {
-        return false;
-      }
-      const leftVin6 = matchingVin6(leftTransaction);
-      const rightVin6 = matchingVin6(rightTransaction);
-      if (leftVin6 && rightVin6 && leftVin6 !== rightVin6) {
-        // Different VIN6 on both sides at the same amount - not a safe
-        // Needs Review pair, leave them to fall through to Tier 5 unmatched.
-        return false;
-      }
-      return hasDeterministicExplanatoryLink(leftTransaction, rightTransaction);
-    });
-    if (!candidate) {
-      continue;
-    }
-    tier3PairedLeft.add(leftTransaction.id);
-    tier3PairedRight.add(candidate.id);
-    const link = describeExplanatoryLink(leftTransaction, candidate);
-    exceptions.push(
-      buildException(
-        NEEDS_REVIEW_AMOUNT_REASON,
-        leftTransaction,
-        `Needs review: amount ${formatCents(leftTransaction.amount_cents)} matches ${rightSourceType} transaction ${candidate.id} (${link}) but no VIN6 agreement - clerk must verify.`,
-      ),
-    );
-    exceptions.push(
-      buildException(
-        NEEDS_REVIEW_AMOUNT_REASON,
-        candidate,
-        `Needs review: amount ${formatCents(candidate.amount_cents)} matches ${leftSourceType} transaction ${leftTransaction.id} (${link}) but no VIN6 agreement - clerk must verify.`,
-      ),
-    );
-
-    // Any further still-unmatched right-side rows that share the same stock
-    // and absolute amount as the pair are flagged as duplicate transactions so
-    // that the clerk still sees a "duplicate" signal even though we declined
-    // to auto-confirm the original pair. We only do this for stock-linked
-    // pairs, where "duplicate" is meaningful in the clerk's worksheet.
-    const linkStock = clean(leftTransaction.stock_number);
-    const candidateStock = clean(candidate.stock_number);
-    if (linkStock && candidateStock && linkStock === candidateStock) {
-      for (const rightTransaction of rightTransactions) {
-        if (
-          matchedRightIds.has(rightTransaction.id) ||
-          duplicateRightIds.has(rightTransaction.id) ||
-          tier3PairedRight.has(rightTransaction.id)
-        ) {
-          continue;
-        }
-        if (
-          clean(rightTransaction.stock_number) === linkStock &&
-          amountsMatch(rightTransaction.amount_cents, leftTransaction.amount_cents)
-        ) {
-          duplicateRightIds.add(rightTransaction.id);
-          exceptions.push(
-            buildException(
-              "duplicate_transaction",
-              rightTransaction,
-              `Duplicate ${rightSourceType} transaction shares stock ${linkStock} and amount with ${leftSourceType} transaction ${leftTransaction.id} (already in needs review).`,
-            ),
-          );
-        }
-      }
-    }
-  }
-
-  // Tier 5: anything still unaccounted-for is unmatched and emits the
+  // Pass 4: anything still unaccounted-for is unmatched and emits the
   // appropriate missing_in_* exception.
   for (const leftTransaction of leftTransactions) {
     if (matchedLeftIds.has(leftTransaction.id) || tier3PairedLeft.has(leftTransaction.id)) {
@@ -404,40 +313,6 @@ function isVin6AmountMatch(
   // VIN, and she manually retypes the VIN6 when the DMS VIN is missing or
   // malformed.
   return hasTrustedVin6Source(leftTransaction) || hasTrustedVin6Source(rightTransaction);
-}
-
-function hasDeterministicExplanatoryLink(
-  leftTransaction: Transaction,
-  rightTransaction: Transaction,
-): boolean {
-  const leftReference = clean(leftTransaction.reference_number);
-  const rightReference = clean(rightTransaction.reference_number);
-  if (leftReference && rightReference && leftReference === rightReference) {
-    return true;
-  }
-  const leftStock = clean(leftTransaction.stock_number);
-  const rightStock = clean(rightTransaction.stock_number);
-  if (leftStock && rightStock && leftStock === rightStock) {
-    return true;
-  }
-  return false;
-}
-
-function describeExplanatoryLink(
-  leftTransaction: Transaction,
-  rightTransaction: Transaction,
-): string {
-  const leftReference = clean(leftTransaction.reference_number);
-  const rightReference = clean(rightTransaction.reference_number);
-  if (leftReference && rightReference && leftReference === rightReference) {
-    return `reference ${leftReference}`;
-  }
-  const leftStock = clean(leftTransaction.stock_number);
-  const rightStock = clean(rightTransaction.stock_number);
-  if (leftStock && rightStock && leftStock === rightStock) {
-    return `stock ${leftStock}`;
-  }
-  return "amount-only";
 }
 
 function amountsMatch(leftAmountCents: number, rightAmountCents: number): boolean {

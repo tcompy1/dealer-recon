@@ -34,12 +34,14 @@ const KIND_TO_GROUP: Record<PreprocessingDiagnosticKind, DiagnosticGroupId> = {
   manual_enrichment_required: "needs_attention",
   missing_vin: "needs_attention",
   missing_amount: "needs_attention",
+  current_month_maturity_payoff_review: "needs_attention",
 
   untrusted_vin: "vin_cleanup",
   duplicate_vin: "vin_cleanup",
   manual_enrichment_applied: "vin_cleanup",
 
   ambiguous_amount_column: "amount_warnings",
+  ending_balance_autosum_applied: "amount_warnings",
 
   parser_warning: "parser_warnings",
   maturity_date_attached: "parser_warnings",
@@ -119,7 +121,9 @@ const KIND_LABELS: Record<PreprocessingDiagnosticKind, string> = {
   row_skipped_unknown_structure: "Row skipped (unrecognized structure)",
   row_skipped_malformed: "Row skipped (malformed)",
   maturity_date_attached: "Maturity date attached",
+  current_month_maturity_payoff_review: "Current-month maturity payoff review",
   ambiguous_amount_column: "Ambiguous amount column",
+  ending_balance_autosum_applied: "Ending balance autosum applied",
   parser_warning: "Parser warning",
   sort_applied: "Sort applied",
 };

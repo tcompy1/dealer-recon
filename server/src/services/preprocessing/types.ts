@@ -31,8 +31,10 @@ export type RowLineageStage =
   | "vin_enrichment_required"
   | "vin_enriched"
   | "maturity_date_attached"
+  | "maturity_payoff_review_flagged"
   | "stock_normalized"
   | "duplicate_vin_observed"
+  | "working_columns_pruned"
   | "sorted";
 
 export type RowLineageEntry = {
@@ -54,9 +56,11 @@ export type PreprocessingDiagnosticKind =
   | "row_skipped_unknown_structure"
   | "row_skipped_malformed"
   | "maturity_date_attached"
+  | "current_month_maturity_payoff_review"
   | "ambiguous_amount_column"
   | "parser_warning"
-  | "sort_applied";
+  | "sort_applied"
+  | "ending_balance_autosum_applied";
 
 export type PreprocessingDiagnostic = {
   kind: PreprocessingDiagnosticKind;
@@ -86,6 +90,9 @@ export type PreprocessingSummary = {
   rows_skipped_unknown: number;
   rows_requiring_manual_enrichment: number;
   duplicate_vin6_count: number;
+  current_month_maturity_count?: number;
+  ending_balance_autosum_cents?: number;
+  ending_balance_autosum_amount?: string;
   /** ISO timestamp of preprocessing completion. Useful for debugging. */
   preprocessed_at: string;
 };

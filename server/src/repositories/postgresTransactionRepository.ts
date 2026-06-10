@@ -265,6 +265,73 @@ export class PostgresTransactionRepository implements TransactionRepository {
     }
   }
 
+  async replaceSourceFileWithTransactions(
+    dealershipId: number,
+    sourceFileId: number,
+    sourceFileInput: NewSourceFile,
+    transactions: NewTransaction[],
+  ): Promise<SourceFileImport | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const existing = await client.query<SourceFileRow>(
+        "SELECT * FROM source_files WHERE dealership_id = $1 AND id = $2 FOR UPDATE",
+        [dealershipId, sourceFileId],
+      );
+      if (!existing.rows[0]) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      const dealershipStoreId =
+        sourceFileInput.dealership_store_id ?? existing.rows[0].dealership_store_id;
+      await client.query(
+        "DELETE FROM transactions WHERE dealership_id = $1 AND source_file_id = $2",
+        [dealershipId, sourceFileId],
+      );
+      const updated = await client.query<SourceFileRow>(
+        `UPDATE source_files
+         SET dealership_store_id = $3,
+             source_type = $4,
+             original_filename = $5,
+             stored_filename = $6,
+             file_hash = $7,
+             row_count = $8,
+             validation_error_count = $9
+         WHERE dealership_id = $1
+           AND id = $2
+         RETURNING *`,
+        [
+          dealershipId,
+          sourceFileId,
+          dealershipStoreId,
+          sourceFileInput.source_type,
+          sourceFileInput.original_filename,
+          sourceFileInput.stored_filename,
+          sourceFileInput.file_hash,
+          sourceFileInput.row_count,
+          sourceFileInput.validation_error_count,
+        ],
+      );
+      const scopedTransactions = transactions.map((transaction) => ({
+        ...transaction,
+        dealership_id: dealershipId,
+        source_file_id: sourceFileId,
+      }));
+      const inserted = await insertTransactions(client, scopedTransactions);
+      await client.query("COMMIT");
+      return { sourceFile: toSourceFile(updated.rows[0]), transactions: inserted };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      if (isDuplicateSourceFileError(error)) {
+        throw new DuplicateSourceFileError();
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async insertMany(transactions: NewTransaction[]): Promise<Transaction[]> {
     const client = await this.pool.connect();
     try {

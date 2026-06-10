@@ -20,9 +20,11 @@ export type PreprocessingDiagnosticKind =
   | "row_skipped_unknown_structure"
   | "row_skipped_malformed"
   | "maturity_date_attached"
+  | "current_month_maturity_payoff_review"
   | "ambiguous_amount_column"
   | "parser_warning"
-  | "sort_applied";
+  | "sort_applied"
+  | "ending_balance_autosum_applied";
 
 export type PreprocessingDiagnostic = {
   kind: PreprocessingDiagnosticKind;
@@ -46,6 +48,9 @@ export type PreprocessingSummary = {
   rows_skipped_unknown: number;
   rows_requiring_manual_enrichment: number;
   duplicate_vin6_count: number;
+  current_month_maturity_count?: number;
+  ending_balance_autosum_cents?: number;
+  ending_balance_autosum_amount?: string;
   preprocessed_at: string;
 };
 
@@ -76,8 +81,27 @@ export type UploadResponse = {
   source_type: SourceType;
   filename: string;
   transaction_count: number;
+  stored_row_count: number;
+  stored_validation_error_count: number;
   validation_errors: UploadValidationError[];
   automated_reconciliation_run_id?: number | null;
+  reused_existing_file: boolean;
+  source_file_health: {
+    status: "healthy" | "unhealthy" | "reprocessed";
+    healthy: boolean;
+    reasons: string[];
+    transaction_count: number;
+    row_count: number;
+    validation_error_count: number;
+  };
+  warnings?: string[];
+  existing_file?: {
+    source_file_id: number;
+    filename: string;
+    store_name: string | null;
+    source_type: SourceType;
+    created_at: string;
+  };
   preprocessing?: UploadPreprocessingMetadata | null;
 };
 

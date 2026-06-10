@@ -131,10 +131,13 @@ describe("reconcileTransactions", () => {
     expect(result.match_groups).toHaveLength(0);
     expect(result.exceptions).toHaveLength(2);
     expect(result.exceptions.map((exception) => exception.exception_type).sort()).toEqual([
-      "needs_review_amount_only",
-      "needs_review_amount_only",
+      "missing_in_boa",
+      "missing_in_dealertrack",
     ]);
-    expect(result.exceptions.every((exception) => exception.exception_category === "amount_only_review")).toBe(true);
+    expect(result.exceptions.map((exception) => exception.exception_category).sort()).toEqual([
+      "missing_in_boa",
+      "missing_in_dealertrack",
+    ]);
   });
 
   test("reserves high-confidence identity matches before weak amount context fallback", async () => {
@@ -343,40 +346,31 @@ describe("reconcileTransactions", () => {
     );
   });
 
-  test("routes stock-only floorplan pairs to Needs Review instead of auto-confirming", async () => {
+  test("routes stock-only floorplan rows to Hiley placement instead of auto-confirming", async () => {
     const repository = await loadFloorplanSamples();
     const result = await reconcileTransactions(repository);
 
-    // Under v2, BOA rows have full VINs but their Dealertrack counterparts do
-    // not. Tier 1/2 can't auto-confirm without VIN6 agreement, so each
-    // stock-linked pair drops to Tier 4 Needs Review (two exceptions per
-    // pair). 3 pairs => 6 needs_review_amount_only exceptions; the duplicate
-    // M20450 Dealertrack row is still flagged. M20999 BOA and M20888 DT have
-    // no counterpart and emit Tier 5 missing_in_* exceptions.
+    // BOA rows have full VINs but their Dealertrack counterparts do not.
+    // Hiley rules do not allow amount/stock-only review explanations, so all
+    // rows fall into the two worksheet placements.
     expect(result.matched_count).toBe(0);
-    expect(result.duplicate_count).toBe(1);
+    expect(result.duplicate_count).toBe(0);
 
-    const needsReview = result.exceptions.filter(
-      (exception) => exception.exception_type === "needs_review_amount_only",
-    );
-    expect(needsReview).toHaveLength(6);
-    expect(needsReview.every((exception) => exception.exception_category === "amount_only_review")).toBe(true);
-
-    const stockNumbers = new Set(needsReview.map((exception) => exception.transaction.stock_number));
-    expect(stockNumbers).toEqual(new Set(["M20500", "M20657", "M20450"]));
+    expect(result.exceptions).toHaveLength(9);
+    expect(
+      result.exceptions.every((exception) => exception.exception_type.startsWith("missing_in_")),
+    ).toBe(true);
   });
 
-  test("detects duplicate Dealertrack entry even when matching is demoted to Needs Review", async () => {
+  test("does not emit duplicate business exceptions for stock-only Dealertrack repeats", async () => {
     const repository = await loadFloorplanSamples();
     const result = await reconcileTransactions(repository);
     const duplicateExceptions = result.exceptions.filter(
       (exception) => exception.exception_type === "duplicate_transaction",
     );
 
-    expect(result.duplicate_count).toBe(1);
-    expect(duplicateExceptions).toHaveLength(1);
-    expect(duplicateExceptions[0].source_type).toBe("dealertrack");
-    expect(duplicateExceptions[0].transaction.stock_number).toBe("M20450");
+    expect(result.duplicate_count).toBe(0);
+    expect(duplicateExceptions).toHaveLength(0);
   });
 
   test("uses strict cent equality with no rounding tolerance", async () => {
@@ -401,29 +395,17 @@ describe("reconcileTransactions", () => {
 
     const result = await reconcileTransactions(repository);
 
-    // V2: no auto-match because the Dealertrack rows have no VIN and no
-    // 17-char VIN in description. M50001 BOA ($100.01) pairs with M50001 DT
-    // (-$100.01) under Tier 4 Needs Review; M50002 BOA ($100.02) has no
-    // amount match on the Dealertrack side and lands as Tier 5 missing.
-    // The two amounts differ by one cent and must not collapse into a match.
+    // No auto-match because the Dealertrack rows have no VIN and no 17-char
+    // VIN in description. Amount/stock-only links stay as worksheet
+    // placements, and one-cent differences must not collapse into a match.
     expect(result.matched_count).toBe(0);
-
-    const needsReview = result.exceptions.filter(
-      (exception) => exception.exception_type === "needs_review_amount_only",
-    );
-    expect(needsReview.map((exception) => exception.transaction.amount_cents).sort()).toEqual([
-      -10001,
-      10001,
-    ]);
-    expect(needsReview.map((exception) => exception.transaction.stock_number).sort()).toEqual([
-      "M50001",
-      "M50001",
-    ]);
 
     const missing = result.exceptions.filter((exception) =>
       exception.exception_type.startsWith("missing_in_"),
     );
     expect(missing.map((exception) => exception.transaction.stock_number).sort()).toEqual([
+      "M50001",
+      "M50001",
       "M50002",
       "M50002",
     ]);

@@ -13,6 +13,7 @@ import {
   getHurstFpRecExportUrl,
   getReconciliationExceptionsCsvUrl,
   getReconciliationRun,
+  getReconciliationRunAnalytics,
   listReconciliationRuns,
   reconcileSourceFiles,
   replayReconciliationRun,
@@ -26,13 +27,13 @@ import {
 } from "../api/stores";
 import { UploadError, listSourceFiles, uploadSourceFile } from "../api/uploads";
 import { PreprocessingDiagnosticsPanel } from "./preprocessing/PreprocessingDiagnosticsPanel";
-import { RemovedRowsAuditPanel } from "./preprocessing/RemovedRowsAuditPanel";
 import { VinPresenceDiagnosticsPanel } from "./VinPresenceDiagnosticsPanel";
 import type {
   ReconciledTransaction,
   ReconciliationExceptionStatus,
   ReconciliationExceptionReviewUpdate,
   ReconciliationExceptionReviewStatus,
+  ReconciliationRunComparison,
   ReconciliationRunFilters,
   ReconciliationRunDetail,
   ReconciliationRunListItem,
@@ -54,6 +55,7 @@ import type {
 } from "../types/automation";
 import type { CurrentUser } from "../types/auth";
 import type { DealerGroup, DealerGroupAnalytics, DealershipStore } from "../types/store";
+import { formatRunId } from "../utils/formatRunId";
 
 type UploadSlot = {
   file: File | null;
@@ -73,6 +75,8 @@ const initialUploadSlot: UploadSlot = {
   errorPreprocessing: null,
 };
 
+const VALIDATION_ERROR_PREVIEW_LIMIT = 10;
+
 export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }) {
   const [boaUpload, setBoaUpload] = useState<UploadSlot>(initialUploadSlot);
   const [dealertrackUpload, setDealertrackUpload] = useState<UploadSlot>(initialUploadSlot);
@@ -90,6 +94,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
   const [operationalMetrics, setOperationalMetrics] = useState<OperationalMetrics | null>(null);
   const [activeRun, setActiveRun] = useState<ReconciliationRunDetail | null>(null);
   const [activeRunDiagnostics, setActiveRunDiagnostics] = useState<VinPresenceDiagnostics | null>(null);
+  const [activeRunAnalytics, setActiveRunAnalytics] = useState<ReconciliationRunComparison | null>(null);
   const [activeRunReplay, setActiveRunReplay] = useState<ReconciliationReplayResponse | null>(null);
   const [isReconciling, setIsReconciling] = useState(false);
   const [isReplaying, setIsReplaying] = useState(false);
@@ -194,8 +199,10 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         dealershipStoreId: selectedStoreId,
       });
       const detail = await getReconciliationRun(result.reconciliation_run_id, exceptionFilters);
+      const analytics = await getReconciliationRunAnalytics(result.reconciliation_run_id);
       setActiveRun(detail);
       setActiveRunDiagnostics(result.vin_presence_diagnostics);
+      setActiveRunAnalytics(analytics);
       setActiveRunReplay(null);
       setIsReconciliationStale(false);
       setReconciliationRuns(await listReconciliationRuns(selectedStoreId));
@@ -212,6 +219,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     setSelectedStoreId(storeId);
     setActiveRun(null);
     setActiveRunDiagnostics(null);
+    setActiveRunAnalytics(null);
     setActiveRunReplay(null);
     setBoaUpload(initialUploadSlot);
     setDealertrackUpload(initialUploadSlot);
@@ -259,9 +267,13 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     setWorkflowError(null);
 
     try {
-      const detail = await getReconciliationRun(reconciliationRunId, exceptionFilters);
+      const [detail, analytics] = await Promise.all([
+        getReconciliationRun(reconciliationRunId, exceptionFilters),
+        getReconciliationRunAnalytics(reconciliationRunId),
+      ]);
       setActiveRun(detail);
       setActiveRunDiagnostics(null);
+      setActiveRunAnalytics(analytics);
       setActiveRunReplay(null);
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Run detail could not be loaded.");
@@ -300,8 +312,12 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         exceptionId,
         update,
       });
-      const detail = await getReconciliationRun(activeRun.reconciliation_run_id, exceptionFilters);
+      const [detail, analytics] = await Promise.all([
+        getReconciliationRun(activeRun.reconciliation_run_id, exceptionFilters),
+        getReconciliationRunAnalytics(activeRun.reconciliation_run_id),
+      ]);
       setActiveRun(detail);
+      setActiveRunAnalytics(analytics);
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Exception review could not be saved.");
     } finally {
@@ -374,7 +390,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
   return (
     <div className="grid gap-6">
-      <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm md:p-5">
         <StoreManagementPanel
           analytics={groupAnalytics}
           newStoreName={newStoreName}
@@ -396,12 +412,12 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
           canModify={canModify}
         />
 
-        <div className="flex flex-col gap-1">
+        <div className="sticky top-0 z-10 -mx-4 -mt-4 flex flex-col gap-1 border-b border-slate-200 bg-white px-4 py-3 md:-mx-5 md:-mt-5 md:px-5 md:py-4">
           <p className="text-xs font-semibold uppercase text-cyan-700">Step 1</p>
-          <h2 className="text-lg font-semibold text-slate-950">Upload source files</h2>
+          <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Upload BOA and Dealertrack CSVs</h2>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid gap-4 md:gap-6 lg:grid-cols-2">
           <UploadPanel
             kind="boa"
             label="BOA file"
@@ -449,22 +465,17 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         <RecentUploads sourceFiles={sourceFiles} />
       </section>
 
-      <RemovedRowsAuditPanel
-        boaPreprocessing={boaUpload.upload?.preprocessing}
-        dealertrackPreprocessing={dealertrackUpload.upload?.preprocessing}
-      />
-
-      <section className="flex flex-col gap-3 rounded-md border border-slate-200 bg-white p-5 shadow-sm md:flex-row md:items-center md:justify-between">
-        <div>
+      <section className="flex flex-col gap-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm md:flex-row md:items-center md:justify-between md:p-5">
+        <div className="flex-1">
           <p className="text-xs font-semibold uppercase text-cyan-700">Step 2</p>
-          <h2 className="text-lg font-semibold text-slate-950">Run reconciliation</h2>
+          <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Run reconciliation</h2>
           <p className="mt-1 text-sm text-slate-600">
             Selected BOA #{boaUpload.upload?.source_file_id ?? "none"} and Dealertrack #
             {dealertrackUpload.upload?.source_file_id ?? "none"}
           </p>
         </div>
         <button
-          className="inline-flex h-11 items-center justify-center rounded-md bg-slate-950 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          className="inline-flex h-11 w-full items-center justify-center rounded-md bg-slate-950 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300 md:w-auto md:flex-shrink-0"
           disabled={!canModify || !canReconcile || isReconciling}
           type="button"
           onClick={() => void handleReconcile()}
@@ -476,6 +487,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       {workflowError ? <ErrorBanner message={workflowError} /> : null}
 
       <ResultsSection
+        analytics={activeRunAnalytics}
         diagnostics={activeRunDiagnostics}
         filters={exceptionFilters}
         replay={activeRunReplay}
@@ -577,9 +589,10 @@ function GroupAnalyticsSummary({
   }
 
   return (
-    <div className="grid gap-3 sm:grid-cols-4">
+    <div className="grid gap-3 sm:grid-cols-3">
       <Metric label="Store runs" value={selectedStore.run_count} />
       <Metric label="Store unresolved" value={selectedStore.unresolved_count} />
+      <Metric label="Recurring at store" value={selectedStore.recurring_exception_count} />
     </div>
   );
 }
@@ -613,7 +626,7 @@ function AutomationOverview({
         <Metric label="Scheduled jobs" value={jobs.length} />
         <Metric label="Enabled jobs" value={jobs.filter((job) => job.enabled).length} />
         <Metric
-          label="Avg reconciliation time"
+          label="Avg completion"
           value={
             metrics?.average_reconciliation_completion_time_ms === null ||
             metrics?.average_reconciliation_completion_time_ms === undefined
@@ -622,7 +635,7 @@ function AutomationOverview({
           }
         />
         <Metric
-          label="Auto-matched"
+          label="Auto reconciliation"
           value={`${metrics?.auto_vs_manual_reconciliation_rates.automated_percent.toFixed(2) ?? "0.00"}%`}
         />
       </div>
@@ -631,7 +644,10 @@ function AutomationOverview({
         <section className="rounded-md border border-slate-200 bg-white p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-slate-950">Upload Schedule</h3>
+              <h3 className="text-sm font-semibold text-slate-950">Scheduled Jobs</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                Store-level automation rules for recurring reconciliation.
+              </p>
             </div>
             <button
               className="inline-flex h-9 items-center justify-center rounded-md bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
@@ -675,7 +691,7 @@ function AutomationOverview({
         </section>
 
         <section className="rounded-md border border-slate-200 bg-white p-4">
-          <h3 className="text-sm font-semibold text-slate-950">Upload Status</h3>
+          <h3 className="text-sm font-semibold text-slate-950">Store Automation Status</h3>
           {selectedStatus ? (
             <div className="mt-3 grid gap-2 text-sm text-slate-700">
               <p>Last upload: {selectedStatus.last_upload_at ? formatDateTime(selectedStatus.last_upload_at) : "None"}</p>
@@ -697,8 +713,8 @@ function AutomationOverview({
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <EventList title="Recent Activity" rows={ingestionEvents} />
-        <EventList title="Recent Alerts" rows={events} />
+        <EventList title="Recent Ingestion Events" rows={ingestionEvents} />
+        <EventList title="Operational Alerts" rows={events} />
       </div>
     </div>
   );
@@ -754,32 +770,32 @@ function UploadPanel({
   }
 
   return (
-    <div className="grid gap-4 rounded-md border border-slate-200 bg-slate-50 p-4">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-base font-semibold text-slate-950">{label}</h3>
-        <span className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700">
+    <div className="grid gap-4 rounded-md border-2 border-slate-300 bg-white p-4 shadow-sm transition hover:border-cyan-300 hover:shadow-md md:p-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <h3 className="text-base font-semibold text-slate-950 md:text-lg">{label}</h3>
+        <span className="w-fit rounded-md border border-cyan-200 bg-cyan-50 px-2.5 py-1 text-xs font-semibold text-cyan-700">
           {kind.toUpperCase()}
         </span>
       </div>
 
       <input
         accept=".csv,text/csv"
-        className="block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 file:mr-4 file:rounded-md file:border-0 file:bg-slate-900 file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+        className="block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 file:mr-3 file:rounded-md file:border-0 file:bg-slate-900 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-100 md:file:mr-4 md:file:px-4 md:file:py-2 md:file:text-sm"
         disabled={!canModify}
         type="file"
         onChange={handleFileChange}
       />
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
         <button
-          className="inline-flex h-10 items-center justify-center rounded-md bg-cyan-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+          className="inline-flex h-10 w-full items-center justify-center rounded-md bg-cyan-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
           disabled={!canModify || !slot.file || slot.isUploading}
           type="button"
           onClick={onUpload}
         >
           {slot.isUploading ? "Uploading..." : "Upload"}
         </button>
-        {slot.file ? <span className="text-sm text-slate-600">{slot.file.name}</span> : null}
+        {slot.file ? <span className="truncate text-sm text-slate-600">{slot.file.name}</span> : null}
       </div>
 
       {slot.upload ? (
@@ -817,7 +833,7 @@ function UploadReceipt({
       <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
         <div className="grid gap-1 sm:grid-cols-2">
           <p>
-            <span className="font-medium">File ID:</span> {upload.source_file_id}
+            <span className="font-medium">source_file_id:</span> {upload.source_file_id}
           </p>
           <p>
             <span className="font-medium">filename:</span> {upload.filename}
@@ -849,27 +865,41 @@ function UploadReceipt({
 }
 
 function ValidationErrors({ errors }: { errors: UploadValidationError[] }) {
+  const visibleErrors = errors.slice(0, VALIDATION_ERROR_PREVIEW_LIMIT);
+  const hiddenCount = Math.max(errors.length - visibleErrors.length, 0);
+
   return (
-    <div className="mt-3 overflow-hidden rounded-md border border-amber-200 bg-white">
-      <table className="min-w-full divide-y divide-amber-100 text-left text-sm">
-        <thead className="bg-amber-50 text-amber-950">
-          <tr>
-            <th className="px-3 py-2 font-semibold">Row</th>
-            <th className="px-3 py-2 font-semibold">Field</th>
-            <th className="px-3 py-2 font-semibold">Message</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-amber-100">
-          {errors.map((error, index) => (
-            <tr key={`${error.row ?? "file"}-${error.field ?? "field"}-${index}`}>
-              <td className="px-3 py-2">{error.row ?? "file"}</td>
-              <td className="px-3 py-2">{error.field ?? "file"}</td>
-              <td className="px-3 py-2">{error.message}</td>
+    <details className="mt-3 rounded-md border border-amber-200 bg-white">
+      <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-amber-950">
+        {errors.length} validation error{errors.length === 1 ? "" : "s"} found. Showing first{" "}
+        {visibleErrors.length} when expanded.
+      </summary>
+      <div className="max-h-64 overflow-auto border-t border-amber-100">
+        <table className="min-w-full divide-y divide-amber-100 text-left text-sm">
+          <thead className="sticky top-0 bg-amber-50 text-amber-950">
+            <tr>
+              <th className="px-3 py-2 font-semibold">Row</th>
+              <th className="px-3 py-2 font-semibold">Field</th>
+              <th className="px-3 py-2 font-semibold">Message</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody className="divide-y divide-amber-100">
+            {visibleErrors.map((error, index) => (
+              <tr key={`${error.row ?? "file"}-${error.field ?? "field"}-${index}`}>
+                <td className="px-3 py-2">{error.row ?? "file"}</td>
+                <td className="px-3 py-2">{error.field ?? "file"}</td>
+                <td className="px-3 py-2">{error.message}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {hiddenCount > 0 ? (
+        <p className="border-t border-amber-100 px-3 py-2 text-xs text-amber-900">
+          {hiddenCount} additional validation error{hiddenCount === 1 ? "" : "s"} hidden.
+        </p>
+      ) : null}
+    </details>
   );
 }
 
@@ -891,7 +921,7 @@ function RecentUploads({ sourceFiles }: { sourceFiles: SourceFileSummary[] }) {
       <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
         <thead className="bg-slate-50 text-slate-600">
           <tr>
-            <th className="px-3 py-2 font-semibold">File ID</th>
+            <th className="px-3 py-2 font-semibold">source_file_id</th>
             <th className="px-3 py-2 font-semibold">Store</th>
             <th className="px-3 py-2 font-semibold">Source</th>
             <th className="px-3 py-2 font-semibold">Filename</th>
@@ -917,6 +947,7 @@ function RecentUploads({ sourceFiles }: { sourceFiles: SourceFileSummary[] }) {
 }
 
 function ResultsSection({
+  analytics,
   diagnostics,
   filters,
   replay,
@@ -929,6 +960,7 @@ function ResultsSection({
   reviewUpdatingId,
   canModify,
 }: {
+  analytics: ReconciliationRunComparison | null;
   diagnostics: VinPresenceDiagnostics | null;
   filters: ReconciliationRunFilters;
   replay: ReconciliationReplayResponse | null;
@@ -955,7 +987,7 @@ function ResultsSection({
           <h2 className="text-lg font-semibold text-slate-950">Review reconciliation</h2>
           {run ? (
             <p className="text-sm text-slate-600">
-              Run #{run.reconciliation_run_id} for {run.store_name ?? "Unassigned store"} from{" "}
+              Run {formatRunId(run.created_at)} for {run.store_name ?? "Unassigned store"} from{" "}
               {formatDateTime(run.created_at)}
             </p>
           ) : null}
@@ -994,10 +1026,11 @@ function ResultsSection({
             <Metric label="Clean matches (VIN + amount)" value={run.matched_count} />
             <Metric label="Unmatched items" value={run.exception_count} />
             <Metric label="Duplicates" value={run.duplicate_count} />
-            <Metric label="Run ID" value={run.reconciliation_run_id} />
+            <Metric label="Run ID" value={formatRunId(run.created_at)} />
           </div>
 
           <ExceptionBreakdown run={run} />
+          <RunTrendAnalyticsPanel analytics={analytics} />
           <HistoricalReplayPanel
             replay={replay}
             isReplaying={isReplaying}
@@ -1027,19 +1060,53 @@ function ExceptionBreakdown({ run }: { run: ReconciliationRunDetail }) {
       <div>
         <h3 className="text-base font-semibold text-slate-950">Unmatched items breakdown</h3>
         <p className="mt-1 text-sm text-slate-600">
-          Statement Not on GL = BOA rows with no Dealertrack match. Schedule Not on Statement =
-          Dealertrack rows with no BOA match.
+          Rows are grouped by Hiley worksheet placement. Same-VIN rows that do not cleanly
+          match stay in manual review.
         </p>
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
-        <Metric label="Statement Not on GL" value={breakdown.boaOnly} />
-        <Metric label="Schedule Not on Statement" value={breakdown.dealertrackOnly} />
-        <Metric label="Duplicate Dealertrack rows" value={breakdown.duplicates} />
+        <Metric label="On statement-not on GL" value={breakdown.statementNotOnGl} />
+        <Metric label="On schedule-not on statement" value={breakdown.scheduleNotOnStatement} />
+        <Metric label="Needs manual review" value={breakdown.manualReview} />
       </div>
     </div>
   );
 }
 
+function RunTrendAnalyticsPanel({ analytics }: { analytics: ReconciliationRunComparison | null }) {
+  if (!analytics) {
+    return null;
+  }
+
+  const summary = analytics.run_comparison_summary;
+  const current = summary.current;
+
+  return (
+    <div className="grid gap-3">
+      <div>
+        <h3 className="text-base font-semibold text-slate-950">Run trend analytics</h3>
+        <p className="mt-1 text-sm text-slate-600">
+          {analytics.previous_run_id ? "Compared with the previous run." : "No previous run is available."}
+        </p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Metric label="Unresolved" value={current.unresolved_count} />
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-2">
+        <TrendSummaryCard
+          label="New Exceptions"
+          value={summary.newly_created_count}
+          detail="Current exceptions absent from the prior run"
+          tone={summary.newly_created_count > 0 ? "attention" : "neutral"}
+        />
+      </div>
+
+      <CategoryTrendTable rows={analytics.category_summary} />
+    </div>
+  );
+}
 
 function HistoricalReplayPanel({
   replay,
@@ -1182,8 +1249,72 @@ function ReplayKeyList({ label, rows }: { label: string; rows: string[] }) {
   );
 }
 
+function TrendSummaryCard({
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  label: string;
+  value: number;
+  detail: string;
+  tone: "positive" | "attention" | "neutral";
+}) {
+  const toneClass =
+    tone === "positive"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-950"
+      : tone === "attention"
+        ? "border-amber-200 bg-amber-50 text-amber-950"
+        : "border-slate-200 bg-slate-50 text-slate-950";
 
+  return (
+    <div className={`rounded-md border p-4 ${toneClass}`}>
+      <p className="text-sm font-semibold">{label}</p>
+      <p className="mt-1 text-2xl font-semibold">{value}</p>
+      <p className="mt-1 text-sm">{detail}</p>
+    </div>
+  );
+}
 
+function CategoryTrendTable({
+  rows,
+}: {
+  rows: ReconciliationRunComparison["category_summary"];
+}) {
+  const displayRows = aggregateCategoryTrendRows(rows);
+
+  return (
+    <div className="overflow-hidden rounded-md border border-slate-200">
+      <div className="border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <h4 className="text-sm font-semibold text-slate-950">Category trend</h4>
+      </div>
+      <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+        <thead className="bg-white text-slate-600">
+          <tr>
+            <th className="px-3 py-2 font-semibold">Category</th>
+            <th className="px-3 py-2 font-semibold">Current</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200 bg-white">
+          {displayRows.length === 0 ? (
+            <tr>
+              <td className="px-3 py-3 text-slate-600" colSpan={2}>
+                No current categories.
+              </td>
+            </tr>
+          ) : (
+            displayRows.map((row) => (
+              <tr key={row.label}>
+                <td className="px-3 py-2 font-medium text-slate-950">{row.label}</td>
+                <td className="px-3 py-2 text-slate-700">{row.currentCount}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 function MatchGroupsTable({ run }: { run: ReconciliationRunDetail }) {
   return (
@@ -1264,7 +1395,6 @@ function ExceptionsTable({
   canModify: boolean;
 }) {
   const exportUrl = getReconciliationExceptionsCsvUrl(run.reconciliation_run_id, filters);
-  const categoryCounts = getExceptionCategoryCounts(run);
   const reviewStatusCounts = getReviewStatusCounts(run);
 
   return (
@@ -1273,8 +1403,8 @@ function ExceptionsTable({
         <div>
           <h3 className="text-base font-semibold text-slate-950">Unmatched items</h3>
           <p className="mt-1 text-sm text-slate-600">
-            Items that did not pair cleanly become Statement Not on GL, Schedule Not on Statement,
-            or Needs Review. Showing {run.exceptions.length} of {run.exception_count}.
+            Items that did not pair cleanly become On statement-not on GL, On schedule-not on
+            statement, or Needs manual review. Showing {run.exceptions.length} of {run.exception_count}.
           </p>
           <div className="mt-2 flex flex-wrap gap-2">
             {reviewStatusCounts.map(([status, count]) => (
@@ -1282,17 +1412,6 @@ function ExceptionsTable({
                 {formatReason(status)}: {count}
               </span>
             ))}
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {categoryCounts.length === 0 ? (
-              <span className="text-sm text-slate-600">No unresolved exception categories.</span>
-            ) : (
-              categoryCounts.map(([category, count]) => (
-                <span className={categoryBadgeClassName(category)} key={category}>
-                  {formatReason(category)}: {count}
-                </span>
-              ))
-            )}
           </div>
         </div>
         <div className="grid gap-3 md:grid-cols-[140px_170px_150px_160px_160px_minmax(180px,1fr)_auto]">
@@ -1320,9 +1439,8 @@ function ExceptionsTable({
               }
             >
               <option value="">All types</option>
-              <option value="missing_in_dealertrack">Statement Not on GL (BOA-only)</option>
-              <option value="missing_in_boa">Schedule Not on Statement (Dealertrack-only)</option>
-              <option value="duplicate_transaction">Duplicate</option>
+              <option value="missing_in_dealertrack">On statement-not on GL</option>
+              <option value="missing_in_boa">On schedule-not on statement</option>
             </select>
           </label>
           <label className="grid gap-1 text-sm font-medium text-slate-700">
@@ -1395,42 +1513,34 @@ function ExceptionsTable({
         <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
-              <th className="px-3 py-2 font-semibold">Type</th>
+              <th className="px-3 py-2 font-semibold">Placement</th>
               <th className="px-3 py-2 font-semibold">Status</th>
               <th className="px-3 py-2 font-semibold">Review</th>
               <th className="px-3 py-2 font-semibold">Assigned</th>
               <th className="px-3 py-2 font-semibold">Source</th>
               <th className="px-3 py-2 font-semibold">Stock</th>
               <th className="px-3 py-2 font-semibold">VIN6</th>
-              <th className="px-3 py-2 font-semibold">VIN</th>
               <th className="px-3 py-2 font-semibold">Amount</th>
-              <th className="px-3 py-2 font-semibold">Reason</th>
-              <th className="px-3 py-2 font-semibold">BOA Notes / GL Notes</th>
+              <th className="px-3 py-2 font-semibold">Research prompt</th>
+              <th className="px-3 py-2 font-semibold">Note</th>
               <th className="px-3 py-2 font-semibold">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 bg-white">
             {run.exceptions.length === 0 ? (
               <tr>
-                <td className="px-3 py-3 text-slate-600" colSpan={12}>
+                <td className="px-3 py-3 text-slate-600" colSpan={11}>
                   No unmatched items.
                 </td>
               </tr>
             ) : (
               run.exceptions.map((exception) => (
                 <tr
-                  className={exceptionRowClassName(exception.status, exception.reason)}
+                  className={exceptionRowClassName(exception.status)}
                   key={exception.exception_id}
                 >
                   <td className="px-3 py-2 font-medium">
-                    <div className="flex flex-col gap-1">
-                      <span>{formatReason(exception.exception_type)}</span>
-                      {exception.status === "unresolved" ? (
-                        <span className={categoryBadgeClassName(exception.exception_category)}>
-                          {formatReason(exception.exception_category)}
-                        </span>
-                      ) : null}
-                    </div>
+                    {formatExceptionPlacement(exception)}
                   </td>
                   <td className="px-3 py-2">
                     <span className={statusBadgeClassName(exception.status)}>
@@ -1474,41 +1584,23 @@ function ExceptionsTable({
                   <td className="px-3 py-2">{exception.source_type.toUpperCase()}</td>
                   <td className="px-3 py-2">{exception.transaction.stock_number ?? "n/a"}</td>
                   <td className="px-3 py-2">{computeDisplayVin6(exception.transaction)}</td>
-                  <td className="px-3 py-2">{exception.transaction.vin ?? "n/a"}</td>
                   <td className="px-3 py-2">{formatAmount(exception.transaction)}</td>
-                  <td className="px-3 py-2">{exception.reason}</td>
+                  <td className="px-3 py-2">{neutralExceptionPrompt(exception)}</td>
                   <td className="min-w-56 px-3 py-2">
-                    {exception.source_type === "boa" ? (
-                      <input
-                        className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
-                        defaultValue={exception.boa_notes}
-                        disabled={!canModify || reviewUpdatingId === exception.exception_id}
-                        placeholder="BOA Notes"
-                        type="text"
-                        onBlur={(event) => {
-                          if (event.currentTarget.value !== exception.boa_notes) {
-                            onReviewUpdate(exception.exception_id, {
-                              boa_notes: event.currentTarget.value,
-                            });
-                          }
-                        }}
-                      />
-                    ) : (
-                      <input
-                        className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
-                        defaultValue={exception.gl_notes}
-                        disabled={!canModify || reviewUpdatingId === exception.exception_id}
-                        placeholder="GL Notes"
-                        type="text"
-                        onBlur={(event) => {
-                          if (event.currentTarget.value !== exception.gl_notes) {
-                            onReviewUpdate(exception.exception_id, {
-                              gl_notes: event.currentTarget.value,
-                            });
-                          }
-                        }}
-                      />
-                    )}
+                    <input
+                      className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
+                      defaultValue={exception.review_notes}
+                      disabled={!canModify || reviewUpdatingId === exception.exception_id}
+                      placeholder="Add review notes"
+                      type="text"
+                      onBlur={(event) => {
+                        if (event.currentTarget.value !== exception.review_notes) {
+                          onReviewUpdate(exception.exception_id, {
+                            review_notes: event.currentTarget.value,
+                          });
+                        }
+                      }}
+                    />
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-2">
@@ -1594,7 +1686,7 @@ function HistorySection({
                   key={run.reconciliation_run_id}
                 >
                   <td className="px-3 py-2 font-medium text-slate-950">
-                    {run.reconciliation_run_id}
+                    {formatRunId(run.created_at)}
                   </td>
                   <td className="px-3 py-2 text-slate-700">{run.store_name ?? "n/a"}</td>
                   <td className="px-3 py-2 text-slate-700">{run.boa_filename}</td>
@@ -1673,8 +1765,6 @@ function computeDisplayVin6(transaction: ReconciledTransaction): string {
   return "n/a";
 }
 
-
-
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString(undefined, {
     dateStyle: "short",
@@ -1686,16 +1776,14 @@ function formatSignedDelta(value: number) {
   return value > 0 ? `+${value}` : `${value}`;
 }
 
-
-
-function exceptionRowClassName(status: string, reason: string) {
+function exceptionRowClassName(status: string) {
   if (status === "resolved") {
     return "bg-emerald-50 text-emerald-950";
   }
   if (status === "ignored") {
     return "bg-slate-50 text-slate-500";
   }
-  return isDuplicateException(reason) ? "bg-amber-50 text-amber-950" : "";
+  return "";
 }
 
 function statusBadgeClassName(status: string) {
@@ -1723,55 +1811,79 @@ function reviewStatusBadgeClassName(status: string) {
   return `${base} bg-amber-100 text-amber-900`;
 }
 
-function categoryBadgeClassName(category: string) {
-  const base = "inline-flex w-fit rounded-md px-2 py-1 text-xs font-semibold";
-  if (category === "amount_mismatch" || category === "sign_mismatch") {
-    return `${base} bg-red-100 text-red-900`;
-  }
-  if (category === "possible_timing_issue") {
-    return `${base} bg-cyan-100 text-cyan-900`;
-  }
-  if (category === "duplicate_or_one_to_many") {
-    return `${base} bg-amber-100 text-amber-900`;
-  }
-  if (category === "unclassified") {
-    return `${base} bg-slate-200 text-slate-700`;
-  }
-  return `${base} bg-violet-100 text-violet-900`;
-}
-
-function isDuplicateException(reason: string) {
-  return reason.toLowerCase().includes("duplicate");
-}
-
 function getExceptionBreakdown(run: ReconciliationRunDetail) {
   return run.exceptions.reduce(
     (totals, exception) => {
-      if (exception.exception_type === "missing_in_dealertrack") {
-        totals.boaOnly += 1;
-      } else if (exception.exception_type === "missing_in_boa") {
-        totals.dealertrackOnly += 1;
-      } else if (
-        exception.exception_type === "duplicate_transaction" ||
-        isDuplicateException(exception.reason)
-      ) {
-        totals.duplicates += 1;
+      const placement = getExceptionPlacement(exception);
+      if (placement === "statement") {
+        totals.statementNotOnGl += 1;
+      } else if (placement === "schedule") {
+        totals.scheduleNotOnStatement += 1;
+      } else if (placement === "manual_review") {
+        totals.manualReview += 1;
       }
       return totals;
     },
-    { boaOnly: 0, dealertrackOnly: 0, duplicates: 0 },
+    { statementNotOnGl: 0, scheduleNotOnStatement: 0, manualReview: 0 },
   );
 }
 
-function getExceptionCategoryCounts(run: ReconciliationRunDetail) {
-  const counts = new Map<string, number>();
-  for (const exception of run.exceptions) {
-    if (exception.review_status === "resolved" || exception.review_status === "ignored") {
-      continue;
-    }
-    counts.set(exception.exception_category, (counts.get(exception.exception_category) ?? 0) + 1);
+function getExceptionPlacement(
+  exception: ReconciliationRunDetail["exceptions"][number],
+): "statement" | "schedule" | "manual_review" {
+  if (
+    exception.exception_type === "needs_review_vin6_only" ||
+    exception.exception_category === "vin6_match_amount_mismatch"
+  ) {
+    return "manual_review";
   }
-  return [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
+  if (exception.exception_type === "missing_in_dealertrack" || exception.source_type === "boa") {
+    return "statement";
+  }
+  return "schedule";
+}
+
+function formatExceptionPlacement(exception: ReconciliationRunDetail["exceptions"][number]) {
+  const placement = getExceptionPlacement(exception);
+  if (placement === "statement") {
+    return "On statement-not on GL";
+  }
+  if (placement === "schedule") {
+    return "On schedule-not on statement";
+  }
+  return "Needs manual review";
+}
+
+function neutralExceptionPrompt(exception: ReconciliationRunDetail["exceptions"][number]) {
+  const placement = getExceptionPlacement(exception);
+  if (placement === "statement") {
+    return "BOA statement row with no matching Dealertrack/GL row";
+  }
+  if (placement === "schedule") {
+    return "Dealertrack/GL row with no matching BOA statement row";
+  }
+  return "VIN appears on both sides but amount differs; review manually";
+}
+
+function formatCategoryLabel(category: string) {
+  if (category === "missing_in_dealertrack") {
+    return "On statement-not on GL";
+  }
+  if (category === "missing_in_boa") {
+    return "On schedule-not on statement";
+  }
+  return "Needs manual review";
+}
+
+function aggregateCategoryTrendRows(rows: ReconciliationRunComparison["category_summary"]) {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const label = formatCategoryLabel(row.exception_category);
+    counts.set(label, (counts.get(label) ?? 0) + row.current_count);
+  }
+  return [...counts.entries()]
+    .map(([label, currentCount]) => ({ label, currentCount }))
+    .sort((left, right) => right.currentCount - left.currentCount || left.label.localeCompare(right.label));
 }
 
 function getReviewStatusCounts(run: ReconciliationRunDetail) {

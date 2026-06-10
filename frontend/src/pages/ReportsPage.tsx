@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 import { getMonthEndReport, getMonthEndReportCsvUrl } from "../api/reports";
 import type { MonthEndReport, MonthEndReportAccount } from "../types/report";
+import { formatRunId } from "../utils/formatRunId";
 
 export function ReportsPage() {
   const [startDate, setStartDate] = useState(defaultStartDate());
@@ -210,7 +211,7 @@ function IncludedRuns({ runs }: { runs: MonthEndReport["reconciliation_runs_incl
               runs.map((run) => (
                 <tr key={run.reconciliation_run_id}>
                   <td className="px-3 py-2 font-medium text-slate-950">
-                    {run.reconciliation_run_id}
+                    {formatRunId(run.created_at)}
                   </td>
                   <td className="px-3 py-2 text-slate-700">{run.boa_filename}</td>
                   <td className="px-3 py-2 text-slate-700">{run.dealertrack_filename}</td>

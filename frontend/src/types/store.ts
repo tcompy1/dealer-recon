@@ -21,11 +21,6 @@ export type DealerGroupAnalytics = {
     store_name: string;
     run_count: number;
     unresolved_count: number;
-    match_rate_percent: number;
     recurring_exception_count: number;
-    reviewer_workload: Array<{
-      reviewer: string;
-      exception_count: number;
-    }>;
   }>;
 };
