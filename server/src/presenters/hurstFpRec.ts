@@ -1,6 +1,20 @@
 import { formatCents } from "../domain/money.js";
-import { computeVin6, extractVin6FromDescription } from "../domain/vin6.js";
+import { computeVin6 } from "../domain/vin6.js";
 import type { ReconciliationRunDetail, SourceType, TransactionSummary } from "../domain/types.js";
+
+export type HurstFpRecRowClassification = "matched" | "boa_only" | "dealertrack_only";
+
+export type HurstFpRecClerkRow = {
+  hurst_description: string;
+  boa_vin: string;
+  boa_vin6: string;
+  ending_balance_cents: number | null;
+  dt_2100_cents: number | null;
+  dt_vin6: string;
+  dt_description: string;
+  dt_control: string;
+  classification: HurstFpRecRowClassification;
+};
 
 export type HurstFpRecSection = {
   title: string;
@@ -31,72 +45,92 @@ export type HurstFpRecSummary = {
 export type HurstFpRecWorkbook = {
   store_name: string;
   period_date: string | null;
+  rows: HurstFpRecClerkRow[];
+  boa_total_amount: string;
+  boa_total_amount_cents: number;
+  dealertrack_total_amount: string;
+  dealertrack_total_amount_cents: number;
   net_adjustments_amount: string;
   net_adjustments_amount_cents: number;
   variance_amount: string;
   variance_amount_cents: number;
   summary: HurstFpRecSummary;
+  // Compatibility fields retained for JSON consumers while the export moves to
+  // the accepted clerk worksheet shape.
   schedule_not_on_statement: HurstFpRecSection;
   statement_not_on_gl: HurstFpRecSection;
 };
 
 type DetailException = ReconciliationRunDetail["exceptions"][number];
+type MatchGroup = ReconciliationRunDetail["match_groups"][number];
+
+const CLERK_HEADERS = [
+  "HURST",
+  "Serial No/VIN",
+  "VIN6",
+  "Ending Balance",
+  "2100",
+  "VIN6",
+  "Description",
+  "Control",
+];
 
 const SCHEDULE_SECTION_TITLE = "On schedule-not on statement";
 const STATEMENT_SECTION_TITLE = "On statement-not on GL";
-const FULL_VIN_RE = /\b(?=[A-HJ-NPR-Z0-9]{17}\b)(?=[A-HJ-NPR-Z0-9]*[A-Z])(?=[A-HJ-NPR-Z0-9]*\d)[A-HJ-NPR-Z0-9]{17}\b/gi;
+const FINAL_VIN_TOKEN_RE = /(?:^|\s)([A-HJ-NPR-Z0-9]{17})\s*$/i;
 
 export function buildHurstFpRecWorkbook(detail: ReconciliationRunDetail): HurstFpRecWorkbook {
-  const scheduleRowsRaw: HurstFpRecRow[] = [];
-  const statementRowsRaw: HurstFpRecRow[] = [];
+  const rows = sortClerkRows([
+    ...detail.match_groups.flatMap(buildRowsFromMatchGroup),
+    ...detail.exceptions.flatMap(buildRowsFromException),
+  ]);
 
-  for (const exception of detail.exceptions) {
-    const placement = worksheetPlacement(exception);
-    if (placement === "schedule") {
-      scheduleRowsRaw.push(buildRow(exception));
-    } else if (placement === "statement") {
-      statementRowsRaw.push(buildRow(exception));
-    }
-  }
-
-  const scheduleRows = scheduleRowsRaw.map((row) => withSignedAmount(row, -1));
-  const statementRows = statementRowsRaw.map((row) => withSignedAmount(row, +1));
-
-  const scheduleSection = buildSection(SCHEDULE_SECTION_TITLE, scheduleRows);
-  const statementSection = buildSection(STATEMENT_SECTION_TITLE, statementRows);
-
-  const outstandingPerStmtCents = sumSourceTransactions(
-    detail,
-    "boa",
-    (amountCents) => Math.abs(amountCents),
+  const boaTotalCents = rows.reduce(
+    (total, row) => total + (row.ending_balance_cents ?? 0),
+    0,
   );
-  const gl2100Cents = sumSourceTransactions(
-    detail,
-    "dealertrack",
-    (amountCents) => amountCents,
+  const dealertrackTotalCents = rows.reduce(
+    (total, row) => total + (row.dt_2100_cents ?? 0),
+    0,
   );
-  const totalGlCents = gl2100Cents;
-  const differenceCents = outstandingPerStmtCents + totalGlCents;
-  const netAdjustmentsCents =
-    statementSection.total_amount_cents + scheduleSection.total_amount_cents;
-  const varianceCents = differenceCents - netAdjustmentsCents;
+  const varianceCents = boaTotalCents + dealertrackTotalCents;
+  const netAdjustmentsCents = rows
+    .filter((row) => row.classification !== "matched")
+    .reduce(
+      (total, row) => total + (row.ending_balance_cents ?? 0) + (row.dt_2100_cents ?? 0),
+      0,
+    );
+
+  const statementSection = buildLegacySection(
+    STATEMENT_SECTION_TITLE,
+    rows.filter((row) => row.classification === "boa_only").map(legacyStatementRow),
+  );
+  const scheduleSection = buildLegacySection(
+    SCHEDULE_SECTION_TITLE,
+    rows.filter((row) => row.classification === "dealertrack_only").map(legacyScheduleRow),
+  );
 
   return {
     store_name: detail.store_name ?? "Unassigned store",
     period_date: resolvePeriodAnchorDate(detail),
+    rows,
+    boa_total_amount: formatCents(boaTotalCents),
+    boa_total_amount_cents: boaTotalCents,
+    dealertrack_total_amount: formatCents(dealertrackTotalCents),
+    dealertrack_total_amount_cents: dealertrackTotalCents,
     net_adjustments_amount: formatCents(netAdjustmentsCents),
     net_adjustments_amount_cents: netAdjustmentsCents,
     variance_amount: formatCents(varianceCents),
     variance_amount_cents: varianceCents,
     summary: {
-      outstanding_per_stmt_amount: formatCents(outstandingPerStmtCents),
-      outstanding_per_stmt_amount_cents: outstandingPerStmtCents,
-      gl_2100_amount: formatCents(gl2100Cents),
-      gl_2100_amount_cents: gl2100Cents,
-      total_gl_amount: formatCents(totalGlCents),
-      total_gl_amount_cents: totalGlCents,
-      difference_amount: formatCents(differenceCents),
-      difference_amount_cents: differenceCents,
+      outstanding_per_stmt_amount: formatCents(boaTotalCents),
+      outstanding_per_stmt_amount_cents: boaTotalCents,
+      gl_2100_amount: formatCents(dealertrackTotalCents),
+      gl_2100_amount_cents: dealertrackTotalCents,
+      total_gl_amount: formatCents(dealertrackTotalCents),
+      total_gl_amount_cents: dealertrackTotalCents,
+      difference_amount: formatCents(varianceCents),
+      difference_amount_cents: varianceCents,
     },
     schedule_not_on_statement: scheduleSection,
     statement_not_on_gl: statementSection,
@@ -105,24 +139,20 @@ export function buildHurstFpRecWorkbook(detail: ReconciliationRunDetail): HurstF
 
 export function toHurstFpRecXlsHtml(workbook: HurstFpRecWorkbook): string {
   const accountingFormat = '\\\\\\(\\#\\,\\#\\#0\\.00\\\\\\)\\;\\#\\,\\#\\#0\\.00';
-  const dateFormat = "mm\\-dd\\-yy";
   const styles = `
     body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #111827; }
-    table { border-collapse: collapse; margin-bottom: 14px; width: 780px; }
+    table { border-collapse: collapse; width: 1260px; }
     th, td { border: 1px solid #9ca3af; padding: 4px 8px; text-align: left; vertical-align: top; }
     th { background-color: #d9e2f3; color: #111827; font-weight: bold; }
     tr.title-row td { border: 0; font-size: 14pt; font-weight: bold; padding: 0 0 8px 0; }
-    tr.summary-row td { background-color: #ffffff; }
-    tr.summary-row.subheader td { font-weight: bold; background-color: #f3f4f6; }
-    tr.summary-row.difference td, tr.bottom-row.net td { background-color: #fff2cc; font-weight: bold; }
-    tr.bottom-row.variance td { background-color: #ffffff; font-weight: bold; }
-    tr.subtotal-row td { background-color: #f3f4f6; font-weight: bold; }
-    td.label { font-weight: bold; }
+    tr.period-row td { border: 0; padding: 0 0 8px 0; }
+    tr.total-row td { background-color: #f3f4f6; font-weight: bold; }
+    tr.variance-row td { background-color: #fff2cc; font-weight: bold; }
     td.amount { text-align: right; font-family: Consolas, Menlo, monospace; mso-number-format: '${accountingFormat}'; }
     td.amount-negative { color: #b91c1c; }
-    td.date { mso-number-format: '${dateFormat}'; }
-    td.no-items { color: #6b7280; }
   `;
+  const colWidths = [210, 160, 80, 120, 120, 80, 360, 130];
+  const colgroup = `<colgroup>${colWidths.map((width) => `<col style="width:${width}px"/>`).join("")}</colgroup>`;
 
   return [
     "<!DOCTYPE html>",
@@ -133,10 +163,18 @@ export function toHurstFpRecXlsHtml(workbook: HurstFpRecWorkbook): string {
     `<style>${styles}</style>`,
     "</head>",
     "<body>",
-    worksheetSummaryHtml(workbook),
-    sectionHtml(workbook.schedule_not_on_statement, ["GL Floored note", "BOA Floored note"]),
-    sectionHtml(workbook.statement_not_on_gl, ["BOA Floored note", "GL Floored note"]),
-    bottomRowsHtml(workbook),
+    `<table>${colgroup}`,
+    "<thead>",
+    `<tr class="title-row"><td colspan="8">Floorplan Reconciliation - ${escapeHtml(workbook.store_name)}</td></tr>`,
+    `<tr class="period-row"><td colspan="8">Period date ${escapeHtml(workbook.period_date ?? "")}</td></tr>`,
+    `<tr>${CLERK_HEADERS.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>`,
+    "</thead>",
+    `<tbody>${workbook.rows.map(clerkRowHtml).join("")}</tbody>`,
+    "<tfoot>",
+    totalRowHtml("Total", workbook.boa_total_amount_cents, workbook.dealertrack_total_amount_cents),
+    varianceRowHtml(workbook.variance_amount_cents),
+    "</tfoot>",
+    "</table>",
     "</body>",
     "</html>",
   ].join("\n");
@@ -151,198 +189,234 @@ export function toHurstFpRecFilename(workbook: HurstFpRecWorkbook): string {
   return `floorplan-reconciliation-${store}-${period}.xls`;
 }
 
-function worksheetSummaryHtml(workbook: HurstFpRecWorkbook): string {
-  return [
-    "<table>",
-    `<tr class="title-row"><td colspan="2">Floorplan Reconciliation - ${escapeHtml(workbook.store_name)}</td></tr>`,
-    `<tr class="summary-row"><td class="label">Period date</td><td class="date">${escapeHtml(workbook.period_date ?? "")}</td></tr>`,
-    summaryAmountRow("Outstanding per stmt", workbook.summary.outstanding_per_stmt_amount_cents),
-    `<tr class="summary-row subheader"><td class="label">GL Balances</td><td></td></tr>`,
-    summaryAmountRow("2100", workbook.summary.gl_2100_amount_cents),
-    summaryAmountRow("Total GL", workbook.summary.total_gl_amount_cents),
-    summaryAmountRow("Difference", workbook.summary.difference_amount_cents, "difference"),
-    "</table>",
-  ].join("");
+function buildRowsFromMatchGroup(group: MatchGroup): HurstFpRecClerkRow[] {
+  const boa = group.transactions.find((linked) => isBoaSource(linked.source_type))?.transaction;
+  const dealertrack = group.transactions.find((linked) =>
+    isDealertrackSource(linked.source_type),
+  )?.transaction;
+
+  if (boa && dealertrack) {
+    return [buildMatchedRow(boa, dealertrack)];
+  }
+  if (boa) {
+    return [buildBoaOnlyRow(boa)];
+  }
+  if (dealertrack) {
+    return [buildDealertrackOnlyRow(dealertrack)];
+  }
+  return [];
 }
 
-function summaryAmountRow(label: string, amountCents: number, extraClass = ""): string {
-  const className = ["summary-row", extraClass].filter(Boolean).join(" ");
-  return `<tr class="${className}"><td class="label">${escapeHtml(label)}</td><td class="amount${
-    amountCents < 0 ? " amount-negative" : ""
-  }">${escapeHtml(formatAccountingCents(amountCents))}</td></tr>`;
+function buildRowsFromException(exception: DetailException): HurstFpRecClerkRow[] {
+  if (isBoaSource(exception.source_type)) {
+    return [buildBoaOnlyRow(exception.transaction)];
+  }
+  if (isDealertrackSource(exception.source_type)) {
+    return [buildDealertrackOnlyRow(exception.transaction)];
+  }
+  return [];
 }
 
-function sectionHtml(
-  section: HurstFpRecSection,
-  noteColumns: ["GL Floored note", "BOA Floored note"] | ["BOA Floored note", "GL Floored note"],
-): string {
-  const headers = ["Unit / stock / VIN6 reference", "Amount", ...noteColumns];
-  const colWidths = [260, 110, 190, 190];
-  const colgroup = `<colgroup>${colWidths.map((width) => `<col style="width:${width}px"/>`).join("")}</colgroup>`;
-  const header = headers.map((label) => `<th>${escapeHtml(label)}</th>`).join("");
-  const rows = section.rows.length === 0
-    ? `<tr><td class="no-items" colspan="${headers.length}">No items</td></tr>`
-    : section.rows.map((row) => sectionRowHtml(row, noteColumns)).join("");
-  const subtotal = `<tr class="subtotal-row"><td>Subtotal</td><td class="amount${
-    section.total_amount_cents < 0 ? " amount-negative" : ""
-  }">${escapeHtml(formatAccountingCents(section.total_amount_cents))}</td><td colspan="2"></td></tr>`;
-
-  return [
-    `<table>${colgroup}`,
-    `<thead><tr><th colspan="${headers.length}">${escapeHtml(section.title)}</th></tr><tr>${header}</tr></thead>`,
-    `<tbody>${rows}${subtotal}</tbody>`,
-    "</table>",
-  ].join("");
+function buildMatchedRow(
+  boa: TransactionSummary,
+  dealertrack: TransactionSummary,
+): HurstFpRecClerkRow {
+  return {
+    ...emptyClerkRow("matched"),
+    hurst_description: boa.description ?? "",
+    boa_vin: boaVin(boa),
+    boa_vin6: boaVin6(boa),
+    ending_balance_cents: Math.abs(boa.amount_cents),
+    dt_2100_cents: dealertrack2100Cents(dealertrack),
+    dt_vin6: dealertrackVin6(dealertrack),
+    dt_description: dealertrack.description ?? "",
+    dt_control: dealertrackControl(dealertrack),
+  };
 }
 
-function sectionRowHtml(
-  row: HurstFpRecRow,
-  noteColumns: ["GL Floored note", "BOA Floored note"] | ["BOA Floored note", "GL Floored note"],
-): string {
-  const notes = noteColumns.map((column) =>
-    column === "GL Floored note" ? row.gl_floored_note : row.boa_floored_note,
+function buildBoaOnlyRow(boa: TransactionSummary): HurstFpRecClerkRow {
+  return {
+    ...emptyClerkRow("boa_only"),
+    hurst_description: boa.description ?? "",
+    boa_vin: boaVin(boa),
+    boa_vin6: boaVin6(boa),
+    ending_balance_cents: Math.abs(boa.amount_cents),
+  };
+}
+
+function buildDealertrackOnlyRow(dealertrack: TransactionSummary): HurstFpRecClerkRow {
+  return {
+    ...emptyClerkRow("dealertrack_only"),
+    dt_2100_cents: dealertrack2100Cents(dealertrack),
+    dt_vin6: dealertrackVin6(dealertrack),
+    dt_description: dealertrack.description ?? "",
+    dt_control: dealertrackControl(dealertrack),
+  };
+}
+
+function emptyClerkRow(classification: HurstFpRecRowClassification): HurstFpRecClerkRow {
+  return {
+    hurst_description: "",
+    boa_vin: "",
+    boa_vin6: "",
+    ending_balance_cents: null,
+    dt_2100_cents: null,
+    dt_vin6: "",
+    dt_description: "",
+    dt_control: "",
+    classification,
+  };
+}
+
+function sortClerkRows(rows: HurstFpRecClerkRow[]): HurstFpRecClerkRow[] {
+  return [...rows].sort((left, right) => {
+    if (left.ending_balance_cents !== null && right.ending_balance_cents !== null) {
+      const endingBalanceDelta = left.ending_balance_cents - right.ending_balance_cents;
+      if (endingBalanceDelta !== 0) {
+        return endingBalanceDelta;
+      }
+      return compareTieBreakers(left, right);
+    }
+    if (left.ending_balance_cents !== null) {
+      return -1;
+    }
+    if (right.ending_balance_cents !== null) {
+      return 1;
+    }
+
+    const leftDt = Math.abs(left.dt_2100_cents ?? 0);
+    const rightDt = Math.abs(right.dt_2100_cents ?? 0);
+    const dtDelta = leftDt - rightDt;
+    if (dtDelta !== 0) {
+      return dtDelta;
+    }
+    return compareTieBreakers(left, right);
+  });
+}
+
+function compareTieBreakers(left: HurstFpRecClerkRow, right: HurstFpRecClerkRow): number {
+  return (
+    left.boa_vin6.localeCompare(right.boa_vin6) ||
+    left.dt_vin6.localeCompare(right.dt_vin6) ||
+    left.dt_control.localeCompare(right.dt_control)
   );
+}
+
+function clerkRowHtml(row: HurstFpRecClerkRow): string {
   return `<tr>
-    <td>${escapeHtml(row.unit_reference)}</td>
-    <td class="amount${row.amount_cents < 0 ? " amount-negative" : ""}">${escapeHtml(
-      formatAccountingCents(row.amount_cents),
-    )}</td>
-    <td>${escapeHtml(notes[0])}</td>
-    <td>${escapeHtml(notes[1])}</td>
+    <td>${escapeHtml(row.hurst_description)}</td>
+    <td>${escapeHtml(row.boa_vin)}</td>
+    <td>${escapeHtml(row.boa_vin6)}</td>
+    <td class="amount">${formatOptionalAccountingCents(row.ending_balance_cents)}</td>
+    <td class="amount${(row.dt_2100_cents ?? 0) < 0 ? " amount-negative" : ""}">${formatOptionalAccountingCents(row.dt_2100_cents)}</td>
+    <td>${escapeHtml(row.dt_vin6)}</td>
+    <td>${escapeHtml(row.dt_description)}</td>
+    <td>${escapeHtml(row.dt_control)}</td>
   </tr>`;
 }
 
-function bottomRowsHtml(workbook: HurstFpRecWorkbook): string {
-  return [
-    "<table>",
-    `<tr class="bottom-row net"><td class="label">Net adjustments</td><td class="amount${
-      workbook.net_adjustments_amount_cents < 0 ? " amount-negative" : ""
-    }">${escapeHtml(formatAccountingCents(workbook.net_adjustments_amount_cents))}</td></tr>`,
-    `<tr class="bottom-row variance"><td class="label">Variance</td><td class="amount${
-      workbook.variance_amount_cents < 0 ? " amount-negative" : ""
-    }">${escapeHtml(formatAccountingCents(workbook.variance_amount_cents))}</td></tr>`,
-    "</table>",
-  ].join("");
+function totalRowHtml(label: string, boaTotalCents: number, dealertrackTotalCents: number): string {
+  return `<tr class="total-row">
+    <td>${escapeHtml(label)}</td>
+    <td></td>
+    <td></td>
+    <td class="amount">${escapeHtml(formatAccountingCents(boaTotalCents))}</td>
+    <td class="amount${dealertrackTotalCents < 0 ? " amount-negative" : ""}">${escapeHtml(formatAccountingCents(dealertrackTotalCents))}</td>
+    <td></td>
+    <td></td>
+    <td></td>
+  </tr>`;
 }
 
-function sumSourceTransactions(
-  detail: ReconciliationRunDetail,
-  sourceType: SourceType,
-  mapAmount: (amountCents: number) => number,
-): number {
-  const seenTransactionIds = new Set<number>();
-  let total = 0;
-  const addTransaction = (transaction: TransactionSummary) => {
-    if (transaction.source_type !== sourceType || seenTransactionIds.has(transaction.id)) {
-      return;
-    }
-    seenTransactionIds.add(transaction.id);
-    total += mapAmount(transaction.amount_cents);
-  };
-
-  for (const group of detail.match_groups) {
-    for (const linked of group.transactions) {
-      addTransaction(linked.transaction);
-    }
-  }
-  for (const exception of detail.exceptions) {
-    addTransaction(exception.transaction);
-  }
-  return total;
+function varianceRowHtml(varianceCents: number): string {
+  return `<tr class="variance-row">
+    <td>Variance</td>
+    <td></td>
+    <td></td>
+    <td class="amount${varianceCents < 0 ? " amount-negative" : ""}">${escapeHtml(formatAccountingCents(varianceCents))}</td>
+    <td></td>
+    <td></td>
+    <td></td>
+    <td></td>
+  </tr>`;
 }
 
-function buildRow(exception: DetailException): HurstFpRecRow {
-  const transaction = exception.transaction;
-  const stockNumber = transaction.stock_number ?? "";
-  const descriptor = transaction.description ?? "";
-  const vin6 =
-    computeVin6(transaction.vin) ?? extractVin6FromDescription(descriptor) ?? "";
-  const { glFlooredDate, boaFlooredDate } = pickFlooredDates(exception);
+function isBoaSource(sourceType: SourceType): boolean {
+  return sourceType === "boa";
+}
 
+function isDealertrackSource(sourceType: SourceType): boolean {
+  return sourceType === "dealertrack" || sourceType === "dms" || sourceType === "gl";
+}
+
+function boaVin(transaction: TransactionSummary): string {
+  return cleanVin(transaction.vin) || finalVinToken(transaction.description) || "";
+}
+
+function boaVin6(transaction: TransactionSummary): string {
+  return computeVin6(boaVin(transaction)) ?? "";
+}
+
+function dealertrackVin6(transaction: TransactionSummary): string {
+  const descriptionVin6 = finalVin6FromDescription(transaction.description);
+  return descriptionVin6 ?? computeVin6(transaction.vin) ?? "";
+}
+
+function finalVin6FromDescription(description: string | null | undefined): string | null {
+  const vin = finalVinToken(description);
+  return vin ? vin.slice(-6) : null;
+}
+
+function finalVinToken(description: string | null | undefined): string {
+  if (!description) {
+    return "";
+  }
+  const match = description.toUpperCase().match(FINAL_VIN_TOKEN_RE);
+  return match?.[1] ?? "";
+}
+
+function cleanVin(vin: string | null | undefined): string {
+  return vin?.toUpperCase().trim() ?? "";
+}
+
+function dealertrack2100Cents(transaction: TransactionSummary): number {
+  return -Math.abs(transaction.amount_cents);
+}
+
+function dealertrackControl(transaction: TransactionSummary): string {
+  return transaction.reference_number?.trim() || transaction.stock_number?.trim() || "";
+}
+
+function legacyStatementRow(row: HurstFpRecClerkRow): HurstFpRecRow {
+  const amountCents = row.ending_balance_cents ?? 0;
   return {
-    unit_reference: buildUnitReference(stockNumber, vin6, transaction.reference_number, descriptor),
-    amount: transaction.amount,
-    amount_cents: transaction.amount_cents,
-    gl_floored_note: buildFlooredDateNote(glFlooredDate),
-    boa_floored_note: buildFlooredDateNote(boaFlooredDate),
+    unit_reference: [row.boa_vin6, row.boa_vin].filter(Boolean).join(" / "),
+    amount: formatCents(amountCents),
+    amount_cents: amountCents,
+    gl_floored_note: "",
+    boa_floored_note: "",
   };
 }
 
-function worksheetPlacement(exception: DetailException): "schedule" | "statement" | null {
-  if (exception.exception_type === "missing_in_boa") {
-    return "schedule";
-  }
-  if (exception.exception_type === "missing_in_dealertrack") {
-    return "statement";
-  }
-  if (
-    exception.source_type === "dealertrack" ||
-    exception.source_type === "dms" ||
-    exception.source_type === "gl"
-  ) {
-    return "schedule";
-  }
-  if (exception.source_type === "boa") {
-    return "statement";
-  }
-  return null;
+function legacyScheduleRow(row: HurstFpRecClerkRow): HurstFpRecRow {
+  const amountCents = row.dt_2100_cents ?? 0;
+  return {
+    unit_reference: [row.dt_control, row.dt_vin6].filter(Boolean).join(" / "),
+    amount: formatCents(amountCents),
+    amount_cents: amountCents,
+    gl_floored_note: "",
+    boa_floored_note: "",
+  };
 }
 
-function buildUnitReference(
-  stockNumber: string,
-  vin6: string,
-  referenceNumber: string | null,
-  descriptor: string,
-): string {
-  const parts = [stockNumber.trim(), vin6.trim()].filter(Boolean);
-  if (parts.length > 0) {
-    return parts.join(" / ");
-  }
-  const fallback = referenceNumber?.trim() || descriptor.trim();
-  return scrubFullVin(fallback);
-}
-
-function buildFlooredDateNote(date: string): string {
-  return date ? `Floored ${date}` : "";
-}
-
-function pickFlooredDates(exception: DetailException): {
-  glFlooredDate: string;
-  boaFlooredDate: string;
-} {
-  const transactionDate = exception.transaction.transaction_date ?? "";
-  const postDate = exception.transaction.post_date ?? "";
-  const primary = formatDateMmDdYy(transactionDate || postDate);
-  const source = exception.source_type;
-  if (source === "boa") {
-    return { glFlooredDate: "", boaFlooredDate: primary };
-  }
-  if (source === "dealertrack" || source === "dms" || source === "gl") {
-    return { glFlooredDate: primary, boaFlooredDate: "" };
-  }
-  return { glFlooredDate: "", boaFlooredDate: "" };
-}
-
-function formatDateMmDdYy(value: string | null | undefined): string {
-  if (!value) {
-    return "";
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return "";
-  }
-  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})/.exec(trimmed);
-  if (isoMatch) {
-    const [, yyyy, mm, dd] = isoMatch;
-    return `${mm}-${dd}-${yyyy.slice(2)}`;
-  }
-  const usMatch = /^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/.exec(trimmed);
-  if (usMatch) {
-    const [, mm, dd, yyRaw] = usMatch;
-    const yy = yyRaw.length === 4 ? yyRaw.slice(2) : yyRaw.padStart(2, "0");
-    return `${mm.padStart(2, "0")}-${dd.padStart(2, "0")}-${yy}`;
-  }
-  return trimmed;
+function buildLegacySection(title: string, rows: HurstFpRecRow[]): HurstFpRecSection {
+  const totalCents = rows.reduce((total, row) => total + row.amount_cents, 0);
+  return {
+    title,
+    rows,
+    total_amount: formatCents(totalCents),
+    total_amount_cents: totalCents,
+  };
 }
 
 function resolvePeriodAnchorDate(detail: ReconciliationRunDetail): string | null {
@@ -374,30 +448,30 @@ function resolvePeriodAnchorDate(detail: ReconciliationRunDetail): string | null
   return formatDateMmDdYy(latestIso ?? detail.created_at);
 }
 
-function withSignedAmount(row: HurstFpRecRow, sign: 1 | -1): HurstFpRecRow {
-  const signedCents = sign * Math.abs(row.amount_cents);
-  return {
-    ...row,
-    amount_cents: signedCents,
-    amount: formatCents(signedCents),
-  };
+function formatDateMmDdYy(value: string | null | undefined): string {
+  if (!value) {
+    return "";
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})/.exec(trimmed);
+  if (isoMatch) {
+    const [, yyyy, mm, dd] = isoMatch;
+    return `${mm}-${dd}-${yyyy.slice(2)}`;
+  }
+  const usMatch = /^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/.exec(trimmed);
+  if (usMatch) {
+    const [, mm, dd, yyRaw] = usMatch;
+    const yy = yyRaw.length === 4 ? yyRaw.slice(2) : yyRaw.padStart(2, "0");
+    return `${mm.padStart(2, "0")}-${dd.padStart(2, "0")}-${yy}`;
+  }
+  return trimmed;
 }
 
-function buildSection(title: string, rows: HurstFpRecRow[]): HurstFpRecSection {
-  const sortedRows = [...rows].sort((left, right) => {
-    const magnitudeDelta = Math.abs(left.amount_cents) - Math.abs(right.amount_cents);
-    if (magnitudeDelta !== 0) {
-      return magnitudeDelta;
-    }
-    return left.unit_reference.localeCompare(right.unit_reference);
-  });
-  const totalCents = sortedRows.reduce((total, row) => total + row.amount_cents, 0);
-  return {
-    title,
-    rows: sortedRows,
-    total_amount: formatCents(totalCents),
-    total_amount_cents: totalCents,
-  };
+function formatOptionalAccountingCents(amountCents: number | null): string {
+  return amountCents === null ? "" : escapeHtml(formatAccountingCents(amountCents));
 }
 
 function formatAccountingCents(amountCents: number): string {
@@ -409,10 +483,6 @@ function formatAccountingCents(amountCents: number): string {
     return `(${dollarsWithCommas}.${cents})`;
   }
   return `${dollarsWithCommas}.${cents}`;
-}
-
-function scrubFullVin(value: string): string {
-  return value.replace(FULL_VIN_RE, (vin) => computeVin6(vin) ?? vin.slice(-6));
 }
 
 function escapeHtml(value: string | null | undefined): string {

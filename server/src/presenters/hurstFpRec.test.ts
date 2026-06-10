@@ -9,14 +9,14 @@ import { parseAmountToCents } from "../domain/money.js";
 import { buildHurstFpRecWorkbook, toHurstFpRecFilename, toHurstFpRecXlsHtml } from "./hurstFpRec.js";
 
 const CLERK_HEADERS = [
-  "HURST / BOA description",
+  "HURST",
   "Serial No/VIN",
-  "VIN6 from BOA VIN",
+  "VIN6",
   "Ending Balance",
   "2100",
-  "VIN6 from Dealertrack description",
-  "Dealertrack Description",
-  "Dealertrack Control",
+  "VIN6",
+  "Description",
+  "Control",
 ];
 
 const goldenCsv = readFileSync(
@@ -511,7 +511,7 @@ describe("Hurst FP Rec clerk A-H export contract", () => {
     expect(matchedRow?.[1]).toBe("JM3KFBAL0S0764873");
     expect(matchedRow?.[2]).toBe("764873");
     expect(matchedRow?.[5]).toBe("764873");
-    expect(matchedRow?.[6]).toBe("2025 MAZDA CX-5         1/09/26  JM3KFBAL0S0764873");
+    expect(matchedRow?.[6]).toBe("2025 MAZDA CX-5 1/09/26 JM3KFBAL0S0764873");
     expect(matchedRow?.[7]).toBe("M21276");
     expect(matchedRow?.slice(0, 8).every(hasText)).toBe(true);
   });
@@ -529,7 +529,7 @@ describe("Hurst FP Rec clerk A-H export contract", () => {
     const rows = clerkHtmlRows();
     const dealertrackOnlyRow = findRow(
       rows,
-      (row) => row[6] === "TRANSFER JM3KFBAL0S0764873   2/27/26  JM1BPABL0T1867950",
+      (row) => row[6] === "TRANSFER JM3KFBAL0S0764873 2/27/26 JM1BPABL0T1867950",
     );
 
     expectDealertrackOnlyShape(dealertrackOnlyRow);
@@ -542,7 +542,7 @@ describe("Hurst FP Rec clerk A-H export contract", () => {
     const boaMismatchRow = findRow(rows, (row) => row[0] === "AMOUNT MISMATCH BOA");
     const dealertrackMismatchRow = findRow(
       rows,
-      (row) => row[6] === "AMOUNT MISMATCH DT   4/01/26  JM1BPBLL0T1870612",
+      (row) => row[6] === "AMOUNT MISMATCH DT 4/01/26 JM1BPBLL0T1870612",
     );
     const mergedMismatchRows = rows.filter(
       (row) => row[2] === "870612" && row[5] === "870612" && hasText(row[3]) && hasText(row[4]),
@@ -565,134 +565,60 @@ describe("Hurst FP Rec clerk A-H export contract", () => {
 });
 
 describe("buildHurstFpRecWorkbook", () => {
-  test("partitions worksheet rows into Hiley sections and applies accounting sign convention", () => {
-    const workbook = buildHurstFpRecWorkbook(
-      buildDetail({
-        exceptions: [
-          exception({
-            exception_id: 1,
-            exception_type: "missing_in_dealertrack",
-            exception_category: "missing_in_dealertrack",
-            source_type: "boa",
-          }),
-          exception({
-            exception_id: 2,
-            exception_type: "missing_in_boa",
-            exception_category: "missing_in_boa",
-            source_type: "dealertrack",
-            transaction: transaction({
-              id: 2,
-              source_type: "dealertrack",
-              amount: "-5000.00",
-              amount_cents: -500_000,
-              description: "BOA FLOORPLAN",
-              stock_number: "M99999",
-              vin: null,
-            }),
-          }),
-          exception({
-            exception_id: 3,
-            exception_type: "duplicate_transaction",
-            exception_category: "amount_mismatch",
-            source_type: "dealertrack",
-            transaction: transaction({
-              id: 3,
-              source_type: "dealertrack",
-              amount: "-2500.00",
-              amount_cents: -250_000,
-              stock_number: "M77777",
-              vin: null,
-            }),
-          }),
-        ],
-      }),
-    );
+  test("builds side-aware clerk rows from matches and exceptions", () => {
+    const workbook = buildHurstFpRecWorkbook(clerkContractDetail());
 
-    expect(workbook.statement_not_on_gl.rows).toHaveLength(1);
-    expect(workbook.schedule_not_on_statement.rows).toHaveLength(2);
-    expect(workbook.statement_not_on_gl.total_amount_cents).toBe(1_234_567);
-    expect(workbook.schedule_not_on_statement.total_amount_cents).toBe(-750_000);
-    expect(workbook.schedule_not_on_statement.rows[0].gl_floored_note).toContain("Floored");
-    expect(workbook.schedule_not_on_statement.rows[0].boa_floored_note).toBe("");
-    expect(workbook.statement_not_on_gl.rows[0].boa_floored_note).toContain("Floored");
-    expect(workbook.statement_not_on_gl.rows[0].gl_floored_note).toBe("");
-    expect("needs_review" in workbook).toBe(false);
-  });
-
-  test("builds unit references from stock and VIN6 without exporting full VIN", () => {
-    const workbook = buildHurstFpRecWorkbook(buildDetail({ exceptions: [exception({})] }));
-    const row = workbook.statement_not_on_gl.rows[0];
-
-    expect(row.unit_reference).toBe("M12345 / A11111");
-
-    const html = toHurstFpRecXlsHtml(workbook);
-    expect(html).toContain("M12345 / A11111");
-    expect(html).not.toContain("1FTFW1E80PFA11111");
-  });
-
-  test("renders rows 1-7 as the compact accounting worksheet header", () => {
-    const workbook = buildHurstFpRecWorkbook(buildDetail({ exceptions: [exception({})] }));
-    const html = toHurstFpRecXlsHtml(workbook);
-
-    const titleIdx = html.indexOf("Floorplan Reconciliation - Hiley Hurst");
-    const periodIdx = html.indexOf("Period date");
-    const outstandingIdx = html.indexOf("Outstanding per stmt");
-    const glBalancesIdx = html.indexOf("GL Balances");
-    const twentyOneIdx = html.indexOf(">2100<");
-    const totalGlIdx = html.indexOf("Total GL");
-    const differenceIdx = html.indexOf(">Difference<");
-
-    expect(titleIdx).toBeGreaterThan(0);
-    expect(periodIdx).toBeGreaterThan(titleIdx);
-    expect(outstandingIdx).toBeGreaterThan(periodIdx);
-    expect(glBalancesIdx).toBeGreaterThan(outstandingIdx);
-    expect(twentyOneIdx).toBeGreaterThan(glBalancesIdx);
-    expect(totalGlIdx).toBeGreaterThan(twentyOneIdx);
-    expect(differenceIdx).toBeGreaterThan(totalGlIdx);
-  });
-
-  test("renders only the manual workbook section columns in the requested order", () => {
-    const html = toHurstFpRecXlsHtml(
-      buildHurstFpRecWorkbook(
-        buildDetail({
-          exceptions: [
-            exception({
-              exception_id: 1,
-              exception_type: "missing_in_boa",
-              exception_category: "missing_in_boa",
-              source_type: "dealertrack",
-              gl_notes: "GL floor pending",
-              transaction: transaction({
-                id: 1,
-                source_type: "dealertrack",
-                amount: "-1000.00",
-                amount_cents: -100_000,
-                stock_number: "M1",
-                vin: null,
-              }),
-            }),
-            exception({
-              exception_id: 2,
-              source_type: "boa",
-              boa_notes: "BOA payoff pending",
-            }),
-          ],
+    expect(workbook.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          classification: "matched",
+          hurst_description: "2025 Mazda CX5",
+          boa_vin: "JM3KFBAL0S0764873",
+          boa_vin6: "764873",
+          ending_balance_cents: 2_985_500,
+          dt_2100_cents: -2_985_500,
+          dt_vin6: "764873",
+          dt_description: "2025 MAZDA CX-5         1/09/26  JM3KFBAL0S0764873",
+          dt_control: "M21276",
         }),
-      ),
+        expect.objectContaining({
+          classification: "boa_only",
+          hurst_description: "BOA ONLY CX5 PF XA",
+          ending_balance_cents: 3_599_900,
+          dt_2100_cents: null,
+        }),
+        expect.objectContaining({
+          classification: "dealertrack_only",
+          hurst_description: "",
+          ending_balance_cents: null,
+          dt_2100_cents: -2_625_100,
+          dt_vin6: "867950",
+          dt_control: "M21317",
+        }),
+      ]),
     );
-
-    expect(html).toMatch(/On schedule-not on statement[\s\S]*Unit \/ stock \/ VIN6 reference[\s\S]*Amount[\s\S]*GL Floored note[\s\S]*BOA Floored note/);
-    expect(html).toMatch(/On statement-not on GL[\s\S]*Unit \/ stock \/ VIN6 reference[\s\S]*Amount[\s\S]*BOA Floored note[\s\S]*GL Floored note/);
-    expect(html).not.toContain(">Descriptor<");
-    expect(html).not.toContain(">VIN<");
-    expect(html).not.toContain("Review Status");
-    expect(html).not.toContain("GL Notes");
-    expect(html).not.toContain("BOA Notes");
-    expect(html).not.toContain("GL floor pending");
-    expect(html).not.toContain("BOA payoff pending");
   });
 
-  test("Difference follows source totals, section subtotals feed Net adjustments, and Variance resolves to zero", () => {
+  test("sorts BOA-valued rows by Ending Balance before blank-D Dealertrack-only rows", () => {
+    const workbook = buildHurstFpRecWorkbook(clerkContractDetail());
+
+    expect(workbook.rows.map((row) => row.classification)).toEqual([
+      "matched",
+      "boa_only",
+      "boa_only",
+      "dealertrack_only",
+      "dealertrack_only",
+    ]);
+    expect(workbook.rows.map((row) => row.ending_balance_cents)).toEqual([
+      2_985_500,
+      3_228_300,
+      3_599_900,
+      null,
+      null,
+    ]);
+  });
+
+  test("computes BOA total, DT 2100 total, and non-zero variance from visible columns", () => {
     const workbook = buildHurstFpRecWorkbook(
       buildDetail({
         match_groups: [matchGroup(1_000_000, 1_000_000)],
@@ -729,55 +655,25 @@ describe("buildHurstFpRecWorkbook", () => {
       }),
     );
 
+    expect(workbook.boa_total_amount_cents).toBe(1_025_000);
+    expect(workbook.dealertrack_total_amount_cents).toBe(-1_010_000);
     expect(workbook.summary.outstanding_per_stmt_amount_cents).toBe(1_025_000);
-    expect(workbook.summary.total_gl_amount_cents).toBe(-1_010_000);
     expect(workbook.summary.gl_2100_amount_cents).toBe(-1_010_000);
     expect(workbook.summary.difference_amount_cents).toBe(15_000);
-    expect(workbook.net_adjustments_amount_cents).toBe(
-      workbook.statement_not_on_gl.total_amount_cents +
-        workbook.schedule_not_on_statement.total_amount_cents,
-    );
     expect(workbook.net_adjustments_amount_cents).toBe(15_000);
-    expect(workbook.variance_amount_cents).toBe(0);
+    expect(workbook.variance_amount_cents).toBe(15_000);
   });
 
-  test("renders debit/credit accounting presentation and bottom rows", () => {
-    const html = toHurstFpRecXlsHtml(
-      buildHurstFpRecWorkbook(
-        buildDetail({
-          match_groups: [matchGroup(1_000_000, 1_000_000)],
-          exceptions: [
-            exception({
-              exception_type: "missing_in_boa",
-              exception_category: "missing_in_boa",
-              source_type: "dealertrack",
-              transaction: transaction({
-                source_type: "dealertrack",
-                amount_cents: -10_000,
-                amount: "-100.00",
-                stock_number: "M1",
-                vin: null,
-              }),
-            }),
-          ],
-        }),
-      ),
-    );
+  test("renders one clerk grid and omits old report sections", () => {
+    const html = toHurstFpRecXlsHtml(buildHurstFpRecWorkbook(clerkContractDetail()));
 
-    expect(html).toContain("Outstanding per stmt");
-    expect(html).toContain("(10,100.00)");
-    expect(html).toContain("Net adjustments");
+    expect(html).toContain("Floorplan Reconciliation - Hiley Hurst");
+    expect(html).toContain("Period date");
+    expect(html).toContain("(29,855.00)");
     expect(html).toContain("Variance");
-  });
-
-  test("removes report metadata, source filenames, needs review, and sign-off from the export", () => {
-    const workbook = buildHurstFpRecWorkbook(buildDetail({ exceptions: [exception({})] }));
-    const html = toHurstFpRecXlsHtml(workbook);
-
-    expect(html).not.toContain("Run #");
-    expect(html).not.toContain("generated");
-    expect(html).not.toContain("boa.csv");
-    expect(html).not.toContain("dealertrack.csv");
+    expect(html).not.toContain("On schedule-not on statement");
+    expect(html).not.toContain("On statement-not on GL");
+    expect(html).not.toContain("Unit / stock / VIN6 reference");
     expect(html).not.toContain("Needs Review");
     expect(html).not.toContain("Sign-off");
     expect(html).not.toContain("Prepared by");
