@@ -11,6 +11,7 @@ coverage/
 # Local storage
 storage/uploads/*
 !storage/uploads/.gitkeep
+server/tmp/
 
 # OS/editor
 .DS_Store
