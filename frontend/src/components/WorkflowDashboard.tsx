@@ -11,6 +11,7 @@ import {
 } from "../api/automation";
 import {
   getHurstFpRecExportUrl,
+  getMergedFloorplanExportUrl,
   getReconciliationExceptionsCsvUrl,
   getReconciliationRun,
   getReconciliationRunAnalytics,
@@ -996,6 +997,13 @@ function ResultsSection({
           <div className="flex flex-wrap gap-2">
             <a
               className="inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-700"
+              download
+              href={getMergedFloorplanExportUrl(run.reconciliation_run_id)}
+            >
+              Download Merged Spreadsheet
+            </a>
+            <a
+              className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
               download
               href={getHurstFpRecExportUrl(run.reconciliation_run_id)}
             >

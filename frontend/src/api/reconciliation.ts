@@ -60,6 +60,10 @@ export function getReconciliationExceptionsCsvUrl(
   )}`;
 }
 
+export function getMergedFloorplanExportUrl(reconciliationRunId: number): string {
+  return `${API_BASE_URL}/reconciliation-runs/${reconciliationRunId}/merged-floorplan`;
+}
+
 export function getHurstFpRecExportUrl(reconciliationRunId: number): string {
   return `${API_BASE_URL}/reconciliation-runs/${reconciliationRunId}/hurst-fp-rec`;
 }
