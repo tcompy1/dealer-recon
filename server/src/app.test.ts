@@ -1632,7 +1632,7 @@ describe("app", () => {
       `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
     );
     const fpRecResponse = await request(app)
-      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/hurst-fp-rec`)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/fp-rec`)
       .query({ format: "json" });
 
     expect(response.status).toBe(200);
@@ -1722,7 +1722,7 @@ describe("app", () => {
       `/reconciliation-runs/${reconciliation.body.reconciliation_run_id}`,
     );
     const fpRecResponse = await request(app)
-      .get(`/reconciliation-runs/${reconciliation.body.reconciliation_run_id}/hurst-fp-rec`)
+      .get(`/reconciliation-runs/${reconciliation.body.reconciliation_run_id}/fp-rec`)
       .query({ format: "json" });
 
     expect(response.status).toBe(200);
@@ -1817,6 +1817,14 @@ describe("app", () => {
     const explicitOverride = await request(app)
       .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
       .query({ store_key: "hurst", format: "json" });
+    const fpRecUnconfiguredStore = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/fp-rec`);
+    const fpRecBadOverride = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/fp-rec`)
+      .query({ store_key: "lexus" });
+    const fpRecExplicitOverride = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/fp-rec`)
+      .query({ store_key: "hurst", format: "json" });
 
     expect(unconfiguredStore.status).toBe(422);
     expect(unconfiguredStore.body.error).toMatchObject({
@@ -1835,6 +1843,18 @@ describe("app", () => {
     });
     expect(explicitOverride.status).toBe(200);
     expect(explicitOverride.body.headers[0]).toBe("HURST");
+    expect(fpRecUnconfiguredStore.status).toBe(422);
+    expect(fpRecUnconfiguredStore.body.error).toMatchObject({
+      code: "STORE_WORKFLOW_CONFIG_NOT_FOUND",
+      message: "No store workflow config is configured for this reconciliation run.",
+    });
+    expect(fpRecBadOverride.status).toBe(422);
+    expect(fpRecBadOverride.body.error).toMatchObject({
+      code: "INVALID_STORE_KEY",
+      message: "store_key must be one of: hurst, acura, fw.",
+    });
+    expect(fpRecExplicitOverride.status).toBe(200);
+    expect(fpRecExplicitOverride.body.headers[0]).toBe("HURST");
   });
 
   test("merged floorplan export keeps Dealertrack account_identifier grouped as floorplan", async () => {
@@ -2409,7 +2429,7 @@ describe("app", () => {
     });
   });
 
-  test("hurst-fp-rec returns a compact accounting worksheet export model", async () => {
+  test("fp-rec returns a compact accounting worksheet export model and preserves the legacy Hurst alias", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const first = await createReconciliationWithRows(app, {
       boaCsv: boaUploadCsvMulti([
@@ -2455,6 +2475,9 @@ describe("app", () => {
     });
 
     const workbookResponse = await request(app)
+      .get(`/reconciliation-runs/${second.reconciliation_run_id}/fp-rec`)
+      .query({ format: "json" });
+    const legacyWorkbookResponse = await request(app)
       .get(`/reconciliation-runs/${second.reconciliation_run_id}/hurst-fp-rec`)
       .query({ format: "json" });
     const mergedResponse = await request(app)
@@ -2462,8 +2485,18 @@ describe("app", () => {
       .query({ format: "json" });
 
     expect(workbookResponse.status).toBe(200);
+    expect(legacyWorkbookResponse.status).toBe(200);
     expect(mergedResponse.status).toBe(200);
     expect(workbookResponse.body.store_name).toBe("Hiley Mazda of Hurst");
+    expect(legacyWorkbookResponse.body.headers).toEqual(workbookResponse.body.headers);
+    expect(legacyWorkbookResponse.body.store_config).toMatchObject(workbookResponse.body.store_config);
+    expect(countApiRows(legacyWorkbookResponse.body.rows)).toEqual(countApiRows(workbookResponse.body.rows));
+    expect(legacyWorkbookResponse.body.boa_total_amount_cents).toBe(
+      workbookResponse.body.boa_total_amount_cents,
+    );
+    expect(legacyWorkbookResponse.body.dealertrack_total_amount_cents).toBe(
+      workbookResponse.body.dealertrack_total_amount_cents,
+    );
     expect(workbookResponse.body.headers).toEqual(mergedResponse.body.headers);
     expect(workbookResponse.body.store_config).toMatchObject({
       storeKey: "hurst",

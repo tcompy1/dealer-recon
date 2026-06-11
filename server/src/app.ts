@@ -1164,7 +1164,7 @@ export function createApp(
       .send(artifact.html);
   }));
 
-  app.get("/reconciliation-runs/:id/hurst-fp-rec", asyncHandler(async (request, response) => {
+  const fpRecExportHandler = asyncHandler(async (request, response) => {
     const reconciliationRunId = parsePositiveInteger(request.params.id);
     if (reconciliationRunId === null) {
       throw new NotFoundError("Reconciliation run");
@@ -1186,7 +1186,18 @@ export function createApp(
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
 
-    const storeConfig = resolveStoreWorkflowConfigFromStoreName(detail.store_name);
+    const storeKeyOverrideProvided = request.query.store_key !== undefined;
+    const storeKey = parseStoreKey(request.query.store_key);
+    if (storeKeyOverrideProvided && !storeKey) {
+      throw new ValidationError(
+        `store_key must be one of: ${STORE_KEYS.join(", ")}.`,
+        "INVALID_STORE_KEY",
+        { supported_store_keys: [...STORE_KEYS] },
+      );
+    }
+    const storeConfig = storeKey
+      ? getStoreWorkflowConfig(storeKey)
+      : resolveStoreWorkflowConfigFromStoreName(detail.store_name);
     if (!storeConfig) {
       throw new ValidationError(
         "No store workflow config is configured for this reconciliation run.",
@@ -1224,7 +1235,10 @@ export function createApp(
         `attachment; filename="${toHurstFpRecFilename(workbook)}"`,
       )
       .send(toHurstFpRecXlsHtml(workbook));
-  }));
+  });
+
+  app.get("/reconciliation-runs/:id/fp-rec", fpRecExportHandler);
+  app.get("/reconciliation-runs/:id/hurst-fp-rec", fpRecExportHandler);
 
   app.patch(
     "/reconciliation-runs/:id/exceptions/:exception_id",
