@@ -4,9 +4,21 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, test } from "vitest";
 
+import { STORE_WORKFLOW_CONFIGS, type StoreKey } from "../config/storeWorkflowConfig.js";
 import type { ReconciliationRunDetail, SourceType, TransactionSummary } from "../domain/types.js";
 import { parseAmountToCents } from "../domain/money.js";
-import { buildHurstFpRecWorkbook, toHurstFpRecFilename, toHurstFpRecXlsHtml } from "./hurstFpRec.js";
+import {
+  buildFpRecWorkbookFromMergedFloorplan,
+  buildHurstFpRecWorkbook,
+  type HurstFpRecClerkRow,
+  toHurstFpRecFilename,
+  toHurstFpRecXlsHtml,
+} from "./hurstFpRec.js";
+import {
+  buildMergedFloorplanWorkbook,
+  type MergedFloorplanWorkbook,
+  type MergedFloorplanRow,
+} from "./mergedFloorplan.js";
 
 const CLERK_HEADERS = [
   "HURST",
@@ -496,6 +508,75 @@ function countClerkRows(rows: string[][]): {
   };
 }
 
+function countMergedRows(rows: Array<MergedFloorplanRow | HurstFpRecClerkRow>): {
+  matched: number;
+  boaOnly: number;
+  dealertrackOnly: number;
+} {
+  return {
+    matched: rows.filter((row) => row.classification === "matched").length,
+    boaOnly: rows.filter((row) => row.classification === "boa_only").length,
+    dealertrackOnly: rows.filter((row) => row.classification === "dealertrack_only").length,
+  };
+}
+
+function mergedWorkbookForStore(storeKey: StoreKey): MergedFloorplanWorkbook {
+  const config = STORE_WORKFLOW_CONFIGS[storeKey];
+  const matchedVin = "1FTFW1E80PFA11111";
+  const boaOnlyVin = "5NPE24AF7KH700001";
+  const dealertrackOnlyVin = "3FA6P0H75HR200002";
+
+  return buildMergedFloorplanWorkbook({
+    storeConfig: config,
+    storeName: config.displayName,
+    periodDate: "02-28-26",
+    boaRecords: [
+      transaction({
+        id: 1,
+        source_type: "boa",
+        amount: "15000.00",
+        amount_cents: 1_500_000,
+        description: `${config.mergedSheetLabel} matched unit`,
+        stock_number: "MATCH1",
+        vin: matchedVin,
+      }),
+      transaction({
+        id: 2,
+        source_type: "boa",
+        amount: "20000.00",
+        amount_cents: 2_000_000,
+        description: `${config.mergedSheetLabel} BOA-only unit`,
+        stock_number: "BOAONLY",
+        vin: boaOnlyVin,
+      }),
+    ],
+    dealertrackRecords: [
+      transaction({
+        id: 10,
+        source_type: "dealertrack",
+        amount: "-15000.00",
+        amount_cents: -1_500_000,
+        description: `${config.displayName} DT matched ${matchedVin}`,
+        account: config.dealertrackAccountLabel,
+        account_identifier: "floorplan",
+        stock_number: "MATCH1",
+        vin: matchedVin,
+      }),
+      transaction({
+        id: 11,
+        source_type: "dealertrack",
+        amount: "-25000.00",
+        amount_cents: -2_500_000,
+        description: `${config.displayName} DT-only ${dealertrackOnlyVin}`,
+        account: config.dealertrackAccountLabel,
+        account_identifier: "floorplan",
+        stock_number: "DTONLY",
+        vin: dealertrackOnlyVin,
+      }),
+    ],
+  });
+}
+
 describe("Hurst FP Rec clerk A-H export contract", () => {
   test("exports the accepted visible columns A-H in order", () => {
     const html = toHurstFpRecXlsHtml(buildHurstFpRecWorkbook(clerkContractDetail()));
@@ -683,5 +764,64 @@ describe("buildHurstFpRecWorkbook", () => {
   test("uses a store and period filename without run id", () => {
     const workbook = buildHurstFpRecWorkbook(buildDetail({ exceptions: [exception({})] }));
     expect(toHurstFpRecFilename(workbook)).toBe("floorplan-reconciliation-hiley-hurst-05-01-26.xls");
+  });
+});
+
+describe("store-configured FP Rec from merged floorplan workbook", () => {
+  test.each([
+    ["hurst", ["HURST", "2100"]],
+    ["acura", ["ACURA", "324"]],
+    ["fw", ["FW", "2100"]],
+  ] as Array<[StoreKey, [string, string]]>)(
+    "preserves %s merged row semantics and configured FP REC labels",
+    (storeKey, [storeLabel, accountLabel]) => {
+      const mergedWorkbook = mergedWorkbookForStore(storeKey);
+      const fpRecWorkbook = buildFpRecWorkbookFromMergedFloorplan(mergedWorkbook);
+
+      expect(fpRecWorkbook.store_config.storeKey).toBe(storeKey);
+      expect(fpRecWorkbook.headers).toEqual([
+        storeLabel,
+        "Serial No/VIN",
+        "VIN6",
+        "Ending Balance",
+        accountLabel,
+        "VIN6",
+        "Description",
+        "Control",
+      ]);
+      expect(countMergedRows(fpRecWorkbook.rows)).toEqual(countMergedRows(mergedWorkbook.rows));
+      expect(fpRecWorkbook.boa_total_amount_cents).toBe(mergedWorkbook.boa_total_amount_cents);
+      expect(fpRecWorkbook.dealertrack_total_amount_cents).toBe(
+        mergedWorkbook.dealertrack_total_amount_cents,
+      );
+      expect(fpRecWorkbook.rows.map((row) => row.classification)).toEqual(
+        mergedWorkbook.rows.map((row) => row.classification),
+      );
+    },
+  );
+
+  test("renders Acura FP REC with ACURA and 324 instead of Hurst-only labels", () => {
+    const fpRecWorkbook = buildFpRecWorkbookFromMergedFloorplan(mergedWorkbookForStore("acura"));
+    const html = toHurstFpRecXlsHtml(fpRecWorkbook);
+
+    expect(html).toContain("<th>ACURA</th>");
+    expect(html).toContain("<th>324</th>");
+    expect(html).not.toContain("<th>HURST</th>");
+    expect(html).not.toContain("<th>2100</th>");
+  });
+
+  test("renders FW FP REC with 2100 display label from aggregated merged amount semantics", () => {
+    const mergedWorkbook = mergedWorkbookForStore("fw");
+    const fpRecWorkbook = buildFpRecWorkbookFromMergedFloorplan(mergedWorkbook);
+    const matchedRow = fpRecWorkbook.rows.find((row) => row.classification === "matched");
+
+    expect(mergedWorkbook.store_config.dealertrackAmountColumns).toEqual(["2100", "2101", "2101S"]);
+    expect(mergedWorkbook.store_config.dealertrackExcludedAccountColumns).toEqual(["2110"]);
+    expect(fpRecWorkbook.headers[0]).toBe("FW");
+    expect(fpRecWorkbook.headers[4]).toBe("2100");
+    expect(matchedRow?.dt_2100_cents).toBe(-1_500_000);
+    expect(fpRecWorkbook.dealertrack_total_amount_cents).toBe(
+      mergedWorkbook.dealertrack_total_amount_cents,
+    );
   });
 });

@@ -41,7 +41,11 @@ import type {
   PreprocessingSummary,
 } from "./services/preprocessing/types.js";
 import { toExceptionsCsv, toMonthEndReportCsv } from "./presenters/csv.js";
-import { buildHurstFpRecWorkbook, toHurstFpRecFilename, toHurstFpRecXlsHtml } from "./presenters/hurstFpRec.js";
+import {
+  buildFpRecWorkbookFromMergedFloorplan,
+  toHurstFpRecFilename,
+  toHurstFpRecXlsHtml,
+} from "./presenters/hurstFpRec.js";
 import {
   getStoreWorkflowConfig,
   parseStoreKey,
@@ -1182,16 +1186,30 @@ export function createApp(
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
 
-    const priors = await repository.listPriorUnresolvedExceptions(
-      getRequestDealershipId(response),
-      {
-        dealershipStoreId: detail.dealership_store_id,
-        excludeRunId: reconciliationRunId,
-        createdBefore: detail.created_at,
-      },
+    const storeConfig = resolveStoreWorkflowConfigFromStoreName(detail.store_name);
+    if (!storeConfig) {
+      throw new ValidationError(
+        "No store workflow config is configured for this reconciliation run.",
+        "STORE_WORKFLOW_CONFIG_NOT_FOUND",
+        {
+          dealership_store_id: detail.dealership_store_id,
+          store_name: detail.store_name,
+          supported_store_keys: [...STORE_KEYS],
+        },
+      );
+    }
+
+    const [boaTransactions, dealertrackTransactions] = await Promise.all([
+      repository.listBySourceFile(getRequestDealershipId(response), detail.boa_source_file_id),
+      repository.listBySourceFile(getRequestDealershipId(response), detail.dealertrack_source_file_id),
+    ]);
+    const mergedArtifact = buildMergedFloorplanArtifactFromTransactions(
+      detail,
+      storeConfig,
+      boaTransactions,
+      dealertrackTransactions,
     );
-    const enrichedDetail = applyCarryForwardToDetail(detail, priors);
-    const workbook = buildHurstFpRecWorkbook(enrichedDetail);
+    const workbook = buildFpRecWorkbookFromMergedFloorplan(mergedArtifact.workbook);
     const format = typeof request.query.format === "string" ? request.query.format : "xls";
     if (format === "json") {
       response.json(workbook);

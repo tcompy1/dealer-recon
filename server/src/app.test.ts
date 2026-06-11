@@ -1631,6 +1631,9 @@ describe("app", () => {
     const detailResponse = await request(app).get(
       `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
     );
+    const fpRecResponse = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/hurst-fp-rec`)
+      .query({ format: "json" });
 
     expect(response.status).toBe(200);
     expect(response.body.headers).toEqual([
@@ -1668,6 +1671,18 @@ describe("app", () => {
           entry.transaction.account_identifier === "floorplan",
       ),
     ).toBe(true);
+    expect(fpRecResponse.status).toBe(200);
+    expect(fpRecResponse.body.headers).toEqual(response.body.headers);
+    expect(fpRecResponse.body.store_config).toMatchObject({
+      storeKey: "acura",
+      mergedSheetLabel: "ACURA",
+      dealertrackAccountLabel: "324",
+    });
+    expect(countApiRows(fpRecResponse.body.rows)).toEqual(countApiRows(response.body.rows));
+    expect(fpRecResponse.body.boa_total_amount_cents).toBe(response.body.boa_total_amount_cents);
+    expect(fpRecResponse.body.dealertrack_total_amount_cents).toBe(
+      response.body.dealertrack_total_amount_cents,
+    );
   });
 
   test("GET /reconciliation-runs/:id/merged-floorplan resolves FW config from raw upload flow", async () => {
@@ -1706,6 +1721,9 @@ describe("app", () => {
     const detailResponse = await request(app).get(
       `/reconciliation-runs/${reconciliation.body.reconciliation_run_id}`,
     );
+    const fpRecResponse = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.body.reconciliation_run_id}/hurst-fp-rec`)
+      .query({ format: "json" });
 
     expect(response.status).toBe(200);
     expect(response.body.headers).toEqual([
@@ -1757,6 +1775,22 @@ describe("app", () => {
           entry.transaction.account_identifier === "floorplan",
       ),
     ).toBe(true);
+    expect(fpRecResponse.status).toBe(200);
+    expect(fpRecResponse.body.headers).toEqual(response.body.headers);
+    expect(fpRecResponse.body.store_config).toMatchObject({
+      storeKey: "fw",
+      mergedSheetLabel: "FW",
+      dealertrackAccountLabel: "2100",
+      dealertrackAmountColumns: ["2100", "2101", "2101S"],
+      dealertrackExcludedAccountColumns: ["2110"],
+    });
+    expect(countApiRows(fpRecResponse.body.rows)).toEqual({
+      matched: 620,
+      boaOnly: 53,
+      dealertrackOnly: 15,
+    });
+    expect(fpRecResponse.body.boa_total_amount_cents).toBe(3_449_894_154);
+    expect(fpRecResponse.body.dealertrack_total_amount_cents).toBe(-3_275_177_349);
   });
 
   test("GET /reconciliation-runs/:id/merged-floorplan validates unconfigured stores and bad overrides", async () => {
@@ -2423,9 +2457,24 @@ describe("app", () => {
     const workbookResponse = await request(app)
       .get(`/reconciliation-runs/${second.reconciliation_run_id}/hurst-fp-rec`)
       .query({ format: "json" });
+    const mergedResponse = await request(app)
+      .get(`/reconciliation-runs/${second.reconciliation_run_id}/merged-floorplan`)
+      .query({ format: "json" });
 
     expect(workbookResponse.status).toBe(200);
+    expect(mergedResponse.status).toBe(200);
     expect(workbookResponse.body.store_name).toBe("Hiley Mazda of Hurst");
+    expect(workbookResponse.body.headers).toEqual(mergedResponse.body.headers);
+    expect(workbookResponse.body.store_config).toMatchObject({
+      storeKey: "hurst",
+      mergedSheetLabel: "HURST",
+      dealertrackAccountLabel: "2100",
+    });
+    expect(countApiRows(workbookResponse.body.rows)).toEqual(countApiRows(mergedResponse.body.rows));
+    expect(workbookResponse.body.boa_total_amount_cents).toBe(mergedResponse.body.boa_total_amount_cents);
+    expect(workbookResponse.body.dealertrack_total_amount_cents).toBe(
+      mergedResponse.body.dealertrack_total_amount_cents,
+    );
     expect(workbookResponse.body.schedule_not_on_statement).toBeDefined();
     expect(workbookResponse.body.statement_not_on_gl).toBeDefined();
     expect(workbookResponse.body.net_adjustments_amount_cents).toEqual(expect.any(Number));
@@ -2469,6 +2518,18 @@ async function uploadCsv(
 
   expect(response.status).toBe(200);
   return response.body as { source_file_id: number; automated_reconciliation_run_id?: number | null };
+}
+
+function countApiRows(rows: Array<{ classification: string }>): {
+  matched: number;
+  boaOnly: number;
+  dealertrackOnly: number;
+} {
+  return {
+    matched: rows.filter((row) => row.classification === "matched").length,
+    boaOnly: rows.filter((row) => row.classification === "boa_only").length,
+    dealertrackOnly: rows.filter((row) => row.classification === "dealertrack_only").length,
+  };
 }
 
 async function uploadFixtureCsv(

@@ -1,6 +1,11 @@
 import { formatCents } from "../domain/money.js";
 import { computeVin6 } from "../domain/vin6.js";
 import type { ReconciliationRunDetail, SourceType, TransactionSummary } from "../domain/types.js";
+import {
+  STORE_WORKFLOW_CONFIGS,
+  type StoreWorkflowConfig,
+} from "../config/storeWorkflowConfig.js";
+import type { MergedFloorplanWorkbook, MergedFloorplanRow } from "./mergedFloorplan.js";
 
 export type HurstFpRecRowClassification = "matched" | "boa_only" | "dealertrack_only";
 
@@ -43,8 +48,10 @@ export type HurstFpRecSummary = {
 };
 
 export type HurstFpRecWorkbook = {
+  store_config: StoreWorkflowConfig;
   store_name: string;
   period_date: string | null;
+  headers: string[];
   rows: HurstFpRecClerkRow[];
   boa_total_amount: string;
   boa_total_amount_cents: number;
@@ -64,27 +71,45 @@ export type HurstFpRecWorkbook = {
 type DetailException = ReconciliationRunDetail["exceptions"][number];
 type MatchGroup = ReconciliationRunDetail["match_groups"][number];
 
-const CLERK_HEADERS = [
-  "HURST",
-  "Serial No/VIN",
-  "VIN6",
-  "Ending Balance",
-  "2100",
-  "VIN6",
-  "Description",
-  "Control",
-];
-
 const SCHEDULE_SECTION_TITLE = "On schedule-not on statement";
 const STATEMENT_SECTION_TITLE = "On statement-not on GL";
 const FINAL_VIN_TOKEN_RE = /(?:^|\s)([A-HJ-NPR-Z0-9]{17})\s*$/i;
 
-export function buildHurstFpRecWorkbook(detail: ReconciliationRunDetail): HurstFpRecWorkbook {
+export function buildHurstFpRecWorkbook(
+  detail: ReconciliationRunDetail,
+  storeConfig: StoreWorkflowConfig = STORE_WORKFLOW_CONFIGS.hurst,
+): HurstFpRecWorkbook {
   const rows = sortClerkRows([
     ...detail.match_groups.flatMap(buildRowsFromMatchGroup),
     ...detail.exceptions.flatMap(buildRowsFromException),
   ]);
 
+  return buildWorkbookFromClerkRows({
+    storeConfig,
+    storeName: detail.store_name ?? storeConfig.displayName,
+    periodDate: resolvePeriodAnchorDate(detail),
+    rows,
+  });
+}
+
+export function buildFpRecWorkbookFromMergedFloorplan(
+  mergedWorkbook: MergedFloorplanWorkbook,
+): HurstFpRecWorkbook {
+  return buildWorkbookFromClerkRows({
+    storeConfig: mergedWorkbook.store_config,
+    storeName: mergedWorkbook.store_name,
+    periodDate: mergedWorkbook.period_date,
+    rows: mergedWorkbook.rows.map(clerkRowFromMergedRow),
+  });
+}
+
+function buildWorkbookFromClerkRows(input: {
+  storeConfig: StoreWorkflowConfig;
+  storeName: string;
+  periodDate: string | null;
+  rows: HurstFpRecClerkRow[];
+}): HurstFpRecWorkbook {
+  const rows = input.rows;
   const boaTotalCents = rows.reduce(
     (total, row) => total + (row.ending_balance_cents ?? 0),
     0,
@@ -111,8 +136,10 @@ export function buildHurstFpRecWorkbook(detail: ReconciliationRunDetail): HurstF
   );
 
   return {
-    store_name: detail.store_name ?? "Unassigned store",
-    period_date: resolvePeriodAnchorDate(detail),
+    store_config: input.storeConfig,
+    store_name: input.storeName,
+    period_date: input.periodDate,
+    headers: clerkHeaders(input.storeConfig),
     rows,
     boa_total_amount: formatCents(boaTotalCents),
     boa_total_amount_cents: boaTotalCents,
@@ -135,6 +162,33 @@ export function buildHurstFpRecWorkbook(detail: ReconciliationRunDetail): HurstF
     schedule_not_on_statement: scheduleSection,
     statement_not_on_gl: statementSection,
   };
+}
+
+function clerkRowFromMergedRow(row: MergedFloorplanRow): HurstFpRecClerkRow {
+  return {
+    hurst_description: row.store_description,
+    boa_vin: row.serial_no_vin,
+    boa_vin6: row.boa_vin6,
+    ending_balance_cents: row.ending_balance_cents,
+    dt_2100_cents: row.dealertrack_account_amount_cents,
+    dt_vin6: row.dealertrack_vin6,
+    dt_description: row.dealertrack_description,
+    dt_control: row.dealertrack_control,
+    classification: row.classification,
+  };
+}
+
+function clerkHeaders(storeConfig: StoreWorkflowConfig): string[] {
+  return [
+    storeConfig.mergedSheetLabel,
+    "Serial No/VIN",
+    "VIN6",
+    "Ending Balance",
+    storeConfig.dealertrackAccountLabel,
+    "VIN6",
+    "Description",
+    "Control",
+  ];
 }
 
 export function toHurstFpRecXlsHtml(workbook: HurstFpRecWorkbook): string {
@@ -167,7 +221,7 @@ export function toHurstFpRecXlsHtml(workbook: HurstFpRecWorkbook): string {
     "<thead>",
     `<tr class="title-row"><td colspan="8">Floorplan Reconciliation - ${escapeHtml(workbook.store_name)}</td></tr>`,
     `<tr class="period-row"><td colspan="8">Period date ${escapeHtml(workbook.period_date ?? "")}</td></tr>`,
-    `<tr>${CLERK_HEADERS.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>`,
+    `<tr>${workbook.headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>`,
     "</thead>",
     `<tbody>${workbook.rows.map(clerkRowHtml).join("")}</tbody>`,
     "<tfoot>",
@@ -227,7 +281,7 @@ function buildMatchedRow(
     boa_vin: boaVin(boa),
     boa_vin6: boaVin6(boa),
     ending_balance_cents: Math.abs(boa.amount_cents),
-    dt_2100_cents: dealertrack2100Cents(dealertrack),
+    dt_2100_cents: dealertrackAccountCents(dealertrack),
     dt_vin6: dealertrackVin6(dealertrack),
     dt_description: dealertrack.description ?? "",
     dt_control: dealertrackControl(dealertrack),
@@ -247,7 +301,7 @@ function buildBoaOnlyRow(boa: TransactionSummary): HurstFpRecClerkRow {
 function buildDealertrackOnlyRow(dealertrack: TransactionSummary): HurstFpRecClerkRow {
   return {
     ...emptyClerkRow("dealertrack_only"),
-    dt_2100_cents: dealertrack2100Cents(dealertrack),
+    dt_2100_cents: dealertrackAccountCents(dealertrack),
     dt_vin6: dealertrackVin6(dealertrack),
     dt_description: dealertrack.description ?? "",
     dt_control: dealertrackControl(dealertrack),
@@ -379,7 +433,7 @@ function cleanVin(vin: string | null | undefined): string {
   return vin?.toUpperCase().trim() ?? "";
 }
 
-function dealertrack2100Cents(transaction: TransactionSummary): number {
+function dealertrackAccountCents(transaction: TransactionSummary): number {
   return -Math.abs(transaction.amount_cents);
 }
 
