@@ -10,7 +10,7 @@ import {
   updateScheduledJob,
 } from "../api/automation";
 import {
-  getHurstFpRecExportUrl,
+  getFpRecExportUrl,
   getMergedFloorplanExportUrl,
   getReconciliationExceptionsCsvUrl,
   getReconciliationRun,
@@ -1005,9 +1005,9 @@ function ResultsSection({
             <a
               className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
               download
-              href={getHurstFpRecExportUrl(run.reconciliation_run_id)}
+              href={getFpRecExportUrl(run.reconciliation_run_id)}
             >
-              Export Hurst FP Rec (.xls)
+              Download FP REC
             </a>
             {exportUrl ? (
               <a
