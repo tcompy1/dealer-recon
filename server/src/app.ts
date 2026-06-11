@@ -49,7 +49,7 @@ import {
   STORE_KEYS,
   type StoreWorkflowConfig,
 } from "./config/storeWorkflowConfig.js";
-import { buildMergedFloorplanArtifact } from "./services/mergedFloorplanExport.js";
+import { buildMergedFloorplanArtifactFromTransactions } from "./services/mergedFloorplanExport.js";
 import { applyCarryForwardToDetail } from "./services/exceptionCarryForward.js";
 import {
   parseExceptionReviewUpdate,
@@ -1134,7 +1134,16 @@ export function createApp(
       );
     }
 
-    const artifact = buildMergedFloorplanArtifact(detail, storeConfig);
+    const [boaTransactions, dealertrackTransactions] = await Promise.all([
+      repository.listBySourceFile(getRequestDealershipId(response), detail.boa_source_file_id),
+      repository.listBySourceFile(getRequestDealershipId(response), detail.dealertrack_source_file_id),
+    ]);
+    const artifact = buildMergedFloorplanArtifactFromTransactions(
+      detail,
+      storeConfig,
+      boaTransactions,
+      dealertrackTransactions,
+    );
     const format = typeof request.query.format === "string" ? request.query.format : "xls";
     if (format === "json") {
       response.json(artifact.workbook);

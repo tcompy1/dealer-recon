@@ -1548,7 +1548,27 @@ describe("app", () => {
 
   test("GET /reconciliation-runs/:id/merged-floorplan can use an explicit Acura override", async () => {
     const app = createApp(new MemoryTransactionRepository());
-    const reconciliation = await createReconciliation(app);
+    const storeResponse = await request(app)
+      .post("/stores")
+      .send({ name: "Hiley Acura" });
+    expect(storeResponse.status).toBe(201);
+    const acuraStoreId = storeResponse.body.id as number;
+    const reconciliation = await createReconciliationWithRows(app, {
+      boaCsv: boaUploadCsvMulti([
+        { stock: "M30101", vin: "1HGCM82633A004352", amount: "$301.00", reference: "30101" },
+        { stock: "M30202", vin: "2HGCM82633A004352", amount: "$302.00", reference: "30202" },
+      ]),
+      dealertrackCsv: dealertrackUploadCsvMultiForAccount(
+        [
+          { stock: "M30101", amount: "-301", vin: "1HGCM82633A004352" },
+          { stock: "M30303", amount: "-303" },
+        ],
+        "324",
+      ),
+      boaFilename: "acura-override-boa.csv",
+      dealertrackFilename: "acura-override-dt.csv",
+      storeId: acuraStoreId,
+    });
 
     const response = await request(app)
       .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
@@ -1645,6 +1665,95 @@ describe("app", () => {
       dealertrackTransactions.every(
         (entry: { transaction: { account: string; account_identifier: string } }) =>
           entry.transaction.account === "324" &&
+          entry.transaction.account_identifier === "floorplan",
+      ),
+    ).toBe(true);
+  });
+
+  test("GET /reconciliation-runs/:id/merged-floorplan resolves FW config from raw upload flow", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const storeResponse = await request(app)
+      .post("/stores")
+      .send({ name: "Hiley Cars Fort Worth" });
+    expect(storeResponse.status).toBe(201);
+    const fwStoreId = storeResponse.body.id as number;
+
+    const boaUpload = await uploadFixtureCsv(
+      app,
+      "boa",
+      "server/src/presenters/__fixtures__/fw/FW BOA FEB.csv",
+      "FW BOA FEB.csv",
+      fwStoreId,
+    );
+    const dealertrackUpload = await uploadFixtureCsv(
+      app,
+      "dealertrack",
+      "server/src/presenters/__fixtures__/fw/FW DT FEB.csv",
+      "FW DT FEB.csv",
+      fwStoreId,
+    );
+
+    const reconciliation = await request(app).post("/reconcile").send({
+      boa_source_file_id: boaUpload.source_file_id,
+      dealertrack_source_file_id: dealertrackUpload.source_file_id,
+      dealership_store_id: fwStoreId,
+    });
+    expect(reconciliation.status).toBe(200);
+
+    const response = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.body.reconciliation_run_id}/merged-floorplan`)
+      .query({ format: "json" });
+    const detailResponse = await request(app).get(
+      `/reconciliation-runs/${reconciliation.body.reconciliation_run_id}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.headers).toEqual([
+      "FW",
+      "Serial No/VIN",
+      "VIN6",
+      "Ending Balance",
+      "2100",
+      "VIN6",
+      "Description",
+      "Control",
+    ]);
+    expect(response.body.store_config).toMatchObject({
+      storeKey: "fw",
+      mergedSheetLabel: "FW",
+      mergedSheetLabelAliases: ["FW", "FORT WORTH"],
+      dealertrackAccountLabel: "2100",
+      dealertrackAmountColumns: ["2100", "2101", "2101S"],
+      dealertrackExcludedAccountColumns: ["2110"],
+    });
+    expect(response.body.headers).not.toContain("2110");
+    expect(response.body.store_config.dealertrackAmountColumns).not.toContain("2110");
+    const classifications = response.body.rows.map(
+      (row: { classification: string }) => row.classification,
+    );
+    expect(classifications.filter((classification: string) => classification === "matched"))
+      .toHaveLength(620);
+    expect(classifications.filter((classification: string) => classification === "boa_only"))
+      .toHaveLength(53);
+    expect(
+      classifications.filter((classification: string) => classification === "dealertrack_only"),
+    ).toHaveLength(15);
+    expect(response.body.boa_total_amount_cents).toBe(3_449_894_154);
+    expect(response.body.dealertrack_total_amount_cents).toBe(-3_275_177_349);
+
+    expect(detailResponse.status).toBe(200);
+    const dealertrackTransactions = [
+      ...detailResponse.body.match_groups.flatMap(
+        (group: { transactions: Array<{ source_type: string; transaction: { account: string; account_identifier: string } }> }) =>
+          group.transactions,
+      ),
+      ...detailResponse.body.exceptions,
+    ].filter((entry: { source_type: string }) => entry.source_type === "dealertrack");
+    expect(dealertrackTransactions).toHaveLength(635);
+    expect(
+      dealertrackTransactions.every(
+        (entry: { transaction: { account: string; account_identifier: string } }) =>
+          entry.transaction.account === "2100" &&
           entry.transaction.account_identifier === "floorplan",
       ),
     ).toBe(true);
@@ -2352,11 +2461,28 @@ async function uploadCsv(
 ) {
   const uploadRequest = request(app)
     .post("/upload")
-    .field("source_type", sourceType)
+    .field("source_type", sourceType);
   if (storeId) {
     uploadRequest.field("store_id", String(storeId));
   }
   const response = await uploadRequest.attach("file", Buffer.from(csv), filename);
+
+  expect(response.status).toBe(200);
+  return response.body as { source_file_id: number; automated_reconciliation_run_id?: number | null };
+}
+
+async function uploadFixtureCsv(
+  app: ReturnType<typeof createApp>,
+  sourceType: string,
+  fixturePath: string,
+  filename: string,
+  storeId: number,
+) {
+  const uploadRequest = request(app)
+    .post("/upload")
+    .field("source_type", sourceType)
+    .field("store_id", String(storeId));
+  const response = await uploadRequest.attach("file", await loadFixture(fixturePath), filename);
 
   expect(response.status).toBe(200);
   return response.body as { source_file_id: number; automated_reconciliation_run_id?: number | null };
