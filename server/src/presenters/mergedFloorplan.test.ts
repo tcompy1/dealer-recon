@@ -7,7 +7,10 @@ import { describe, expect, test } from "vitest";
 
 import { STORE_WORKFLOW_CONFIGS } from "../config/storeWorkflowConfig.js";
 import { parseAmountToCents } from "../domain/money.js";
-import type { TransactionSummary } from "../domain/types.js";
+import type { NewTransaction, TransactionSummary } from "../domain/types.js";
+import { parseCsvToTable } from "../services/parsers/csvTableParser.js";
+import { preprocessBoa } from "../services/preprocessing/boaPreprocessor.js";
+import { preprocessDealertrack } from "../services/preprocessing/dealertrackPreprocessor.js";
 import {
   buildMergedFloorplanWorkbook,
   toMergedFloorplanFilename,
@@ -451,9 +454,49 @@ describe("Acura merged floorplan golden fixtures", () => {
   );
 });
 
-// These golden tests derive cleaned presenter inputs from Tara's accepted
-// merged worksheets. The remaining implementation gap is raw Acura BOA/DT
-// preprocessing into the same cleaned TransactionSummary inputs.
+describe("Acura raw preprocessing to merged floorplan", () => {
+  test.each(ACURA_MERGED_FIXTURE_CASES)(
+    "preprocesses raw Acura $month BOA/DT files into presenter inputs matching Tara's merged CSV",
+    (fixtureCase) => {
+      const expectedFixture = parseAcuraMergedFixture(fixtureCase.mergedFilename);
+      const { boaResult, dealertrackResult, boaRecords, dealertrackRecords } =
+        preprocessRawAcuraFixtures(fixtureCase);
+
+      expect(boaResult.validationErrors).toEqual([]);
+      expect(dealertrackResult.validationErrors).toEqual([]);
+      expect(boaResult.transactions).toHaveLength(
+        fixtureCase.expected.matched + fixtureCase.expected.boaOnly,
+      );
+      expect(dealertrackResult.transactions).toHaveLength(
+        fixtureCase.expected.matched + fixtureCase.expected.dealertrackOnly,
+      );
+
+      const workbook = buildMergedFloorplanWorkbook({
+        storeConfig: STORE_WORKFLOW_CONFIGS.acura,
+        storeName: "Acura",
+        periodDate: fixtureCase.month,
+        boaRecords,
+        dealertrackRecords,
+      });
+
+      expect(workbook.headers).toEqual(ACURA_HEADERS);
+      expect(countWorkbookRows(workbook)).toEqual({
+        matched: expectedFixture.counts.matched,
+        boaOnly: expectedFixture.counts.boaOnly,
+        dealertrackOnly: expectedFixture.counts.dealertrackOnly,
+      });
+      expect(workbook.boa_total_amount_cents).toBe(expectedFixture.totals.boaTotalCents);
+      expect(workbook.dealertrack_total_amount_cents).toBe(
+        expectedFixture.totals.dealertrackTotalCents,
+      );
+    },
+  );
+});
+
+// The accepted merged worksheet tests derive cleaned presenter inputs from
+// Tara's clerk workbook. The raw preprocessing tests above prove Acura CSV
+// preprocessors can now produce the same input counts and totals; remaining
+// wiring work is choosing the store config from upload/run context.
 function parseAcuraMergedFixture(filename: string): AcuraMergedFixture {
   const records = parse(readFixture(filename), {
     relax_column_count: true,
@@ -479,6 +522,32 @@ function parseAcuraMergedFixture(filename: string): AcuraMergedFixture {
       boaTotalCents: requireParsedAmount(totalRow[3], filename, "BOA total"),
       dealertrackTotalCents: requireParsedAmount(totalRow[4], filename, "Dealertrack total"),
     },
+  };
+}
+
+function preprocessRawAcuraFixtures(fixtureCase: AcuraMergedFixtureCase): {
+  boaResult: ReturnType<typeof preprocessBoa>;
+  dealertrackResult: ReturnType<typeof preprocessDealertrack>;
+  boaRecords: TransactionSummary[];
+  dealertrackRecords: TransactionSummary[];
+} {
+  const boaParsed = parseCsvToTable(readFixture(fixtureCase.rawBoaFilename), "no_header");
+  const dealertrackParsed = parseCsvToTable(readFixture(fixtureCase.rawDealertrackFilename), "with_header");
+  const boaResult = preprocessBoa(boaParsed);
+  const dealertrackResult = preprocessDealertrack(dealertrackParsed, {
+    accountColumn: STORE_WORKFLOW_CONFIGS.acura.dealertrackAccountColumn,
+    accountLabel: STORE_WORKFLOW_CONFIGS.acura.dealertrackAccountLabel,
+  });
+
+  return {
+    boaResult,
+    dealertrackResult,
+    boaRecords: boaResult.transactions.map((record, index) =>
+      toTransactionSummary(record, index + 1),
+    ),
+    dealertrackRecords: dealertrackResult.transactions.map((record, index) =>
+      toTransactionSummary(record, 10_000 + index),
+    ),
   };
 }
 
@@ -542,6 +611,28 @@ function fixtureRowsToCleanedRecords(rows: AcuraMergedFixtureRow[]): {
   }
 
   return { boaRecords, dealertrackRecords };
+}
+
+function toTransactionSummary(
+  transaction: NewTransaction,
+  id: number,
+): TransactionSummary {
+  return {
+    id,
+    dealership_id: 1,
+    source_type: transaction.source_type,
+    transaction_date: transaction.transaction_date,
+    post_date: transaction.post_date,
+    amount: String(transaction.amount_cents / 100),
+    amount_cents: transaction.amount_cents,
+    reference_number: transaction.reference_number,
+    description: transaction.description,
+    account: transaction.account,
+    account_type: transaction.account_type,
+    account_identifier: transaction.account_identifier,
+    stock_number: transaction.stock_number,
+    vin: transaction.vin,
+  };
 }
 
 function countFixtureRows(rows: AcuraMergedFixtureRow[]): AcuraMergedFixture["counts"] {

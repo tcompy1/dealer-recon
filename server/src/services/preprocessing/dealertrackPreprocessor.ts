@@ -4,13 +4,14 @@
  * Mirrors the Hiley office-manager Excel preprocessing pass for Dealertrack
  * 2100 floorplan schedules:
  *
- *   - use the `2100` four-digit account column as the canonical GL amount.
+ *   - use the configured four-digit account column as the canonical GL amount
+ *     (`2100` by default for Hurst, `324` for Acura).
  *     For Hiley Hurst, account/column 2110 is removed from the working output
  *     and is never used as a fallback amount.
  *   - remove Straightline rows
  *   - extract VIN from the Description, compute VIN6, normalize stock/control
  *   - surface dirty / missing / untrusted VIN rows as manual_enrichment_required
- *   - sort retained rows by largest 2100 balance, then VIN6 ascending
+ *   - sort retained rows by largest configured-account balance, then VIN6 ascending
  *   - retain worksheet helper columns matching the manual DT workflow
  *
  * As with BOA preprocessing, every transformation is captured in the
@@ -34,8 +35,8 @@ import {
 
 const VIN_FULL_RE = /\b(?=[A-HJ-NPR-Z0-9]{17}\b)(?=[A-HJ-NPR-Z0-9]*[A-Z])(?=[A-HJ-NPR-Z0-9]*\d)[A-HJ-NPR-Z0-9]{17}\b/i;
 const STOCK_RE = /\bM\d{3,6}\b/i;
-const CANONICAL_2100 = "2100";
-const REMOVED_2110 = "2110";
+const DEFAULT_CANONICAL_ACCOUNT = "2100";
+const DEFAULT_REMOVED_ACCOUNT = "2110";
 const FOUR_DIGIT_RE = /^\d{4}$/;
 const STRAIGHTLINE_TOKENS = ["straightline", "straight line"];
 
@@ -46,8 +47,8 @@ const VIN_ALIASES = ["vin", "vehicleidentificationnumber", "serial"];
 type DealertrackAmountInfo = {
   amountCents: number;
   source: string;
-  account2100Cents: number;
-  account2110Cents: number;
+  accountAmountCents: number;
+  removedAccountCents: number;
 };
 
 type DealertrackWorkingRow = {
@@ -56,8 +57,10 @@ type DealertrackWorkingRow = {
   rawSnapshot: Record<string, string>;
   amountCents: number;
   amountSource: string;
-  account2100Cents: number;
-  account2110Cents: number;
+  accountColumn: string;
+  accountLabel: string;
+  accountAmountCents: number;
+  removedAccountCents: number;
   vin: string | null;
   vin6: string | null;
   vinProvenance: VinProvenance;
@@ -66,7 +69,22 @@ type DealertrackWorkingRow = {
   lineage: RowLineageEntry[];
 };
 
-export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult {
+export type DealertrackPreprocessOptions = {
+  accountColumn?: string;
+  accountLabel?: string;
+  removedAccountColumns?: string[];
+};
+
+export function preprocessDealertrack(
+  parsed: ParsedTable,
+  options: DealertrackPreprocessOptions = {},
+): PreprocessingResult {
+  const accountColumn = normalizeAccountHeaderName(options.accountColumn ?? DEFAULT_CANONICAL_ACCOUNT);
+  const accountLabel = options.accountLabel?.trim() || accountColumn;
+  const removedAccountColumns = new Set(
+    (options.removedAccountColumns ?? defaultRemovedAccountColumns(accountColumn))
+      .map(normalizeAccountHeaderName),
+  );
   const diagnostics: PreprocessingDiagnostic[] = [];
   const validationErrors: ValidationError[] = [];
   let rowsScanned = 0;
@@ -87,19 +105,20 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
   const header = parsed.header;
   const headerLookup = header ? buildHeaderLookup(header) : null;
   const fourDigitColumns = header ? findFourDigitColumns(header) : [];
-  const has2100 = fourDigitColumns.some(({ name }) => name === CANONICAL_2100);
-  const has2110 = fourDigitColumns.some(({ name }) => name === REMOVED_2110);
+  const hasConfiguredAccount = fourDigitColumns.some(({ name }) => name === accountColumn);
+  const removedColumnsPresent = fourDigitColumns.filter(({ name }) => removedAccountColumns.has(name));
 
   if (header) {
     diagnostics.push({
       kind: "header_row_detected",
-      message: has2100
-        ? "Header row detected; 2100 account column present."
-        : "Header row detected; no 2100 column present.",
+      message: hasConfiguredAccount
+        ? `Header row detected; ${accountColumn} account column present.`
+        : `Header row detected; no ${accountColumn} column present.`,
       source_row_number: 1,
       details: {
-        has_2100: has2100,
-        removed_2110: has2110,
+        account_column: accountColumn,
+        has_account_column: hasConfiguredAccount,
+        removed_account_columns_present: removedColumnsPresent.length,
         four_digit_columns: fourDigitColumns.length,
       },
     });
@@ -150,7 +169,13 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
     }
     lineage.push({ stage: "stock_normalized", detail: stockNumber });
 
-    const amountInfo = resolveDealertrackAmount(cleaned, header, fourDigitColumns);
+    const amountInfo = resolveDealertrackAmount(
+      cleaned,
+      header,
+      fourDigitColumns,
+      accountColumn,
+      removedAccountColumns,
+    );
     if (amountInfo === null) {
       rowsSkippedUnknown += 1;
       diagnostics.push({
@@ -252,8 +277,10 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
       rawSnapshot,
       amountCents: amountInfo.amountCents,
       amountSource: amountInfo.source,
-      account2100Cents: amountInfo.account2100Cents,
-      account2110Cents: amountInfo.account2110Cents,
+      accountColumn,
+      accountLabel,
+      accountAmountCents: amountInfo.accountAmountCents,
+      removedAccountCents: amountInfo.removedAccountCents,
       vin,
       vin6,
       vinProvenance,
@@ -303,18 +330,18 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
     return a.sourceRowNumber - b.sourceRowNumber;
   });
   for (const row of acceptedRows) {
-    row.lineage.push({ stage: "sorted", detail: "largest_2100_then_vin6_asc" });
+    row.lineage.push({ stage: "sorted", detail: `largest_${accountColumn}_then_vin6_asc` });
   }
   diagnostics.push({
     kind: "sort_applied",
-    message: "Rows sorted largest-to-smallest by 2100 balance, then VIN6 ascending.",
+    message: `Rows sorted largest-to-smallest by ${accountColumn} balance, then VIN6 ascending.`,
     source_row_number: null,
   });
 
   const transactions: NewTransaction[] = acceptedRows.map((row, index) => {
     row.lineage.push({
       stage: "working_columns_pruned",
-      detail: "hiley_dealertrack_2100_without_2110",
+      detail: `hiley_dealertrack_${row.accountColumn}_without_removed_accounts`,
     });
     const lineage: RawDataLineage = {
       source_kind: "dealertrack",
@@ -334,9 +361,9 @@ export function preprocessDealertrack(parsed: ParsedTable): PreprocessingResult 
       amount_cents: row.amountCents,
       reference_number: null,
       description: row.description,
-      account: null,
+      account: row.accountColumn,
       account_type: "floorplan",
-      account_identifier: "floorplan",
+      account_identifier: row.accountColumn,
       stock_number: row.stockNumber,
       vin: row.vin,
       raw_data: {
@@ -422,28 +449,34 @@ function normalizeAccountHeaderName(value: string): string {
   return normalizeHeaderName(value);
 }
 
+function defaultRemovedAccountColumns(accountColumn: string): string[] {
+  return accountColumn === DEFAULT_CANONICAL_ACCOUNT ? [DEFAULT_REMOVED_ACCOUNT] : [];
+}
+
 function resolveDealertrackAmount(
   cells: string[],
   header: string[] | null,
   fourDigitColumns: Array<{ name: string; index: number }>,
+  accountColumn: string,
+  removedAccountColumns: Set<string>,
 ): DealertrackAmountInfo | null {
   if (header && fourDigitColumns.length > 0) {
-    const account2100Index = fourDigitColumns.find(({ name }) => name === CANONICAL_2100)?.index;
-    if (account2100Index === undefined) {
+    const accountIndex = fourDigitColumns.find(({ name }) => name === accountColumn)?.index;
+    if (accountIndex === undefined) {
       return null;
     }
-    const account2100Cents = parseRequiredAccountAmount(cells[account2100Index]);
-    if (account2100Cents === null) {
+    const accountAmountCents = parseRequiredAccountAmount(cells[accountIndex]);
+    if (accountAmountCents === null) {
       return null;
     }
-    const account2110Index = fourDigitColumns.find(({ name }) => name === REMOVED_2110)?.index;
-    const account2110Cents =
-      account2110Index === undefined ? 0 : parseOptionalAccountAmount(cells[account2110Index]);
+    const removedAccountCents = fourDigitColumns
+      .filter(({ name }) => removedAccountColumns.has(name))
+      .reduce((total, { index }) => total + parseOptionalAccountAmount(cells[index]), 0);
     return {
-      amountCents: account2100Cents,
-      source: CANONICAL_2100,
-      account2100Cents,
-      account2110Cents,
+      amountCents: accountAmountCents,
+      source: accountColumn,
+      accountAmountCents,
+      removedAccountCents,
     };
   }
 
@@ -453,8 +486,8 @@ function resolveDealertrackAmount(
     return {
       amountCents,
       source: "positional_col_3",
-      account2100Cents: amountCents,
-      account2110Cents: parseOptionalAccountAmount(cells[3]),
+      accountAmountCents: amountCents,
+      removedAccountCents: parseOptionalAccountAmount(cells[3]),
     };
   }
   return null;
@@ -479,7 +512,7 @@ function buildWorkingOutputSnapshot(
 ): Record<string, string> {
   return {
     Control: row.stockNumber,
-    "2100": formatAccountingCents(row.account2100Cents),
+    [row.accountLabel]: formatAccountingCents(row.accountAmountCents),
     "DT total helper": `=D${workingRowNumber} + E${workingRowNumber}`,
     "VIN6 description variance/helper": `=C${workingRowNumber} - F${workingRowNumber}`,
     VIN6: row.vin6 ?? "",
