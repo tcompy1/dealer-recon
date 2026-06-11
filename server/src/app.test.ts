@@ -92,6 +92,19 @@ function dealertrackUploadCsvMulti(
   ].join("\n");
 }
 
+function dealertrackUploadCsvMultiForAccount(
+  rows: Array<{ stock: string; amount: string; vin?: string }>,
+  accountColumn: string,
+): string {
+  return [
+    `Control,Description,${accountColumn}`,
+    ...rows.map((r) => {
+      const desc = r.vin ? `"BOA FLOORPLAN ${r.vin}"` : '"BOA FLOORPLAN"';
+      return `${r.stock},${desc},${r.amount}`;
+    }),
+  ].join("\n");
+}
+
 describe("app", () => {
   test("POST /login authenticates a local user and GET /me returns the user", async () => {
     const authRepository = new MemoryAuthRepository();
@@ -1511,13 +1524,13 @@ describe("app", () => {
     expect(response.text).not.toContain("M30202");
   });
 
-  test("GET /reconciliation-runs/:id/merged-floorplan exports Hurst HTML-as-XLS", async () => {
+  test("GET /reconciliation-runs/:id/merged-floorplan resolves Hurst config from the run store", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const reconciliation = await createReconciliation(app);
 
-    const response = await request(app)
-      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
-      .query({ store_key: "hurst" });
+    const response = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`,
+    );
 
     expect(response.status).toBe(200);
     expect(response.header["content-type"]).toContain("application/vnd.ms-excel");
@@ -1533,7 +1546,7 @@ describe("app", () => {
     expect(response.text).toContain("M30303");
   });
 
-  test("GET /reconciliation-runs/:id/merged-floorplan uses Acura store config", async () => {
+  test("GET /reconciliation-runs/:id/merged-floorplan can use an explicit Acura override", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const reconciliation = await createReconciliation(app);
 
@@ -1567,25 +1580,118 @@ describe("app", () => {
     expect(response.body.dealertrack_total_amount_cents).toBe(-60400);
   });
 
-  test("GET /reconciliation-runs/:id/merged-floorplan validates store config", async () => {
+  test("GET /reconciliation-runs/:id/merged-floorplan resolves Acura config and 324 preprocessing from the run store", async () => {
     const app = createApp(new MemoryTransactionRepository());
-    const reconciliation = await createReconciliation(app);
+    const storeResponse = await request(app)
+      .post("/stores")
+      .send({ name: "Hiley Acura" });
+    expect(storeResponse.status).toBe(201);
+    const acuraStoreId = storeResponse.body.id as number;
 
-    const missingStore = await request(app).get(
+    const reconciliation = await createReconciliationWithRows(app, {
+      boaCsv: boaUploadCsvMulti([
+        { stock: "M30101", vin: "1HGCM82633A004352", amount: "$301.00", reference: "30101" },
+        { stock: "M30202", vin: "2HGCM82633A004352", amount: "$302.00", reference: "30202" },
+      ]),
+      dealertrackCsv: dealertrackUploadCsvMultiForAccount(
+        [
+          { stock: "M30101", amount: "-301", vin: "1HGCM82633A004352" },
+          { stock: "M30303", amount: "-303" },
+        ],
+        "324",
+      ),
+      boaFilename: "acura-boa.csv",
+      dealertrackFilename: "acura-dt.csv",
+      storeId: acuraStoreId,
+    });
+
+    const response = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
+      .query({ format: "json" });
+    const detailResponse = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.headers).toEqual([
+      "ACURA",
+      "Serial No/VIN",
+      "VIN6",
+      "Ending Balance",
+      "324",
+      "VIN6",
+      "Description",
+      "Control",
+    ]);
+    expect(response.body.store_config).toMatchObject({
+      storeKey: "acura",
+      mergedSheetLabel: "ACURA",
+      dealertrackAccountLabel: "324",
+    });
+    expect(response.body.rows.map((row: { classification: string }) => row.classification)).toEqual([
+      "matched",
+      "boa_only",
+      "dealertrack_only",
+    ]);
+    expect(detailResponse.status).toBe(200);
+    const dealertrackTransactions = [
+      ...detailResponse.body.match_groups.flatMap(
+        (group: { transactions: Array<{ source_type: string; transaction: { account: string; account_identifier: string } }> }) =>
+          group.transactions,
+      ),
+      ...detailResponse.body.exceptions,
+    ].filter((entry: { source_type: string }) => entry.source_type === "dealertrack");
+    expect(
+      dealertrackTransactions.every(
+        (entry: { transaction: { account: string; account_identifier: string } }) =>
+          entry.transaction.account === "324" &&
+          entry.transaction.account_identifier === "floorplan",
+      ),
+    ).toBe(true);
+  });
+
+  test("GET /reconciliation-runs/:id/merged-floorplan validates unconfigured stores and bad overrides", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const storeResponse = await request(app)
+      .post("/stores")
+      .send({ name: "Hiley Mazda of Test" });
+    expect(storeResponse.status).toBe(201);
+    const testStoreId = storeResponse.body.id as number;
+    const reconciliation = await createReconciliationWithRows(app, {
+      boaCsv: boaUploadCsv("M50101", "1HGCM82633A004352", "$501.00", "50101"),
+      dealertrackCsv: dealertrackUploadCsv("M50101", "-501", "1HGCM82633A004352"),
+      boaFilename: "boa-unconfigured-store.csv",
+      dealertrackFilename: "dt-unconfigured-store.csv",
+      storeId: testStoreId,
+    });
+
+    const unconfiguredStore = await request(app).get(
       `/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`,
     );
-    const unknownStore = await request(app)
+    const badOverride = await request(app)
       .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
       .query({ store_key: "lexus" });
+    const explicitOverride = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
+      .query({ store_key: "hurst", format: "json" });
 
-    for (const response of [missingStore, unknownStore]) {
-      expect(response.status).toBe(422);
-      expect(response.body.error).toMatchObject({
-        code: "INVALID_STORE_KEY",
-        message: "store_key must be one of: hurst, acura.",
-      });
-      expect(response.body.error.details.supported_store_keys).toEqual(["hurst", "acura"]);
-    }
+    expect(unconfiguredStore.status).toBe(422);
+    expect(unconfiguredStore.body.error).toMatchObject({
+      code: "STORE_WORKFLOW_CONFIG_NOT_FOUND",
+      message: "No store workflow config is configured for this reconciliation run.",
+    });
+    expect(unconfiguredStore.body.error.details).toMatchObject({
+      dealership_store_id: testStoreId,
+      store_name: "Hiley Mazda of Test",
+      supported_store_keys: ["hurst", "acura"],
+    });
+    expect(badOverride.status).toBe(422);
+    expect(badOverride.body.error).toMatchObject({
+      code: "INVALID_STORE_KEY",
+      message: "store_key must be one of: hurst, acura.",
+    });
+    expect(explicitOverride.status).toBe(200);
+    expect(explicitOverride.body.headers[0]).toBe("HURST");
   });
 
   test("merged floorplan export keeps Dealertrack account_identifier grouped as floorplan", async () => {

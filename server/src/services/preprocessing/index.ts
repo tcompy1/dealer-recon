@@ -28,7 +28,10 @@ import {
 } from "../parsers/sourceParserRouter.js";
 import type { ParsedTable } from "../parsers/types.js";
 import { preprocessBoa } from "./boaPreprocessor.js";
-import { preprocessDealertrack } from "./dealertrackPreprocessor.js";
+import {
+  preprocessDealertrack,
+  type DealertrackPreprocessOptions,
+} from "./dealertrackPreprocessor.js";
 import type { PreprocessingDiagnostic, PreprocessingResult, PreprocessingSummary } from "./types.js";
 
 export type PreprocessingOrchestrationOutput = {
@@ -54,10 +57,15 @@ export type PreprocessingOrchestrationDecision =
       reason: string;
     };
 
+export type PreprocessUploadOptions = {
+  dealertrack?: DealertrackPreprocessOptions;
+};
+
 export function preprocessUpload(
   buffer: Buffer,
   sourceType: SourceType,
   originalFilename: string | null = null,
+  options: PreprocessUploadOptions = {},
 ): PreprocessingOrchestrationDecision {
   const detection = detectFileFormat(buffer, originalFilename);
   const route = resolveParserRoute(detection.format, sourceType);
@@ -88,19 +96,23 @@ export function preprocessUpload(
     };
   }
 
-  const preprocessing = runPreprocessor(sourceType, parsed);
+  const preprocessing = runPreprocessor(sourceType, parsed, options);
   return {
     kind: "preprocessed",
     output: { ...preprocessing, detection, route },
   };
 }
 
-function runPreprocessor(sourceType: SourceType, parsed: ParsedTable): PreprocessingResult {
+function runPreprocessor(
+  sourceType: SourceType,
+  parsed: ParsedTable,
+  options: PreprocessUploadOptions,
+): PreprocessingResult {
   if (sourceType === "boa") {
     return preprocessBoa(parsed);
   }
   if (sourceType === "dealertrack") {
-    return preprocessDealertrack(parsed);
+    return preprocessDealertrack(parsed, options.dealertrack);
   }
   // For non-floorplan source types we don't currently preprocess. This
   // branch exists to keep the function total — the orchestrator's route

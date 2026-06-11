@@ -104,9 +104,9 @@ export function preprocessDealertrack(
 
   const header = parsed.header;
   const headerLookup = header ? buildHeaderLookup(header) : null;
-  const fourDigitColumns = header ? findFourDigitColumns(header) : [];
-  const hasConfiguredAccount = fourDigitColumns.some(({ name }) => name === accountColumn);
-  const removedColumnsPresent = fourDigitColumns.filter(({ name }) => removedAccountColumns.has(name));
+  const accountColumns = header ? findAccountColumns(header, accountColumn, removedAccountColumns) : [];
+  const hasConfiguredAccount = accountColumns.some(({ name }) => name === accountColumn);
+  const removedColumnsPresent = accountColumns.filter(({ name }) => removedAccountColumns.has(name));
 
   if (header) {
     diagnostics.push({
@@ -119,7 +119,8 @@ export function preprocessDealertrack(
         account_column: accountColumn,
         has_account_column: hasConfiguredAccount,
         removed_account_columns_present: removedColumnsPresent.length,
-        four_digit_columns: fourDigitColumns.length,
+        account_columns: accountColumns.length,
+        four_digit_columns: accountColumns.filter(({ name }) => FOUR_DIGIT_RE.test(name)).length,
       },
     });
   }
@@ -172,7 +173,7 @@ export function preprocessDealertrack(
     const amountInfo = resolveDealertrackAmount(
       cleaned,
       header,
-      fourDigitColumns,
+      accountColumns,
       accountColumn,
       removedAccountColumns,
     );
@@ -435,10 +436,19 @@ function findCellByAliases(
   return null;
 }
 
-function findFourDigitColumns(header: string[]): Array<{ name: string; index: number }> {
+function findAccountColumns(
+  header: string[],
+  accountColumn: string,
+  removedAccountColumns: Set<string>,
+): Array<{ name: string; index: number }> {
   return header
     .map((name, index) => ({ name: normalizeAccountHeaderName(name), index }))
-    .filter(({ name }) => FOUR_DIGIT_RE.test(name));
+    .filter(
+      ({ name }) =>
+        FOUR_DIGIT_RE.test(name) ||
+        name === accountColumn ||
+        removedAccountColumns.has(name),
+    );
 }
 
 function normalizeAccountHeaderName(value: string): string {
@@ -456,12 +466,12 @@ function defaultRemovedAccountColumns(accountColumn: string): string[] {
 function resolveDealertrackAmount(
   cells: string[],
   header: string[] | null,
-  fourDigitColumns: Array<{ name: string; index: number }>,
+  accountColumns: Array<{ name: string; index: number }>,
   accountColumn: string,
   removedAccountColumns: Set<string>,
 ): DealertrackAmountInfo | null {
-  if (header && fourDigitColumns.length > 0) {
-    const accountIndex = fourDigitColumns.find(({ name }) => name === accountColumn)?.index;
+  if (header && accountColumns.length > 0) {
+    const accountIndex = accountColumns.find(({ name }) => name === accountColumn)?.index;
     if (accountIndex === undefined) {
       return null;
     }
@@ -469,7 +479,7 @@ function resolveDealertrackAmount(
     if (accountAmountCents === null) {
       return null;
     }
-    const removedAccountCents = fourDigitColumns
+    const removedAccountCents = accountColumns
       .filter(({ name }) => removedAccountColumns.has(name))
       .reduce((total, { index }) => total + parseOptionalAccountAmount(cells[index]), 0);
     return {

@@ -45,7 +45,9 @@ import { buildHurstFpRecWorkbook, toHurstFpRecFilename, toHurstFpRecXlsHtml } fr
 import {
   getStoreWorkflowConfig,
   parseStoreKey,
+  resolveStoreWorkflowConfigFromStoreName,
   STORE_KEYS,
+  type StoreWorkflowConfig,
 } from "./config/storeWorkflowConfig.js";
 import { buildMergedFloorplanArtifact } from "./services/mergedFloorplanExport.js";
 import { applyCarryForwardToDetail } from "./services/exceptionCarryForward.js";
@@ -560,6 +562,10 @@ export function createApp(
     if (!(await canAccessStore(repository, getAuthenticatedUser(response), dealershipStoreId))) {
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
+    const dealershipStores = await repository.listDealershipStores(requestDealershipId);
+    const selectedStoreName =
+      dealershipStores.find((store) => store.id === dealershipStoreId)?.name ?? null;
+    const storeWorkflowConfig = resolveStoreWorkflowConfigFromStoreName(selectedStoreName);
     const duplicateSourceFile = await repository.getSourceFileByHash(
       requestDealershipId,
       dealershipStoreId,
@@ -573,12 +579,13 @@ export function createApp(
         }
       | null = null;
     if (duplicateSourceFile) {
-      const [stores, reusedTransactions] = await Promise.all([
-        repository.listDealershipStores(requestDealershipId),
-        repository.listBySourceFile(requestDealershipId, duplicateSourceFile.id),
-      ]);
+      const reusedTransactions = await repository.listBySourceFile(
+        requestDealershipId,
+        duplicateSourceFile.id,
+      );
       const storeName =
-        stores.find((store) => store.id === duplicateSourceFile.dealership_store_id)?.name ?? null;
+        dealershipStores.find((store) => store.id === duplicateSourceFile.dealership_store_id)
+          ?.name ?? null;
       const duplicateHealth = assessSourceFileHealth(
         duplicateSourceFile,
         reusedTransactions.length,
@@ -662,6 +669,7 @@ export function createApp(
       request.file.buffer,
       sourceType,
       request.file.originalname ?? null,
+      storeWorkflowConfig,
     );
     if (preprocessingResult.kind === "unsupported") {
       await repository.createIngestionEvent(requestDealershipId, {
@@ -750,7 +758,7 @@ export function createApp(
     response.json({
       source_file_id: importResult.sourceFile.id,
       dealership_store_id: importResult.sourceFile.dealership_store_id,
-      store_name: (await repository.listDealershipStores(requestDealershipId)).find(
+      store_name: dealershipStores.find(
         (store) => store.id === importResult.sourceFile.dealership_store_id,
       )?.name ?? null,
       source_type: sourceType,
@@ -1086,15 +1094,6 @@ export function createApp(
       throw new NotFoundError("Reconciliation run");
     }
 
-    const storeKey = parseStoreKey(request.query.store_key);
-    if (!storeKey) {
-      throw new ValidationError(
-        `store_key must be one of: ${STORE_KEYS.join(", ")}.`,
-        "INVALID_STORE_KEY",
-        { supported_store_keys: [...STORE_KEYS] },
-      );
-    }
-
     const detail = await repository.getReconciliationRunDetail(
       getRequestDealershipId(response),
       reconciliationRunId,
@@ -1111,7 +1110,31 @@ export function createApp(
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
 
-    const artifact = buildMergedFloorplanArtifact(detail, getStoreWorkflowConfig(storeKey));
+    const storeKeyOverrideProvided = request.query.store_key !== undefined;
+    const storeKey = parseStoreKey(request.query.store_key);
+    if (storeKeyOverrideProvided && !storeKey) {
+      throw new ValidationError(
+        `store_key must be one of: ${STORE_KEYS.join(", ")}.`,
+        "INVALID_STORE_KEY",
+        { supported_store_keys: [...STORE_KEYS] },
+      );
+    }
+    const storeConfig = storeKey
+      ? getStoreWorkflowConfig(storeKey)
+      : resolveStoreWorkflowConfigFromStoreName(detail.store_name);
+    if (!storeConfig) {
+      throw new ValidationError(
+        "No store workflow config is configured for this reconciliation run.",
+        "STORE_WORKFLOW_CONFIG_NOT_FOUND",
+        {
+          dealership_store_id: detail.dealership_store_id,
+          store_name: detail.store_name,
+          supported_store_keys: [...STORE_KEYS],
+        },
+      );
+    }
+
+    const artifact = buildMergedFloorplanArtifact(detail, storeConfig);
     const format = typeof request.query.format === "string" ? request.query.format : "xls";
     if (format === "json") {
       response.json(artifact.workbook);
@@ -1675,8 +1698,16 @@ function runUploadPreprocessing(
   buffer: Buffer,
   sourceType: import("./domain/types.js").SourceType,
   originalFilename: string | null,
+  storeWorkflowConfig?: StoreWorkflowConfig | null,
 ): UploadPreprocessingResult {
-  const decision = preprocessUpload(buffer, sourceType, originalFilename);
+  const decision = preprocessUpload(buffer, sourceType, originalFilename, {
+    dealertrack: storeWorkflowConfig
+      ? {
+          accountColumn: storeWorkflowConfig.dealertrackAccountColumn,
+          accountLabel: storeWorkflowConfig.dealertrackAccountLabel,
+        }
+      : undefined,
+  });
   if (decision.kind === "preprocessed") {
     const { output } = decision;
     return {
