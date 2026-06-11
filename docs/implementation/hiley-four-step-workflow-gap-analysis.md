@@ -155,14 +155,18 @@ FP REC fidelity has been partially remediated and is no longer the same gap desc
 | Area | Required behavior | Current behavior | Severity |
 |---|---|---|---|
 | Product boundary | Four-step Hiley artifact workflow only | UI and README still emphasize dashboards, analytics, automation, account reports, review workflow, and platform features | P0 |
+| Store workflow matrix | Hurst, Acura, and Tara-captured stores are compared before implementation hardens around one store | No store workflow matrix exists in this doc set | P0 |
+| Store configuration boundary | Universal workflow rules are separated from store-specific account columns, labels, totals, naming, and DT-only placement | Current Hurst behavior is partly hardcoded around account `2100` and Hurst labels | P0 |
 | Raw BOA ingest | User can upload real BOA raw export and understand it is supported | Backend supports BOA HTML-as-XLS, but frontend file picker advertises CSV only | P1 |
 | Raw Dealertrack ingest | User can upload real Dealertrack raw export and understand it is supported | Backend supports Dealertrack SpreadsheetML/XML, but frontend file picker advertises CSV only | P1 |
 | Raw source preservation | Raw inputs are saved for audit/replay | Normalized transactions and snapshots are saved; raw uploaded file bytes are not first-class artifacts | P2 |
 | Cleaned BOA artifact | Cleaned BOA output can be opened as a recognizable Hiley working sheet | Cleaned data exists in `raw_data` and diagnostics, but no downloadable artifact exists | P1 |
 | Cleaned Dealertrack artifact | Cleaned Dealertrack output can be opened as a recognizable Hiley working sheet | Cleaned data exists in `raw_data` and diagnostics, but no downloadable artifact exists | P1 |
-| Merged spreadsheet artifact | App generates the merged working spreadsheet before FP REC | No merged workbook presenter, endpoint, download, or saved artifact exists | P0 |
-| Merged spreadsheet fidelity | BOA side, Dealertrack side, helper formulas, row manipulation, totals, and exceptions mirror Hiley's sheet | Reconciliation JSON has match groups/exceptions, but not the visible merged sheet | P0 |
-| FP REC A-H output | Final workbook matches accepted clerk/CFO A-H format | Current presenter and tests now implement the A-H grid shape and golden counts | P1 |
+| Merged spreadsheet artifact | App generates the merged working spreadsheet before FP REC for Hurst and Acura | No merged workbook presenter, endpoint, download, or saved artifact exists | P0 |
+| Merged spreadsheet fidelity | BOA side, Dealertrack side, helper formulas, row manipulation, totals, and exceptions mirror each store's clerk sheet | Reconciliation JSON has match groups/exceptions, but not the visible merged sheet | P0 |
+| Dealertrack account-column differences | Hurst uses `2100`; Acura uses `324`; other stores must be discovered from Tara's captured workflows | Dealertrack preprocessing currently centers Hurst account `2100` and excludes `2110` | P0 |
+| FP REC generation semantics | FP REC is generated from merged artifact semantics and store config | Current FP REC is a dedicated presenter from reconciliation run detail | P1 |
+| FP REC A-H output | Final workbook matches accepted clerk/CFO A-H format | Current presenter and tests now implement the Hurst A-H grid shape and golden counts | P1 |
 | Amount mismatch treatment | VIN6 amount mismatches become separate side-specific exception rows | Engine emits paired exceptions; FP REC presenter renders exceptions side-specifically | P1 |
 | End-to-end proof | Raw files produce golden-equivalent merged and FP REC artifacts | Golden tests exist at engine/presenter layers, but no full raw-upload-to-artifact proof is documented here | P1 |
 | Historical artifacts | Merged and FP REC outputs are saved historically | Runs and snapshots are saved; generated workbook artifacts appear generated on demand | P2 |
@@ -250,11 +254,13 @@ Required artifact:
 
 - Openable cleaned Dealertrack workbook/CSV.
 - Straightline rows removed.
-- Account 2110 removed for Hurst.
-- Account 2100 retained as the canonical amount.
+- Store-specific account column retained as the canonical amount.
+- Hurst retains account `2100` and removes `2110`.
+- Acura retains account `324`.
+- Remaining Tara-captured stores must be mapped before their account behavior is implemented.
 - Numbers formatted as accounting without symbols.
-- Rows sorted largest-to-smallest by 2100, then VIN6.
-- Control, 2100, VIN6, description, and helper formulas are present in merge-ready shape.
+- Rows sorted largest-to-smallest by the configured account amount, then VIN6.
+- Control, configured account amount, VIN6, description, and helper formulas are present in merge-ready shape.
 
 Current state:
 
@@ -270,6 +276,8 @@ Gap:
 Required artifact:
 
 - Openable merged working spreadsheet that mirrors the Hiley clerk's intermediate workbook.
+- Hurst output follows the Hurst merged-sheet workflow and account `2100`.
+- Acura output follows the Acura merged-sheet workflow and account `324`.
 - Cleaned BOA side and cleaned Dealertrack side are visible in one sheet.
 - Dealertrack side is merged into the BOA statement structure.
 - Helper columns/formulas are inserted and copied down.
@@ -292,6 +300,7 @@ Gap:
 Required artifact:
 
 - Openable Hurst FP REC workbook in accepted A-H layout.
+- FP REC is generated from the merged artifact semantics and store configuration, not from an isolated output presenter with separate rules.
 - Matched rows show BOA and Dealertrack on the same row.
 - BOA-only and Dealertrack-only rows remain side-specific.
 - Amount mismatches remain separate side-specific rows.
@@ -301,6 +310,7 @@ Current state:
 
 - Current presenter exports the A-H grid and has golden-count tests.
 - The export is generated on demand from run detail.
+- The export is not yet explicitly downstream of the merged spreadsheet artifact or store config model.
 - Visual comparison and raw-upload end-to-end acceptance remain the key proof gaps.
 
 Gap:
@@ -312,12 +322,15 @@ Gap:
 The pilot is done when all of the following are true:
 
 - A Hiley user can upload the raw BOA export and raw Dealertrack export without converting through a confusing non-Hiley path.
+- Hurst, Acura, and Tara-captured store workflows are captured in a store workflow matrix.
+- Universal workflow rules are separated from store-specific configuration.
+- Store config covers store label, account column, account label, output naming, totals behavior, and DT-only placement.
 - The app applies the documented Hiley BOA cleaning workflow.
 - The app applies the documented Hiley Dealertrack cleaning workflow.
 - The user can download a cleaned BOA artifact.
 - The user can download a cleaned Dealertrack artifact.
-- The user can download a merged spreadsheet artifact that mirrors the clerk's merged working sheet.
-- The user can download the final Hurst FP REC workbook.
+- The user can download merged spreadsheet artifacts that mirror Hurst and Acura clerk working sheets.
+- The user can download final FP REC workbooks generated from the same merged artifact semantics and store config.
 - The merged spreadsheet and FP REC artifacts are saved historically for the run.
 - FEB26, MAR26, and APRIL26 outputs match golden counts, signs, totals, variance, amount-mismatch treatment, and sort behavior.
 - The FP REC workbook opens in Excel without repair prompts.
@@ -413,80 +426,92 @@ These artifacts must be redownloadable and tied to a reconciliation run for audi
 
 ## 9. Concrete Follow-Up Codex Tasks With Acceptance Criteria
 
-### Task 1 - Implement Hiley Merged Spreadsheet Spec And Tests
+### Task 1 - Create Store Workflow Matrix
 
 Prompt:
 
-Create an implementation spec and failing tests for the Hiley merged spreadsheet artifact. Do not change UI yet.
+Create `docs/implementation/store-workflow-matrix.md` comparing Hurst, Acura, and the remaining Tara-captured stores. Separate universal workflow rules from store-specific configuration.
 
 Acceptance criteria:
 
-- Spec defines visible columns, helper formulas, row alignment rules, totals, and exception placement.
-- Tests cover matched rows, BOA-only rows, Dealertrack-only rows, and VIN6 amount mismatches.
-- Tests use FEB/MAR/APR golden fixture expectations where possible.
-- Tests fail because no merged spreadsheet presenter exists yet.
+- Matrix includes each captured store and identifies available source evidence for each one.
+- Matrix compares BOA raw shape, Dealertrack raw shape, cleaning steps, merged workbook shape, FP REC shape, account column, account label, totals behavior, output naming, and DT-only placement.
+- Universal rules are listed separately from store-specific rules.
+- Hurst account `2100` and Acura account `324` are explicitly documented.
+- Unknown store behavior is marked as an open question instead of guessed.
+- The next implementation tasks can use the matrix to decide what belongs in code versus config.
 
-### Task 2 - Build The Merged Spreadsheet Presenter And Export Endpoint
+### Task 2 - Implement Hurst + Acura Merged Spreadsheet Fidelity
 
 Prompt:
 
-Implement the merged spreadsheet artifact for a reconciliation run using existing preprocessing and reconciliation detail data.
+Implement the clerk-style merged working spreadsheet for Hurst and Acura before FP REC generation.
 
 Acceptance criteria:
 
 - Backend exposes a merged spreadsheet download endpoint for a run.
 - Presenter emits an Excel-openable artifact.
-- Artifact includes cleaned BOA side, cleaned Dealertrack side, helper formulas, aligned rows, totals, and visible exceptions.
+- Hurst merged spreadsheet uses Dealertrack account `2100`.
+- Acura merged spreadsheet uses Dealertrack account `324`.
+- Artifact includes cleaned BOA side, cleaned Dealertrack side, configured account column, helper formulas, aligned rows, totals, and visible exceptions.
 - Amount mismatches are not merged as accepted matches.
-- Tests from Task 1 pass.
-- No existing FP REC output regression.
+- Tests cover Hurst and Acura account-column differences.
+- Hurst FEB/MAR/APR golden expectations remain green.
+- No existing FP REC output regression is introduced.
 
-### Task 3 - Add Cleaned BOA And Cleaned Dealertrack Artifact Downloads
-
-Prompt:
-
-Expose cleaned BOA and cleaned Dealertrack outputs as downloadable artifacts generated from preprocessing output.
-
-Acceptance criteria:
-
-- BOA artifact matches the documented BOA cleanup steps.
-- Dealertrack artifact matches the documented Dealertrack cleanup steps.
-- Artifacts are available from the run or source-file context.
-- Output includes enough lineage or metadata to trace removed rows through diagnostics.
-- UI can download both artifacts without exposing dashboard features.
-
-### Task 4 - Prove FP REC End To End From Raw Inputs
+### Task 3 - Add Store Configuration Model
 
 Prompt:
 
-Add end-to-end tests and verification for raw Hiley BOA plus raw Dealertrack files through FP REC export.
+Add a store configuration model that drives preprocessing, merged workbook generation, and FP REC generation without hardcoding Hurst behavior into shared workflow logic.
 
 Acceptance criteria:
 
-- Raw source fixtures are ingested through the real upload/preprocessing path.
-- Generated FP REC matches FEB/MAR/APR golden counts.
-- Generated FP REC preserves signs, totals, variance, sorting, and amount-mismatch behavior.
-- Export opens as Excel-compatible XLS HTML.
-- Any remaining mismatch is documented with exact row-level evidence.
+- Config includes store label/display name.
+- Config includes Dealertrack account column and account label.
+- Config includes output naming.
+- Config includes totals behavior.
+- Config includes DT-only placement behavior.
+- Hurst config uses account `2100`.
+- Acura config uses account `324`.
+- Shared code reads these values from config rather than store-name conditionals.
+- Tests prove Hurst and Acura resolve different account columns through config.
 
-### Task 5 - Simplify The Pilot UI To Four Steps
+### Task 4 - Generate FP REC From Merged Artifact Semantics
 
 Prompt:
 
-Refactor the reconciliation UI into the Hiley four-step artifact workflow and hide non-pilot dashboard/review features.
+Refactor FP REC generation so it is derived from the same merged artifact semantics and store configuration used by the merged spreadsheet.
 
 Acceptance criteria:
 
-- First screen shows only raw file ingestion, cleaning status/artifacts, merged spreadsheet artifact, and FP REC artifact.
+- FP REC generation consumes the merged row model or an equivalent shared semantic model.
+- FP REC no longer duplicates independent matching, placement, or account-column decisions.
+- Hurst FP REC still matches FEB/MAR/APR golden counts, signs, totals, variance, sorting, and amount-mismatch behavior.
+- Acura FP REC uses Acura store config and account `324`.
+- Tests prove merged spreadsheet and FP REC agree on matched, BOA-only, Dealertrack-only, and amount-mismatch rows.
+- Export opens as Excel-compatible XLS HTML without repair prompts.
+
+### Task 5 - Simplify UI Around The Four-Step Workflow
+
+Prompt:
+
+Refactor the pilot UI around the four workflow steps: ingest raw files, clean/process, download merged spreadsheet, download FP REC.
+
+Acceptance criteria:
+
+- First screen shows raw BOA ingestion, raw Dealertrack ingestion, cleaning/processing status, merged spreadsheet download, and FP REC download.
 - Accounts, month-end reporting, automation controls, operational metrics, review assignment, and trend analytics are hidden or moved outside the pilot path.
-- Upload controls communicate the actual supported BOA and Dealertrack raw export formats.
-- Primary buttons download cleaned BOA, cleaned Dealertrack, merged spreadsheet, and FP REC artifacts.
+- Upload controls communicate the actual supported raw BOA and Dealertrack export formats.
+- Primary buttons download the merged spreadsheet and FP REC artifacts.
+- Cleaned BOA and cleaned Dealertrack outputs remain available as supporting artifacts, not the main workflow destination.
+- UI labels come from store config where store-specific.
 
 ### Task 6 - Persist Historical Artifacts
 
 Prompt:
 
-Persist raw inputs and generated workbook artifacts for each reconciliation run.
+Persist raw inputs, cleaned outputs, merged workbook, and FP REC for each reconciliation run.
 
 Acceptance criteria:
 
@@ -495,4 +520,3 @@ Acceptance criteria:
 - Users can redownload historical artifacts.
 - Replay can detect whether regenerated artifacts differ from saved historical artifacts.
 - Artifact storage does not make dashboard analytics a pilot dependency.
-
