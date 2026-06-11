@@ -33,3 +33,11 @@ analysis/*
 
 # Windows alternate data stream metadata from downloaded files
 *:Zone.Identifier
+
+# Discovery recordings are retained locally, not committed.
+docs/discovery/floorplan/**/recordings/*.mp4
+docs/discovery/floorplan/**/recordings/*.mov
+docs/discovery/floorplan/**/recordings/*.webm
+
+# Windows/WSL downloaded-file metadata
+*:Zone.Identifier
