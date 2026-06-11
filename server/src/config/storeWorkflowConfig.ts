@@ -1,4 +1,6 @@
-export type StoreKey = "hurst" | "acura";
+export const STORE_KEYS = ["hurst", "acura"] as const;
+
+export type StoreKey = (typeof STORE_KEYS)[number];
 
 export type DtOnlyPlacementRule = "after_boa_rows" | "interleave_by_amount";
 
@@ -53,4 +55,12 @@ export const STORE_WORKFLOW_CONFIGS: Record<StoreKey, StoreWorkflowConfig> = {
 
 export function getStoreWorkflowConfig(storeKey: StoreKey): StoreWorkflowConfig {
   return STORE_WORKFLOW_CONFIGS[storeKey];
+}
+
+export function parseStoreKey(value: unknown): StoreKey | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  return STORE_KEYS.includes(normalized as StoreKey) ? (normalized as StoreKey) : null;
 }

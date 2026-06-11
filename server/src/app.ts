@@ -42,6 +42,12 @@ import type {
 } from "./services/preprocessing/types.js";
 import { toExceptionsCsv, toMonthEndReportCsv } from "./presenters/csv.js";
 import { buildHurstFpRecWorkbook, toHurstFpRecFilename, toHurstFpRecXlsHtml } from "./presenters/hurstFpRec.js";
+import {
+  getStoreWorkflowConfig,
+  parseStoreKey,
+  STORE_KEYS,
+} from "./config/storeWorkflowConfig.js";
+import { buildMergedFloorplanArtifact } from "./services/mergedFloorplanExport.js";
 import { applyCarryForwardToDetail } from "./services/exceptionCarryForward.js";
 import {
   parseExceptionReviewUpdate,
@@ -1072,6 +1078,54 @@ export function createApp(
         `attachment; filename="reconciliation-run-${reconciliationRunId}-exceptions.csv"`,
       )
       .send(toExceptionsCsv(detail));
+  }));
+
+  app.get("/reconciliation-runs/:id/merged-floorplan", asyncHandler(async (request, response) => {
+    const reconciliationRunId = parsePositiveInteger(request.params.id);
+    if (reconciliationRunId === null) {
+      throw new NotFoundError("Reconciliation run");
+    }
+
+    const storeKey = parseStoreKey(request.query.store_key);
+    if (!storeKey) {
+      throw new ValidationError(
+        `store_key must be one of: ${STORE_KEYS.join(", ")}.`,
+        "INVALID_STORE_KEY",
+        { supported_store_keys: [...STORE_KEYS] },
+      );
+    }
+
+    const detail = await repository.getReconciliationRunDetail(
+      getRequestDealershipId(response),
+      reconciliationRunId,
+    );
+    if (!detail) {
+      const ownerDealershipId =
+        await repository.getReconciliationRunDealershipId(reconciliationRunId);
+      if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
+        throw new ForbiddenError("Reconciliation run belongs to another dealership.", "DEALERSHIP_MISMATCH");
+      }
+      throw new NotFoundError("Reconciliation run");
+    }
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+    }
+
+    const artifact = buildMergedFloorplanArtifact(detail, getStoreWorkflowConfig(storeKey));
+    const format = typeof request.query.format === "string" ? request.query.format : "xls";
+    if (format === "json") {
+      response.json(artifact.workbook);
+      return;
+    }
+
+    response
+      .status(200)
+      .type(artifact.contentType)
+      .setHeader(
+        "Content-Disposition",
+        `attachment; filename="${artifact.filename}"`,
+      )
+      .send(artifact.html);
   }));
 
   app.get("/reconciliation-runs/:id/hurst-fp-rec", asyncHandler(async (request, response) => {

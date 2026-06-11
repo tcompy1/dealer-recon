@@ -1511,6 +1511,116 @@ describe("app", () => {
     expect(response.text).not.toContain("M30202");
   });
 
+  test("GET /reconciliation-runs/:id/merged-floorplan exports Hurst HTML-as-XLS", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+
+    const response = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
+      .query({ store_key: "hurst" });
+
+    expect(response.status).toBe(200);
+    expect(response.header["content-type"]).toContain("application/vnd.ms-excel");
+    expect(response.header["content-disposition"]).toContain("hurst-merged-floorplan");
+    expect(response.text).toContain("<th>HURST</th>");
+    expect(response.text).toContain("<th>2100</th>");
+    expect(response.text).toContain("BOA total");
+    expect(response.text).toContain("2100 total");
+    expect(response.text).toContain("603.00");
+    expect(response.text).toContain("(604.00)");
+    expect(response.text).toContain("1HGCM82633A004352");
+    expect(response.text).toContain("2HGCM82633A004352");
+    expect(response.text).toContain("M30303");
+  });
+
+  test("GET /reconciliation-runs/:id/merged-floorplan uses Acura store config", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+
+    const response = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
+      .query({ store_key: "acura", format: "json" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.headers).toEqual([
+      "ACURA",
+      "Serial No/VIN",
+      "VIN6",
+      "Ending Balance",
+      "324",
+      "VIN6",
+      "Description",
+      "Control",
+    ]);
+    expect(response.body.store_config).toMatchObject({
+      storeKey: "acura",
+      mergedSheetLabel: "ACURA",
+      dealertrackAccountLabel: "324",
+      outputFilenamePrefix: "acura",
+    });
+    expect(response.body.rows.map((row: { classification: string }) => row.classification)).toEqual([
+      "matched",
+      "boa_only",
+      "dealertrack_only",
+    ]);
+    expect(response.body.boa_total_amount_cents).toBe(60300);
+    expect(response.body.dealertrack_total_amount_cents).toBe(-60400);
+  });
+
+  test("GET /reconciliation-runs/:id/merged-floorplan validates store config", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+
+    const missingStore = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`,
+    );
+    const unknownStore = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
+      .query({ store_key: "lexus" });
+
+    for (const response of [missingStore, unknownStore]) {
+      expect(response.status).toBe(422);
+      expect(response.body.error).toMatchObject({
+        code: "INVALID_STORE_KEY",
+        message: "store_key must be one of: hurst, acura.",
+      });
+      expect(response.body.error.details.supported_store_keys).toEqual(["hurst", "acura"]);
+    }
+  });
+
+  test("merged floorplan export keeps Dealertrack account_identifier grouped as floorplan", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+    const reconciliation = await createReconciliation(app);
+
+    const exportResponse = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
+      .query({ store_key: "hurst", format: "json" });
+    const detailResponse = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
+    );
+    const accountResponse = await request(app).get("/accounts/summary");
+
+    expect(exportResponse.status).toBe(200);
+    expect(detailResponse.status).toBe(200);
+    const dealertrackTransactions = [
+      ...detailResponse.body.match_groups.flatMap(
+        (group: { transactions: Array<{ source_type: string; transaction: { account_identifier: string } }> }) =>
+          group.transactions,
+      ),
+      ...detailResponse.body.exceptions,
+    ].filter((entry: { source_type: string }) => entry.source_type === "dealertrack");
+    expect(
+      dealertrackTransactions.every(
+        (entry: { transaction: { account_identifier: string } }) =>
+          entry.transaction.account_identifier === "floorplan",
+      ),
+    ).toBe(true);
+    expect(accountResponse.status).toBe(200);
+    expect(accountResponse.body.map((account: { account_identifier: string }) => account.account_identifier)).toEqual([
+      "floorplan",
+    ]);
+  });
+
   test("GET /reconciliation-runs/:id/exceptions.csv excludes weak amount-only duplicate candidates", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const boaUpload = await uploadCsv(
