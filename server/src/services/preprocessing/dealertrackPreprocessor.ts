@@ -4,10 +4,11 @@
  * Mirrors the Hiley office-manager Excel preprocessing pass for Dealertrack
  * 2100 floorplan schedules:
  *
- *   - use the configured four-digit account column as the canonical GL amount
- *     (`2100` by default for Hurst, `324` for Acura).
- *     For Hiley Hurst, account/column 2110 is removed from the working output
- *     and is never used as a fallback amount.
+ *   - use the configured account amount column or columns as the canonical GL
+ *     amount (`2100` by default for Hurst, `324` for Acura, and
+ *     `2100 + 2101 + 2101S` for FW).
+ *     Excluded account columns such as 2110 are removed from the working
+ *     output and are never used as fallback amounts.
  *   - remove Straightline rows
  *   - extract VIN from the Description, compute VIN6, normalize stock/control
  *   - surface dirty / missing / untrusted VIN rows as manual_enrichment_required
@@ -70,8 +71,10 @@ type DealertrackWorkingRow = {
 };
 
 export type DealertrackPreprocessOptions = {
+  amountColumns?: string[];
   accountColumn?: string;
   accountLabel?: string;
+  excludedAccountColumns?: string[];
   removedAccountColumns?: string[];
 };
 
@@ -79,10 +82,23 @@ export function preprocessDealertrack(
   parsed: ParsedTable,
   options: DealertrackPreprocessOptions = {},
 ): PreprocessingResult {
-  const accountColumn = normalizeAccountHeaderName(options.accountColumn ?? DEFAULT_CANONICAL_ACCOUNT);
-  const accountLabel = options.accountLabel?.trim() || accountColumn;
+  const requestedAmountColumns =
+    options.amountColumns && options.amountColumns.length > 0
+      ? options.amountColumns
+      : [options.accountColumn ?? DEFAULT_CANONICAL_ACCOUNT];
+  const amountColumns = uniqueNormalizedAccountColumns(requestedAmountColumns);
+  const amountSource = requestedAmountColumns.map((column) => cleanCell(column)).join("+");
+  const accountColumn = normalizeAccountHeaderName(
+    options.accountColumn ?? requestedAmountColumns[0] ?? DEFAULT_CANONICAL_ACCOUNT,
+  );
+  const accountLabel =
+    options.accountLabel?.trim() || cleanCell(options.accountColumn ?? requestedAmountColumns[0]);
   const removedAccountColumns = new Set(
-    (options.removedAccountColumns ?? defaultRemovedAccountColumns(accountColumn))
+    (
+      options.excludedAccountColumns ??
+      options.removedAccountColumns ??
+      defaultRemovedAccountColumns(amountColumns)
+    )
       .map(normalizeAccountHeaderName),
   );
   const diagnostics: PreprocessingDiagnostic[] = [];
@@ -104,20 +120,26 @@ export function preprocessDealertrack(
 
   const header = parsed.header;
   const headerLookup = header ? buildHeaderLookup(header) : null;
-  const accountColumns = header ? findAccountColumns(header, accountColumn, removedAccountColumns) : [];
-  const hasConfiguredAccount = accountColumns.some(({ name }) => name === accountColumn);
+  const accountColumns = header ? findAccountColumns(header, amountColumns, removedAccountColumns) : [];
+  const missingAmountColumns = amountColumns.filter(
+    (amountColumn) => !accountColumns.some(({ name }) => name === amountColumn),
+  );
+  const hasConfiguredAccount = missingAmountColumns.length === 0;
   const removedColumnsPresent = accountColumns.filter(({ name }) => removedAccountColumns.has(name));
 
   if (header) {
     diagnostics.push({
       kind: "header_row_detected",
       message: hasConfiguredAccount
-        ? `Header row detected; ${accountColumn} account column present.`
-        : `Header row detected; no ${accountColumn} column present.`,
+        ? `Header row detected; ${amountSource} account amount column(s) present.`
+        : `Header row detected; missing account amount column(s): ${missingAmountColumns.join(", ")}.`,
       source_row_number: 1,
       details: {
         account_column: accountColumn,
+        amount_columns: amountColumns.join(","),
         has_account_column: hasConfiguredAccount,
+        has_amount_columns: hasConfiguredAccount,
+        missing_amount_columns: missingAmountColumns.join(","),
         removed_account_columns_present: removedColumnsPresent.length,
         account_columns: accountColumns.length,
         four_digit_columns: accountColumns.filter(({ name }) => FOUR_DIGIT_RE.test(name)).length,
@@ -174,7 +196,8 @@ export function preprocessDealertrack(
       cleaned,
       header,
       accountColumns,
-      accountColumn,
+      amountColumns,
+      amountSource,
       removedAccountColumns,
     );
     if (amountInfo === null) {
@@ -278,7 +301,7 @@ export function preprocessDealertrack(
       rawSnapshot,
       amountCents: amountInfo.amountCents,
       amountSource: amountInfo.source,
-      accountColumn,
+      accountColumn: accountLabel,
       accountLabel,
       accountAmountCents: amountInfo.accountAmountCents,
       removedAccountCents: amountInfo.removedAccountCents,
@@ -331,18 +354,18 @@ export function preprocessDealertrack(
     return a.sourceRowNumber - b.sourceRowNumber;
   });
   for (const row of acceptedRows) {
-    row.lineage.push({ stage: "sorted", detail: `largest_${accountColumn}_then_vin6_asc` });
+    row.lineage.push({ stage: "sorted", detail: `largest_${amountSource}_then_vin6_asc` });
   }
   diagnostics.push({
     kind: "sort_applied",
-    message: `Rows sorted largest-to-smallest by ${accountColumn} balance, then VIN6 ascending.`,
+    message: `Rows sorted largest-to-smallest by ${amountSource} balance, then VIN6 ascending.`,
     source_row_number: null,
   });
 
   const transactions: NewTransaction[] = acceptedRows.map((row, index) => {
     row.lineage.push({
       stage: "working_columns_pruned",
-      detail: `hiley_dealertrack_${row.accountColumn}_without_removed_accounts`,
+      detail: `hiley_dealertrack_${row.accountLabel}_from_${row.amountSource}_without_removed_accounts`,
     });
     const lineage: RawDataLineage = {
       source_kind: "dealertrack",
@@ -438,15 +461,16 @@ function findCellByAliases(
 
 function findAccountColumns(
   header: string[],
-  accountColumn: string,
+  amountColumns: string[],
   removedAccountColumns: Set<string>,
 ): Array<{ name: string; index: number }> {
+  const amountColumnSet = new Set(amountColumns);
   return header
     .map((name, index) => ({ name: normalizeAccountHeaderName(name), index }))
     .filter(
       ({ name }) =>
         FOUR_DIGIT_RE.test(name) ||
-        name === accountColumn ||
+        amountColumnSet.has(name) ||
         removedAccountColumns.has(name),
     );
 }
@@ -459,32 +483,54 @@ function normalizeAccountHeaderName(value: string): string {
   return normalizeHeaderName(value);
 }
 
-function defaultRemovedAccountColumns(accountColumn: string): string[] {
-  return accountColumn === DEFAULT_CANONICAL_ACCOUNT ? [DEFAULT_REMOVED_ACCOUNT] : [];
+function uniqueNormalizedAccountColumns(values: string[]): string[] {
+  const columns: string[] = [];
+  for (const value of values) {
+    const normalized = normalizeAccountHeaderName(value);
+    if (normalized && !columns.includes(normalized)) {
+      columns.push(normalized);
+    }
+  }
+  return columns.length > 0 ? columns : [DEFAULT_CANONICAL_ACCOUNT];
+}
+
+function defaultRemovedAccountColumns(amountColumns: string[]): string[] {
+  return amountColumns.includes(DEFAULT_CANONICAL_ACCOUNT) ? [DEFAULT_REMOVED_ACCOUNT] : [];
 }
 
 function resolveDealertrackAmount(
   cells: string[],
   header: string[] | null,
   accountColumns: Array<{ name: string; index: number }>,
-  accountColumn: string,
+  amountColumns: string[],
+  amountSource: string,
   removedAccountColumns: Set<string>,
 ): DealertrackAmountInfo | null {
   if (header && accountColumns.length > 0) {
-    const accountIndex = accountColumns.find(({ name }) => name === accountColumn)?.index;
-    if (accountIndex === undefined) {
-      return null;
+    const amountColumnIndexes: number[] = [];
+    for (const amountColumn of amountColumns) {
+      const amountColumnIndex = accountColumns.find(({ name }) => name === amountColumn)?.index;
+      if (amountColumnIndex === undefined) {
+        return null;
+      }
+      amountColumnIndexes.push(amountColumnIndex);
     }
-    const accountAmountCents = parseRequiredAccountAmount(cells[accountIndex]);
-    if (accountAmountCents === null) {
-      return null;
+
+    let accountAmountCents = 0;
+    for (const accountIndex of amountColumnIndexes) {
+      const amount = parseRequiredAccountAmount(cells[accountIndex]);
+      if (amount === null) {
+        return null;
+      }
+      accountAmountCents += amount;
     }
+
     const removedAccountCents = accountColumns
       .filter(({ name }) => removedAccountColumns.has(name))
       .reduce((total, { index }) => total + parseOptionalAccountAmount(cells[index]), 0);
     return {
       amountCents: accountAmountCents,
-      source: accountColumn,
+      source: amountSource,
       accountAmountCents,
       removedAccountCents,
     };

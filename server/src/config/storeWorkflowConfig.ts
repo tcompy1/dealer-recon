@@ -1,4 +1,4 @@
-export const STORE_KEYS = ["hurst", "acura"] as const;
+export const STORE_KEYS = ["hurst", "acura", "fw"] as const;
 
 export type StoreKey = (typeof STORE_KEYS)[number];
 
@@ -9,7 +9,10 @@ export type StoreWorkflowConfig = {
   displayName: string;
   dealershipStoreNameAliases: string[];
   mergedSheetLabel: string;
+  mergedSheetLabelAliases: string[];
   dealertrackAccountColumn: string;
+  dealertrackAmountColumns: string[];
+  dealertrackExcludedAccountColumns: string[];
   dealertrackAccountLabel: string;
   outputFilenamePrefix: string;
   boaDescriptionColumnBehavior: "description_under_store_label";
@@ -27,7 +30,10 @@ export const STORE_WORKFLOW_CONFIGS: Record<StoreKey, StoreWorkflowConfig> = {
     displayName: "Hiley Mazda of Hurst",
     dealershipStoreNameAliases: ["hiley mazda of hurst", "hurst"],
     mergedSheetLabel: "HURST",
+    mergedSheetLabelAliases: ["HURST"],
     dealertrackAccountColumn: "2100",
+    dealertrackAmountColumns: ["2100"],
+    dealertrackExcludedAccountColumns: ["2110"],
     dealertrackAccountLabel: "2100",
     outputFilenamePrefix: "hurst",
     boaDescriptionColumnBehavior: "description_under_store_label",
@@ -43,7 +49,10 @@ export const STORE_WORKFLOW_CONFIGS: Record<StoreKey, StoreWorkflowConfig> = {
     displayName: "Acura",
     dealershipStoreNameAliases: ["hiley acura", "acura"],
     mergedSheetLabel: "ACURA",
+    mergedSheetLabelAliases: ["ACURA"],
     dealertrackAccountColumn: "324",
+    dealertrackAmountColumns: ["324"],
+    dealertrackExcludedAccountColumns: [],
     dealertrackAccountLabel: "324",
     outputFilenamePrefix: "acura",
     boaDescriptionColumnBehavior: "description_under_store_label",
@@ -53,6 +62,25 @@ export const STORE_WORKFLOW_CONFIGS: Record<StoreKey, StoreWorkflowConfig> = {
       varianceLabel: "Variance",
     },
     dtOnlyPlacementRule: "interleave_by_amount",
+  },
+  fw: {
+    storeKey: "fw",
+    displayName: "Hiley Cars Fort Worth",
+    dealershipStoreNameAliases: ["hiley cars fort worth", "fort worth", "fw"],
+    mergedSheetLabel: "FW",
+    mergedSheetLabelAliases: ["FW", "FORT WORTH"],
+    dealertrackAccountColumn: "2100",
+    dealertrackAmountColumns: ["2100", "2101", "2101S"],
+    dealertrackExcludedAccountColumns: ["2110"],
+    dealertrackAccountLabel: "2100",
+    outputFilenamePrefix: "fw",
+    boaDescriptionColumnBehavior: "description_under_store_label",
+    totalsRowLabels: {
+      boaTotalLabel: "BOA total",
+      dealertrackTotalLabel: "2100 total",
+      varianceLabel: "Variance",
+    },
+    dtOnlyPlacementRule: "after_boa_rows",
   },
 };
 

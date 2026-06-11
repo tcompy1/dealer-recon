@@ -43,6 +43,50 @@ describe("preprocessDealertrack", () => {
     });
   });
 
+  test("aggregates configured FW amount columns while excluding 2110", () => {
+    const parsed = table(["Control", "Description", "2100", "2101", "2101S", "2110"], [
+      ["R10001", "FW FLOORPLAN 4S4GUHD68T3706986", "-25000.00", "-30000.00", "-5000.00", "-2000000.00"],
+    ]);
+    const result = preprocessDealertrack(parsed, {
+      amountColumns: ["2100", "2101", "2101S"],
+      accountColumn: "2100",
+      accountLabel: "2100",
+      excludedAccountColumns: ["2110"],
+    });
+
+    expect(result.transactions).toHaveLength(1);
+    expect(result.transactions[0]).toMatchObject({
+      amount_cents: -6_000_000,
+      account: "2100",
+      account_identifier: "floorplan",
+      account_type: "floorplan",
+      stock_number: "R10001",
+    });
+    expect(result.transactions[0].raw_data).toMatchObject({
+      Control: "R10001",
+      "2100": "(60,000.00)",
+      VIN6: "706986",
+    });
+    expect(result.transactions[0].raw_data).not.toHaveProperty("2101");
+    expect(result.transactions[0].raw_data).not.toHaveProperty("2101S");
+    expect(result.transactions[0].raw_data).not.toHaveProperty("2110");
+    const lineage = result.transactions[0].raw_data[LINEAGE_RAW_DATA_KEY] as RawDataLineage;
+    expect(
+      lineage.transformations.find((t) => t.stage === "amount_resolved")?.detail,
+    ).toBe("2100+2101+2101S");
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "header_row_detected",
+          details: expect.objectContaining({
+            amount_columns: "2100,2101,2101s",
+            has_amount_columns: true,
+          }),
+        }),
+      ]),
+    );
+  });
+
   test("does not fall back to sibling account columns when 2100 is zero", () => {
     const parsed = table(["Control", "Description", "2100", "9999"], [
       ["M20000", "FLOORPLAN ADV 1FAKEVN0000A0002X", "0.00", "-12345.00"],

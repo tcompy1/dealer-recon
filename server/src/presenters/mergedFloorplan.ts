@@ -181,9 +181,8 @@ function buildRowsFromCleanedRecords(
     const matchedDealertrack = dealertrackRecords.find(
       (dealertrack) =>
         !matchedDealertrackIds.has(dealertrack.id) &&
-        boaVin6Value.length > 0 &&
-        dealertrackVin6(dealertrack) === boaVin6Value &&
-        Math.abs(boa.amount_cents) === Math.abs(dealertrack.amount_cents),
+        cleanedRecordAmountsMatch(boa, dealertrack) &&
+        cleanedRecordIdentifiersMatch(boa, dealertrack, boaVin6Value),
     );
 
     if (matchedDealertrack) {
@@ -235,6 +234,7 @@ function buildMatchedRow(
   boa: TransactionSummary,
   dealertrack: TransactionSummary,
 ): MergedFloorplanRow {
+  const resolvedDealertrackVin6 = dealertrackVin6(dealertrack) || boaVin6(boa);
   return {
     ...emptyMergedRow("matched"),
     store_description: boa.description ?? "",
@@ -242,7 +242,7 @@ function buildMatchedRow(
     boa_vin6: boaVin6(boa),
     ending_balance_cents: Math.abs(boa.amount_cents),
     dealertrack_account_amount_cents: dealertrackAccountCents(dealertrack),
-    dealertrack_vin6: dealertrackVin6(dealertrack),
+    dealertrack_vin6: resolvedDealertrackVin6,
     dealertrack_description: dealertrack.description ?? "",
     dealertrack_control: dealertrackControl(dealertrack),
   };
@@ -315,6 +315,48 @@ function compareTieBreakers(left: MergedFloorplanRow, right: MergedFloorplanRow)
   );
 }
 
+function cleanedRecordAmountsMatch(
+  boa: TransactionSummary,
+  dealertrack: TransactionSummary,
+): boolean {
+  return Math.abs(boa.amount_cents) === Math.abs(dealertrack.amount_cents);
+}
+
+function cleanedRecordIdentifiersMatch(
+  boa: TransactionSummary,
+  dealertrack: TransactionSummary,
+  boaVin6Value: string,
+): boolean {
+  const dealertrackVin6Value = dealertrackVin6(dealertrack);
+  if (boaVin6Value.length > 0 && dealertrackVin6Value === boaVin6Value) {
+    return true;
+  }
+  if (dealertrackVin6Value.length > 0) {
+    return false;
+  }
+
+  return stockOrControlMatches(boa, dealertrack) || dealertrackVinPrefixMatches(boa, dealertrack);
+}
+
+function stockOrControlMatches(boa: TransactionSummary, dealertrack: TransactionSummary): boolean {
+  const boaIdentifiers = [boa.stock_number, boa.reference_number]
+    .map(normalizeIdentifier)
+    .filter(Boolean);
+  const dealertrackIdentifiers = [dealertrackControl(dealertrack)]
+    .map(normalizeIdentifier)
+    .filter(Boolean);
+  return boaIdentifiers.some((identifier) => dealertrackIdentifiers.includes(identifier));
+}
+
+function dealertrackVinPrefixMatches(
+  boa: TransactionSummary,
+  dealertrack: TransactionSummary,
+): boolean {
+  const boaVinValue = boaVin(boa);
+  const vinPrefix = dealertrackVinPrefix(dealertrack.description);
+  return vinPrefix.length >= 8 && boaVinValue.startsWith(vinPrefix);
+}
+
 function rowHtml(row: MergedFloorplanRow): string {
   return `<tr>
     <td>${escapeHtml(row.store_description)}</td>
@@ -358,14 +400,24 @@ function filterDealertrackRecordsByConfiguredAccount(
   dealertrackRecords: TransactionSummary[],
   storeConfig: StoreWorkflowConfig,
 ): TransactionSummary[] {
+  const configuredAccountValues = new Set([
+    storeConfig.dealertrackAccountLabel,
+    storeConfig.dealertrackAccountColumn,
+    ...storeConfig.dealertrackAmountColumns,
+  ]);
+
   return dealertrackRecords.filter((record) => {
-    const knownAccountValues = [record.account, record.account_identifier]
-      .map((value) => value?.trim())
-      .filter((value): value is string => Boolean(value));
-    if (knownAccountValues.length === 0) {
+    const account = record.account?.trim();
+    if (account) {
+      return configuredAccountValues.has(account);
+    }
+
+    const accountIdentifier = record.account_identifier?.trim();
+    if (!accountIdentifier || accountIdentifier === "floorplan") {
       return true;
     }
-    return knownAccountValues.includes(storeConfig.dealertrackAccountColumn);
+
+    return configuredAccountValues.has(accountIdentifier);
   });
 }
 
@@ -389,6 +441,14 @@ function dealertrackVin6(transaction: TransactionSummary): string {
   return extractVin6FromDescription(transaction.description) ?? computeVin6(transaction.vin) ?? "";
 }
 
+function dealertrackVinPrefix(description: string | null | undefined): string {
+  if (!description) {
+    return "";
+  }
+  const candidates = description.toUpperCase().match(/\b(?=[A-HJ-NPR-Z0-9]{8,16}\b)(?=[A-HJ-NPR-Z0-9]*[A-Z])(?=[A-HJ-NPR-Z0-9]*\d)[A-HJ-NPR-Z0-9]{8,16}\b/g);
+  return candidates?.at(-1) ?? "";
+}
+
 function finalVinToken(description: string | null | undefined): string {
   if (!description) {
     return "";
@@ -408,6 +468,10 @@ function dealertrackAccountCents(transaction: TransactionSummary): number {
 
 function dealertrackControl(transaction: TransactionSummary): string {
   return transaction.reference_number?.trim() || transaction.stock_number?.trim() || "";
+}
+
+function normalizeIdentifier(value: string | null | undefined): string {
+  return value?.trim().toUpperCase() ?? "";
 }
 
 function resolvePeriodAnchorDateFromTransactions(transactions: TransactionSummary[]): string | null {

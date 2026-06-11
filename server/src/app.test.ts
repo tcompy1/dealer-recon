@@ -1683,12 +1683,12 @@ describe("app", () => {
     expect(unconfiguredStore.body.error.details).toMatchObject({
       dealership_store_id: testStoreId,
       store_name: "Hiley Mazda of Test",
-      supported_store_keys: ["hurst", "acura"],
+      supported_store_keys: ["hurst", "acura", "fw"],
     });
     expect(badOverride.status).toBe(422);
     expect(badOverride.body.error).toMatchObject({
       code: "INVALID_STORE_KEY",
-      message: "store_key must be one of: hurst, acura.",
+      message: "store_key must be one of: hurst, acura, fw.",
     });
     expect(explicitOverride.status).toBe(200);
     expect(explicitOverride.body.headers[0]).toBe("HURST");

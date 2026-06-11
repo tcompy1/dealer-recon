@@ -75,6 +75,9 @@ const STOCK_COLUMN_ALIASES = [
   "stock",
   "stock number",
   "stocknumber",
+  "stock/lease no",
+  "stock / lease no",
+  "stock/lease number",
   "stock / lease number",
   "stockleasenumber",
   "stock #",
@@ -707,9 +710,15 @@ function normalizeStock(value: string | null): string | null {
   if (!value) {
     return null;
   }
-  const match = value.match(STOCK_RE);
-  if (!match) {
+  const cleaned = value.trim();
+  if (!cleaned) {
     return null;
+  }
+  const match = cleaned.match(STOCK_RE);
+  if (!match) {
+    return /^[A-Z0-9]+$/i.test(cleaned) && /\d/.test(cleaned)
+      ? cleaned.toUpperCase()
+      : null;
   }
   return match[0].toUpperCase();
 }

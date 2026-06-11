@@ -1703,8 +1703,10 @@ function runUploadPreprocessing(
   const decision = preprocessUpload(buffer, sourceType, originalFilename, {
     dealertrack: storeWorkflowConfig
       ? {
+          amountColumns: storeWorkflowConfig.dealertrackAmountColumns,
           accountColumn: storeWorkflowConfig.dealertrackAccountColumn,
           accountLabel: storeWorkflowConfig.dealertrackAccountLabel,
+          excludedAccountColumns: storeWorkflowConfig.dealertrackExcludedAccountColumns,
         }
       : undefined,
   });

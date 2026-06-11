@@ -129,6 +129,29 @@ describe("preprocessBoa", () => {
     expect(rawData).not.toHaveProperty("Fees");
   });
 
+  test("normalizes non-M stock/lease controls for store workflows like FW", () => {
+    const parsed = table(HEADER, [
+      [
+        "03/01/2026",
+        "INV-2002",
+        "KL4AMBSL8TB053463",
+        "B36278",
+        "$29,518.00",
+        "$29,518.00",
+        "$29,518.00",
+        "$0.00",
+        "$0.00",
+        "$0.00",
+        "",
+      ],
+    ]);
+
+    const result = preprocessBoa(parsed);
+
+    expect(result.transactions).toHaveLength(1);
+    expect(result.transactions[0].stock_number).toBe("B36278");
+  });
+
   test("flags current-calendar-month maturities for payoff review", () => {
     const parsed = table(
       [
