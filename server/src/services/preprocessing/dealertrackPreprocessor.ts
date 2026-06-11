@@ -363,7 +363,7 @@ export function preprocessDealertrack(
       description: row.description,
       account: row.accountColumn,
       account_type: "floorplan",
-      account_identifier: row.accountColumn,
+      account_identifier: "floorplan",
       stock_number: row.stockNumber,
       vin: row.vin,
       raw_data: {

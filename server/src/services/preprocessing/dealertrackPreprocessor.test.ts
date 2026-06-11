@@ -16,10 +16,31 @@ describe("preprocessDealertrack", () => {
     const result = preprocessDealertrack(parsed);
     expect(result.transactions).toHaveLength(1);
     expect(result.transactions[0].amount_cents).toBe(-2_500_000);
+    expect(result.transactions[0].account).toBe("2100");
+    expect(result.transactions[0].account_identifier).toBe("floorplan");
     const lineage = result.transactions[0].raw_data[LINEAGE_RAW_DATA_KEY] as RawDataLineage;
     expect(
       lineage.transformations.find((t) => t.stage === "amount_resolved")?.detail,
     ).toBe("2100");
+  });
+
+  test("uses configured account column while preserving logical floorplan account identifier", () => {
+    const parsed = table(["Control", "Description", "324"], [
+      ["A10001", "ACURA FLOORPLAN 19UDE4H21TA011251", "-34436.00"],
+    ]);
+    const result = preprocessDealertrack(parsed, { accountColumn: "324", accountLabel: "324" });
+
+    expect(result.transactions).toHaveLength(1);
+    expect(result.transactions[0]).toMatchObject({
+      amount_cents: -3_443_600,
+      account: "324",
+      account_identifier: "floorplan",
+      account_type: "floorplan",
+      stock_number: "A10001",
+    });
+    expect(result.transactions[0].raw_data).toMatchObject({
+      "324": "(34,436.00)",
+    });
   });
 
   test("does not fall back to sibling account columns when 2100 is zero", () => {
