@@ -65,7 +65,7 @@ export default function App() {
             <p className="text-sm font-semibold text-cyan-700">Dealer Recon</p>
             <h1 className="text-3xl font-semibold text-slate-950">
               {section === "reconciliation"
-                ? "Monthly reconciliation workpaper"
+                ? "Store/month floorplan workflow"
                 : section === "accounts"
                   ? "Account close support"
                   : "Month-end reports"}
@@ -77,16 +77,23 @@ export default function App() {
               label="Reconciliation"
               onClick={() => setSection("reconciliation")}
             />
-            <NavButton
-              active={section === "accounts"}
-              label="Accounts"
-              onClick={() => setSection("accounts")}
-            />
-            <NavButton
-              active={section === "reports"}
-              label="Month-end"
-              onClick={() => setSection("reports")}
-            />
+            <details className="relative" open={section !== "reconciliation"}>
+              <summary className="inline-flex h-10 cursor-pointer items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-600 transition hover:bg-slate-50">
+                Advanced tools
+              </summary>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <NavButton
+                  active={section === "accounts"}
+                  label="Accounts"
+                  onClick={() => setSection("accounts")}
+                />
+                <NavButton
+                  active={section === "reports"}
+                  label="Month-end"
+                  onClick={() => setSection("reports")}
+                />
+              </div>
+            </details>
           </nav>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-white px-4 py-3">

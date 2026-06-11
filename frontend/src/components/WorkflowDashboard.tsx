@@ -391,6 +391,12 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
   return (
     <div className="grid gap-6">
+      <PilotWorkflowIntro
+        hasBoaUpload={Boolean(boaUpload.upload)}
+        hasDealertrackUpload={Boolean(dealertrackUpload.upload)}
+        hasRun={Boolean(activeRun)}
+      />
+
       <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm md:p-5">
         <StoreManagementPanel
           analytics={groupAnalytics}
@@ -401,27 +407,37 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
           onNewStoreNameChange={setNewStoreName}
           onStoreChange={(storeId) => void handleStoreChange(storeId)}
         />
-        <AutomationOverview
-          events={operationalEvents}
-          ingestionEvents={ingestionEvents}
-          jobs={scheduledJobs}
-          metrics={operationalMetrics}
-          selectedStoreId={selectedStoreId}
-          statuses={automationStatuses}
-          onCreateJob={() => void handleCreateScheduledJob()}
-          onToggleJob={(job, enabled) => void handleToggleScheduledJob(job, enabled)}
-          canModify={canModify}
-        />
+        <details className="border-t border-slate-200 pt-3">
+          <summary className="cursor-pointer text-sm font-semibold text-slate-600">
+            Advanced automation and operational status
+          </summary>
+          <div className="mt-4 opacity-80">
+            <AutomationOverview
+              events={operationalEvents}
+              ingestionEvents={ingestionEvents}
+              jobs={scheduledJobs}
+              metrics={operationalMetrics}
+              selectedStoreId={selectedStoreId}
+              statuses={automationStatuses}
+              onCreateJob={() => void handleCreateScheduledJob()}
+              onToggleJob={(job, enabled) => void handleToggleScheduledJob(job, enabled)}
+              canModify={canModify}
+            />
+          </div>
+        </details>
 
-        <div className="sticky top-0 z-10 -mx-4 -mt-4 flex flex-col gap-1 border-b border-slate-200 bg-white px-4 py-3 md:-mx-5 md:-mt-5 md:px-5 md:py-4">
-          <p className="text-xs font-semibold uppercase text-cyan-700">Step 1</p>
-          <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Upload BOA and Dealertrack CSVs</h2>
+        <div className="flex flex-col gap-1 border-t border-slate-200 pt-4">
+          <p className="text-xs font-semibold uppercase text-cyan-700">Steps 1 and 2</p>
+          <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Upload raw BOA and Dealertrack files</h2>
+          <p className="text-sm text-slate-600">
+            Work one store/month run at a time so each run produces its own merged spreadsheet and FP REC.
+          </p>
         </div>
 
         <div className="grid gap-4 md:gap-6 lg:grid-cols-2">
           <UploadPanel
             kind="boa"
-            label="BOA file"
+            label="Step 1: Upload BOA"
             slot={boaUpload}
             onFileChange={(file) =>
               setBoaUpload((current) => ({
@@ -437,7 +453,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
           />
           <UploadPanel
             kind="dealertrack"
-            label="Dealertrack file"
+            label="Step 2: Upload Dealertrack"
             slot={dealertrackUpload}
             onFileChange={(file) =>
               setDealertrackUpload((current) => ({
@@ -468,8 +484,8 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
       <section className="flex flex-col gap-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm md:flex-row md:items-center md:justify-between md:p-5">
         <div className="flex-1">
-          <p className="text-xs font-semibold uppercase text-cyan-700">Step 2</p>
-          <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Run reconciliation</h2>
+          <p className="text-xs font-semibold uppercase text-cyan-700">Step 3</p>
+          <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Clean/process reconciliation</h2>
           <p className="mt-1 text-sm text-slate-600">
             Selected BOA #{boaUpload.upload?.source_file_id ?? "none"} and Dealertrack #
             {dealertrackUpload.upload?.source_file_id ?? "none"}
@@ -481,7 +497,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
           type="button"
           onClick={() => void handleReconcile()}
         >
-          {isReconciling ? "Reconciling..." : "Run reconciliation"}
+          {isReconciling ? "Processing..." : "Run/process reconciliation"}
         </button>
       </section>
 
@@ -514,6 +530,102 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
   );
 }
 
+function PilotWorkflowIntro({
+  hasBoaUpload,
+  hasDealertrackUpload,
+  hasRun,
+}: {
+  hasBoaUpload: boolean;
+  hasDealertrackUpload: boolean;
+  hasRun: boolean;
+}) {
+  const steps = [
+    {
+      label: "Step 1",
+      title: "Upload BOA",
+      detail: "Raw billing statement",
+      state: hasBoaUpload ? "complete" : "current",
+    },
+    {
+      label: "Step 2",
+      title: "Upload Dealertrack",
+      detail: "Raw schedule export",
+      state: hasDealertrackUpload ? "complete" : hasBoaUpload ? "current" : "waiting",
+    },
+    {
+      label: "Step 3",
+      title: "Run/process",
+      detail: "Store workflow cleaning",
+      state: hasRun ? "complete" : hasBoaUpload && hasDealertrackUpload ? "current" : "waiting",
+    },
+    {
+      label: "Step 4",
+      title: "Download artifacts",
+      detail: "Merged spreadsheet and FP REC",
+      state: hasRun ? "current" : "waiting",
+    },
+  ] as const;
+
+  return (
+    <section className="grid gap-4 rounded-md border border-cyan-200 bg-cyan-50 p-4 shadow-sm md:p-5">
+      <div className="grid gap-1">
+        <p className="text-xs font-semibold uppercase text-cyan-800">Hiley floorplan pilot workflow</p>
+        <h2 className="text-xl font-semibold text-slate-950">One store/month run, two artifacts</h2>
+        <p className="max-w-4xl text-sm text-slate-700">
+          Upload the raw BOA and Dealertrack files for the selected store, process them with that store's
+          workflow, then download that run's merged spreadsheet and FP REC.
+        </p>
+      </div>
+      <div className="grid gap-3 md:grid-cols-4">
+        {steps.map((step) => (
+          <PilotWorkflowStep
+            detail={step.detail}
+            key={step.label}
+            label={step.label}
+            state={step.state}
+            title={step.title}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PilotWorkflowStep({
+  detail,
+  label,
+  state,
+  title,
+}: {
+  detail: string;
+  label: string;
+  state: "complete" | "current" | "waiting";
+  title: string;
+}) {
+  const stateClasses =
+    state === "complete"
+      ? "border-emerald-200 bg-white text-emerald-800"
+      : state === "current"
+        ? "border-slate-950 bg-white text-slate-950"
+        : "border-cyan-100 bg-white/70 text-slate-500";
+  const statusLabel = state === "complete" ? "Done" : state === "current" ? "Next" : "Waiting";
+
+  return (
+    <div className={`grid min-h-28 gap-2 rounded-md border p-3 ${stateClasses}`}>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase">{label}</p>
+        <span className="rounded-md border border-current px-2 py-0.5 text-xs font-semibold">
+          {statusLabel}
+        </span>
+      </div>
+      <div>
+        <h3 className="text-base font-semibold">{title}</h3>
+        <p className="mt-1 text-sm text-slate-600">{detail}</p>
+      </div>
+    </div>
+  );
+}
+
 function StoreManagementPanel({
   analytics,
   newStoreName,
@@ -533,6 +645,12 @@ function StoreManagementPanel({
 }) {
   return (
     <div className="grid gap-4 rounded-md border border-slate-200 bg-slate-50 p-4">
+      <div className="grid gap-1">
+        <h2 className="text-base font-semibold text-slate-950">Store/month setup</h2>
+        <p className="text-sm text-slate-600">
+          Choose the store for this run before uploading BOA and Dealertrack files.
+        </p>
+      </div>
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <label className="grid gap-1 text-sm font-medium text-slate-700">
           Store
@@ -570,7 +688,14 @@ function StoreManagementPanel({
           </button>
         </div>
       </div>
-      <GroupAnalyticsSummary analytics={analytics} selectedStoreId={selectedStoreId} />
+      <details className="border-t border-slate-200 pt-3">
+        <summary className="cursor-pointer text-sm font-semibold text-slate-600">
+          Advanced store analytics
+        </summary>
+        <div className="mt-3 opacity-80">
+          <GroupAnalyticsSummary analytics={analytics} selectedStoreId={selectedStoreId} />
+        </div>
+      </details>
     </div>
   );
 }
@@ -780,7 +905,7 @@ function UploadPanel({
       </div>
 
       <input
-        accept=".csv,text/csv"
+        accept=".csv,.xls,.xml,.html,.htm,text/csv,application/vnd.ms-excel,text/xml,text/html"
         className="block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 file:mr-3 file:rounded-md file:border-0 file:bg-slate-900 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-100 md:file:mr-4 md:file:px-4 md:file:py-2 md:file:text-sm"
         disabled={!canModify}
         type="file"
@@ -978,18 +1103,16 @@ function ResultsSection({
     return null;
   }
 
-  const exportUrl = run ? getReconciliationExceptionsCsvUrl(run.reconciliation_run_id) : null;
-
   return (
     <section className="grid gap-5 rounded-md border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="flex flex-col gap-1">
-          <p className="text-xs font-semibold uppercase text-cyan-700">Step 3</p>
-          <h2 className="text-lg font-semibold text-slate-950">Review reconciliation</h2>
+          <p className="text-xs font-semibold uppercase text-cyan-700">Step 4</p>
+          <h2 className="text-lg font-semibold text-slate-950">Download store/month artifacts</h2>
           {run ? (
             <p className="text-sm text-slate-600">
               Run {formatRunId(run.created_at)} for {run.store_name ?? "Unassigned store"} from{" "}
-              {formatDateTime(run.created_at)}
+              {formatDateTime(run.created_at)} is ready for its merged spreadsheet and FP REC.
             </p>
           ) : null}
         </div>
@@ -1009,15 +1132,6 @@ function ResultsSection({
             >
               Download FP REC
             </a>
-            {exportUrl ? (
-              <a
-                className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
-                download
-                href={exportUrl}
-              >
-                Export Unmatched Items CSV
-              </a>
-            ) : null}
           </div>
         ) : null}
       </div>
@@ -1037,23 +1151,30 @@ function ResultsSection({
             <Metric label="Run ID" value={formatRunId(run.created_at)} />
           </div>
 
-          <ExceptionBreakdown run={run} />
-          <RunTrendAnalyticsPanel analytics={analytics} />
-          <HistoricalReplayPanel
-            replay={replay}
-            isReplaying={isReplaying}
-            onReplay={onReplay}
-          />
-          <VinPresenceDiagnosticsPanel diagnostics={diagnostics} />
-          <MatchGroupsTable run={run} />
-          <ExceptionsTable
-            filters={filters}
-            run={run}
-            onFiltersChange={onFiltersChange}
-            onReviewUpdate={onReviewUpdate}
-            reviewUpdatingId={reviewUpdatingId}
-            canModify={canModify}
-          />
+          <details className="border-t border-slate-200 pt-4">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-600">
+              Advanced review, analytics, and audit details
+            </summary>
+            <div className="mt-4 grid gap-5 opacity-80">
+              <ExceptionBreakdown run={run} />
+              <RunTrendAnalyticsPanel analytics={analytics} />
+              <HistoricalReplayPanel
+                replay={replay}
+                isReplaying={isReplaying}
+                onReplay={onReplay}
+              />
+              <VinPresenceDiagnosticsPanel diagnostics={diagnostics} />
+              <MatchGroupsTable run={run} />
+              <ExceptionsTable
+                filters={filters}
+                run={run}
+                onFiltersChange={onFiltersChange}
+                onReviewUpdate={onReviewUpdate}
+                reviewUpdatingId={reviewUpdatingId}
+                canModify={canModify}
+              />
+            </div>
+          </details>
         </>
       ) : null}
     </section>
@@ -1662,9 +1783,11 @@ function HistorySection({
   onViewRun: (runId: number) => void;
 }) {
   return (
-    <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-5 shadow-sm">
-      <h2 className="text-lg font-semibold text-slate-950">History</h2>
-      <div className="overflow-x-auto rounded-md border border-slate-200">
+    <details className="rounded-md border border-slate-200 bg-white p-5 shadow-sm">
+      <summary className="cursor-pointer text-lg font-semibold text-slate-950">
+        Advanced run history
+      </summary>
+      <div className="mt-4 overflow-x-auto rounded-md border border-slate-200 opacity-80">
         <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
@@ -1716,11 +1839,11 @@ function HistorySection({
                   </td>
                 </tr>
               ))
-            )}
-          </tbody>
-        </table>
+          )}
+        </tbody>
+      </table>
       </div>
-    </section>
+    </details>
   );
 }
 

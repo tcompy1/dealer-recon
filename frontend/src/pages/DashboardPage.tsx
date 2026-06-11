@@ -14,10 +14,10 @@ export function DashboardPage({
       {!embedded ? (
         <div className="flex flex-col gap-2">
           <p className="text-sm font-semibold text-cyan-700">Dealer Recon</p>
-          <h1 className="text-3xl font-semibold text-slate-950">Monthly reconciliation workpaper</h1>
+          <h1 className="text-3xl font-semibold text-slate-950">Store/month floorplan workflow</h1>
           <p className="text-sm text-slate-600">
-            Upload your BOA statement and Dealertrack schedule, review what was removed and why,
-            then generate the Hurst FP Rec workbook. Every excluded row is fully auditable.
+            Upload raw BOA and Dealertrack files, process the selected store's workflow, then download
+            that run's merged spreadsheet and FP REC.
           </p>
         </div>
       ) : null}
