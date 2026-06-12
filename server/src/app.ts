@@ -16,6 +16,7 @@ import {
 } from "./auth.js";
 import {
   isSourceType,
+  type ReconciliationArtifact,
   type ReconciliationRequest,
   type SourceFile,
 } from "./domain/types.js";
@@ -552,6 +553,9 @@ export function createApp(
 
     const fileHash = createFileHash(request.file.buffer);
     const requestDealershipId = getRequestDealershipId(response);
+    const uploadedByUserId = getAuthenticatedUser(response).id === 0
+      ? null
+      : getAuthenticatedUser(response).id;
     const dealershipStoreId = await resolveStoreIdForRequest(
       repository,
       requestDealershipId,
@@ -627,6 +631,7 @@ export function createApp(
           repository,
           requestDealershipId,
           duplicateSourceFile,
+          uploadedByUserId,
         );
         response.json({
           source_file_id: duplicateSourceFile.id,
@@ -714,11 +719,23 @@ export function createApp(
           unhealthyDuplicate.sourceFile.id,
           sourceFileInput,
           result.transactions,
+          {
+            filename: request.file.originalname || "upload.csv",
+            content_type: request.file.mimetype || "application/octet-stream",
+            file_size: request.file.size,
+            content: request.file.buffer,
+          },
         )
       : await repository.createSourceFileWithTransactions(
           requestDealershipId,
           sourceFileInput,
           result.transactions,
+          {
+            filename: request.file.originalname || "upload.csv",
+            content_type: request.file.mimetype || "application/octet-stream",
+            file_size: request.file.size,
+            content: request.file.buffer,
+          },
         );
     if (!importResult) {
       throw new NotFoundError("Source file");
@@ -757,6 +774,7 @@ export function createApp(
       repository,
       requestDealershipId,
       importResult.sourceFile,
+      uploadedByUserId,
     );
 
     response.json({
@@ -849,6 +867,9 @@ export function createApp(
       boaSourceFile,
       dealertrackSourceFile,
       automated: false,
+      uploadedByUserId: getAuthenticatedUser(response).id === 0
+        ? null
+        : getAuthenticatedUser(response).id,
     });
     logInfo("reconciliation_run_created", {
       request_id: response.locals.requestId,
@@ -1054,6 +1075,56 @@ export function createApp(
     response.json(replay);
   }));
 
+  app.get("/reconciliation-runs/:id/artifacts", asyncHandler(async (request, response) => {
+    const reconciliationRunId = parsePositiveInteger(request.params.id);
+    if (reconciliationRunId === null) {
+      throw new NotFoundError("Reconciliation run");
+    }
+
+    const detail = await repository.getReconciliationRunDetail(
+      getRequestDealershipId(response),
+      reconciliationRunId,
+    );
+    if (!detail) {
+      const ownerDealershipId =
+        await repository.getReconciliationRunDealershipId(reconciliationRunId);
+      if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
+        throw new ForbiddenError("Reconciliation run belongs to another dealership.", "DEALERSHIP_MISMATCH");
+      }
+      throw new NotFoundError("Reconciliation run");
+    }
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+    }
+
+    response.json(
+      await repository.listReconciliationArtifacts(
+        getRequestDealershipId(response),
+        reconciliationRunId,
+      ),
+    );
+  }));
+
+  app.get("/artifacts/:artifactId/download", asyncHandler(async (request, response) => {
+    const artifactId = parsePositiveInteger(request.params.artifactId);
+    if (artifactId === null) {
+      throw new NotFoundError("Artifact");
+    }
+
+    const artifact = await repository.getReconciliationArtifact(
+      getRequestDealershipId(response),
+      artifactId,
+    );
+    if (!artifact) {
+      throw new NotFoundError("Artifact");
+    }
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), artifact.store_id))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+    }
+
+    sendArtifactDownload(response, artifact);
+  }));
+
   app.get("/reconciliation-runs/:id/exceptions.csv", asyncHandler(async (request, response) => {
     const reconciliationRunId = parsePositiveInteger(request.params.id);
     if (reconciliationRunId === null) {
@@ -1137,6 +1208,18 @@ export function createApp(
         },
       );
     }
+    const format = typeof request.query.format === "string" ? request.query.format : "xls";
+    if (format !== "json" && !storeKeyOverrideProvided) {
+      const storedArtifact = await repository.findReconciliationArtifact(
+        getRequestDealershipId(response),
+        reconciliationRunId,
+        "MERGED_FLOORPLAN",
+      );
+      if (storedArtifact) {
+        sendArtifactDownload(response, storedArtifact);
+        return;
+      }
+    }
 
     const [boaTransactions, dealertrackTransactions] = await Promise.all([
       repository.listBySourceFile(getRequestDealershipId(response), detail.boa_source_file_id),
@@ -1148,7 +1231,6 @@ export function createApp(
       boaTransactions,
       dealertrackTransactions,
     );
-    const format = typeof request.query.format === "string" ? request.query.format : "xls";
     if (format === "json") {
       response.json(artifact.workbook);
       return;
@@ -1209,6 +1291,18 @@ export function createApp(
         },
       );
     }
+    const format = typeof request.query.format === "string" ? request.query.format : "xls";
+    if (format !== "json" && !storeKeyOverrideProvided) {
+      const storedArtifact = await repository.findReconciliationArtifact(
+        getRequestDealershipId(response),
+        reconciliationRunId,
+        "FP_REC",
+      );
+      if (storedArtifact) {
+        sendArtifactDownload(response, storedArtifact);
+        return;
+      }
+    }
 
     const [boaTransactions, dealertrackTransactions] = await Promise.all([
       repository.listBySourceFile(getRequestDealershipId(response), detail.boa_source_file_id),
@@ -1221,7 +1315,6 @@ export function createApp(
       dealertrackTransactions,
     );
     const workbook = buildFpRecWorkbookFromMergedFloorplan(mergedArtifact.workbook);
-    const format = typeof request.query.format === "string" ? request.query.format : "xls";
     if (format === "json") {
       response.json(workbook);
       return;
@@ -1511,6 +1604,25 @@ function getAuthenticatedUser(response: express.Response): AuthUser {
 
 function getRequestDealershipId(response: express.Response): number {
   return getAuthenticatedUser(response).dealership_id;
+}
+
+function sendArtifactDownload(
+  response: express.Response,
+  artifact: ReconciliationArtifact,
+): void {
+  response
+    .status(200)
+    .type(artifact.content_type)
+    .setHeader("Content-Length", String(artifact.file_size))
+    .setHeader(
+      "Content-Disposition",
+      `attachment; filename="${safeHeaderFilename(artifact.filename)}"`,
+    )
+    .send(artifact.content);
+}
+
+function safeHeaderFilename(filename: string): string {
+  return filename.replace(/[\r\n"]/g, "_");
 }
 
 function toPublicUser(user: AuthUser): AuthUser {

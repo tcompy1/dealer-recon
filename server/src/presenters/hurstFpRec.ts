@@ -125,6 +125,7 @@ function buildWorkbookFromClerkRows(input: {
       (total, row) => total + (row.ending_balance_cents ?? 0) + (row.dt_2100_cents ?? 0),
       0,
     );
+  const finalVarianceCents = netAdjustmentsCents - varianceCents;
 
   const statementSection = buildLegacySection(
     STATEMENT_SECTION_TITLE,
@@ -147,8 +148,8 @@ function buildWorkbookFromClerkRows(input: {
     dealertrack_total_amount_cents: dealertrackTotalCents,
     net_adjustments_amount: formatCents(netAdjustmentsCents),
     net_adjustments_amount_cents: netAdjustmentsCents,
-    variance_amount: formatCents(varianceCents),
-    variance_amount_cents: varianceCents,
+    variance_amount: formatCents(finalVarianceCents),
+    variance_amount_cents: finalVarianceCents,
     summary: {
       outstanding_per_stmt_amount: formatCents(boaTotalCents),
       outstanding_per_stmt_amount_cents: boaTotalCents,
@@ -192,21 +193,23 @@ function clerkHeaders(storeConfig: StoreWorkflowConfig): string[] {
 }
 
 export function toHurstFpRecXlsHtml(workbook: HurstFpRecWorkbook): string {
-  const accountingFormat = '\\\\\\(\\#\\,\\#\\#0\\.00\\\\\\)\\;\\#\\,\\#\\#0\\.00';
+  const accountingNumberFormat = '_\\(\\* \\#\\,\\#\\#0\\.00_\\)\\;_\\(\\* \\(\\#\\,\\#\\#0\\.00\\)\\;_\\(\\* "-"??_\\)\\;_\\(@_\\)';
   const styles = `
     body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #111827; }
-    table { border-collapse: collapse; width: 1260px; }
-    th, td { border: 1px solid #9ca3af; padding: 4px 8px; text-align: left; vertical-align: top; }
-    th { background-color: #d9e2f3; color: #111827; font-weight: bold; }
+    table { border-collapse: collapse; width: 760px; }
+    td { border: 1px solid #d1d5db; padding: 4px 8px; text-align: left; vertical-align: top; }
     tr.title-row td { border: 0; font-size: 14pt; font-weight: bold; padding: 0 0 8px 0; }
     tr.period-row td { border: 0; padding: 0 0 8px 0; }
-    tr.total-row td { background-color: #f3f4f6; font-weight: bold; }
+    tr.section-row td { font-weight: bold; background-color: #f3f4f6; }
+    tr.summary-row td:first-child, tr.total-row td:first-child, tr.variance-row td:first-child { font-weight: bold; }
+    tr.highlight-row td { background-color: #fff2cc; font-weight: bold; }
     tr.variance-row td { background-color: #fff2cc; font-weight: bold; }
-    td.amount { text-align: right; font-family: Consolas, Menlo, monospace; mso-number-format: '${accountingFormat}'; }
-    td.amount-negative { color: #b91c1c; }
+    td.amount { text-align: right; font-family: Calibri, Arial, sans-serif; mso-number-format: '${accountingNumberFormat}'; }
+    td.note-entry { background-color: #ffffff; }
   `;
-  const colWidths = [210, 160, 80, 120, 120, 80, 360, 130];
+  const colWidths = [260, 120, 110, 110];
   const colgroup = `<colgroup>${colWidths.map((width) => `<col style="width:${width}px"/>`).join("")}</colgroup>`;
+  const rows = buildWorkpaperRows(workbook);
 
   return [
     "<!DOCTYPE html>",
@@ -218,16 +221,9 @@ export function toHurstFpRecXlsHtml(workbook: HurstFpRecWorkbook): string {
     "</head>",
     "<body>",
     `<table>${colgroup}`,
-    "<thead>",
-    `<tr class="title-row"><td colspan="8">Floorplan Reconciliation - ${escapeHtml(workbook.store_name)}</td></tr>`,
-    `<tr class="period-row"><td colspan="8">Period date ${escapeHtml(workbook.period_date ?? "")}</td></tr>`,
-    `<tr>${workbook.headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>`,
-    "</thead>",
-    `<tbody>${workbook.rows.map(clerkRowHtml).join("")}</tbody>`,
-    "<tfoot>",
-    totalRowHtml("Total", workbook.boa_total_amount_cents, workbook.dealertrack_total_amount_cents),
-    varianceRowHtml(workbook.variance_amount_cents),
-    "</tfoot>",
+    "<tbody>",
+    rows.map(workpaperRowHtml).join(""),
+    "</tbody>",
     "</table>",
     "</body>",
     "</html>",
@@ -356,43 +352,185 @@ function compareTieBreakers(left: HurstFpRecClerkRow, right: HurstFpRecClerkRow)
   );
 }
 
-function clerkRowHtml(row: HurstFpRecClerkRow): string {
-  return `<tr>
-    <td>${escapeHtml(row.hurst_description)}</td>
-    <td>${escapeHtml(row.boa_vin)}</td>
-    <td>${escapeHtml(row.boa_vin6)}</td>
-    <td class="amount">${formatOptionalAccountingCents(row.ending_balance_cents)}</td>
-    <td class="amount${(row.dt_2100_cents ?? 0) < 0 ? " amount-negative" : ""}">${formatOptionalAccountingCents(row.dt_2100_cents)}</td>
-    <td>${escapeHtml(row.dt_vin6)}</td>
-    <td>${escapeHtml(row.dt_description)}</td>
-    <td>${escapeHtml(row.dt_control)}</td>
-  </tr>`;
+type WorkpaperRow = {
+  className?: string;
+  cells: WorkpaperCell[];
+};
+
+type WorkpaperCell = {
+  text?: string;
+  amountCents?: number;
+  formula?: string;
+  colspan?: number;
+  className?: string;
+};
+
+function buildWorkpaperRows(workbook: HurstFpRecWorkbook): WorkpaperRow[] {
+  const rows: WorkpaperRow[] = [
+    {
+      className: "title-row",
+      cells: [{ text: `Floorplan Reconciliation - ${workbook.store_config.displayName}`, colspan: 4 }],
+    },
+    {
+      className: "period-row",
+      cells: [{ text: formatPeriodDateForWorkpaper(workbook.period_date), colspan: 4 }],
+    },
+    labeledAmountRow("Outstanding per stmt", workbook.summary.outstanding_per_stmt_amount_cents),
+    sectionLabelRow("GL Balances"),
+    labeledAmountRow(workbook.store_config.dealertrackAccountLabel, workbook.summary.gl_2100_amount_cents),
+    labeledAmountRow("Total GL", workbook.summary.total_gl_amount_cents, "=B5", "summary-row"),
+    labeledAmountRow("Difference", workbook.summary.difference_amount_cents, "=SUM(B3+B6)", "highlight-row"),
+  ];
+
+  let nextExcelRow = rows.length + 1;
+  const scheduleStartRow = nextExcelRow + 1;
+  rows.push(sectionHeaderRow(SCHEDULE_SECTION_TITLE, "GL Floored", "BOA Floored"));
+  nextExcelRow += 1;
+  const scheduleRows = workbook.schedule_not_on_statement.rows;
+  if (scheduleRows.length === 0) {
+    for (let index = 0; index < 4; index += 1) {
+      rows.push(blankWorkpaperRow());
+      nextExcelRow += 1;
+    }
+  } else {
+    for (const row of scheduleRows) {
+      rows.push(exceptionWorkpaperRow(row));
+      nextExcelRow += 1;
+    }
+    rows.push(blankWorkpaperRow());
+    nextExcelRow += 1;
+  }
+  const scheduleSubtotalRow = nextExcelRow;
+  rows.push(amountOnlyRow(
+    workbook.schedule_not_on_statement.total_amount_cents,
+    `=SUM(B${scheduleStartRow}:B${nextExcelRow - 1})`,
+  ));
+  nextExcelRow += 1;
+
+  const statementHeaderRow = nextExcelRow;
+  const statementStartRow = statementHeaderRow + 1;
+  rows.push(sectionHeaderRow(STATEMENT_SECTION_TITLE, "BOA Floored", "GL Floored"));
+  nextExcelRow += 1;
+  const statementRows = workbook.statement_not_on_gl.rows;
+  if (statementRows.length === 0) {
+    for (let index = 0; index < 4; index += 1) {
+      rows.push(blankWorkpaperRow());
+      nextExcelRow += 1;
+    }
+  } else {
+    for (const row of statementRows) {
+      rows.push(exceptionWorkpaperRow(row));
+      nextExcelRow += 1;
+    }
+    rows.push(blankWorkpaperRow());
+    nextExcelRow += 1;
+  }
+  const statementSubtotalRow = nextExcelRow;
+  rows.push(amountOnlyRow(
+    workbook.statement_not_on_gl.total_amount_cents,
+    `=SUM(B${statementStartRow}:B${nextExcelRow - 1})`,
+  ));
+  nextExcelRow += 1;
+
+  const netAdjustmentsRow = nextExcelRow;
+  rows.push(labeledAmountRow(
+    "Net adjustments",
+    workbook.net_adjustments_amount_cents,
+    `=B${statementSubtotalRow}+B${scheduleSubtotalRow}`,
+    "highlight-row",
+  ));
+  nextExcelRow += 1;
+  rows.push(labeledAmountRow(
+    "Variance",
+    workbook.variance_amount_cents,
+    `=B${netAdjustmentsRow}-B7`,
+    "variance-row",
+  ));
+
+  return rows;
 }
 
-function totalRowHtml(label: string, boaTotalCents: number, dealertrackTotalCents: number): string {
-  return `<tr class="total-row">
-    <td>${escapeHtml(label)}</td>
-    <td></td>
-    <td></td>
-    <td class="amount">${escapeHtml(formatAccountingCents(boaTotalCents))}</td>
-    <td class="amount${dealertrackTotalCents < 0 ? " amount-negative" : ""}">${escapeHtml(formatAccountingCents(dealertrackTotalCents))}</td>
-    <td></td>
-    <td></td>
-    <td></td>
-  </tr>`;
+function labeledAmountRow(
+  label: string,
+  amountCents: number,
+  formula?: string,
+  className?: string,
+): WorkpaperRow {
+  return {
+    className,
+    cells: [
+      { text: label },
+      { amountCents, formula },
+      {},
+      {},
+    ],
+  };
 }
 
-function varianceRowHtml(varianceCents: number): string {
-  return `<tr class="variance-row">
-    <td>Variance</td>
-    <td></td>
-    <td></td>
-    <td class="amount${varianceCents < 0 ? " amount-negative" : ""}">${escapeHtml(formatAccountingCents(varianceCents))}</td>
-    <td></td>
-    <td></td>
-    <td></td>
-    <td></td>
-  </tr>`;
+function amountOnlyRow(amountCents: number, formula: string): WorkpaperRow {
+  return {
+    className: "total-row",
+    cells: [
+      {},
+      { amountCents, formula },
+      {},
+      {},
+    ],
+  };
+}
+
+function sectionLabelRow(label: string): WorkpaperRow {
+  return {
+    className: "section-row",
+    cells: [{ text: label }, {}, {}, {}],
+  };
+}
+
+function sectionHeaderRow(label: string, firstNoteHeader: string, secondNoteHeader: string): WorkpaperRow {
+  return {
+    className: "section-row",
+    cells: [
+      { text: label },
+      {},
+      { text: firstNoteHeader },
+      { text: secondNoteHeader },
+    ],
+  };
+}
+
+function exceptionWorkpaperRow(row: HurstFpRecRow): WorkpaperRow {
+  return {
+    cells: [
+      { text: row.unit_reference },
+      { amountCents: row.amount_cents },
+      { text: row.gl_floored_note, className: "note-entry" },
+      { text: row.boa_floored_note, className: "note-entry" },
+    ],
+  };
+}
+
+function blankWorkpaperRow(): WorkpaperRow {
+  return { cells: [{}, {}, {}, {}] };
+}
+
+function workpaperRowHtml(row: WorkpaperRow): string {
+  const classAttr = row.className ? ` class="${escapeHtml(row.className)}"` : "";
+  return `<tr${classAttr}>${row.cells.map(workpaperCellHtml).join("")}</tr>`;
+}
+
+function workpaperCellHtml(cell: WorkpaperCell): string {
+  const classes = [
+    cell.className,
+    cell.amountCents !== undefined ? "amount" : null,
+  ].filter(Boolean).join(" ");
+  const classAttr = classes ? ` class="${escapeHtml(classes)}"` : "";
+  const colspanAttr = cell.colspan && cell.colspan > 1 ? ` colspan="${cell.colspan}"` : "";
+  const formulaAttr = cell.formula ? ` x:fmla="${escapeHtml(cell.formula)}"` : "";
+  const numberAttr = cell.amountCents !== undefined ? " x:num" : "";
+  const value = cell.amountCents !== undefined
+    ? formatWorkpaperNumberCents(cell.amountCents)
+    : cell.text ?? "";
+  return `<td${classAttr}${colspanAttr}${numberAttr}${formulaAttr}>${escapeHtml(value)}</td>`;
 }
 
 function isBoaSource(sourceType: SourceType): boolean {
@@ -444,7 +582,7 @@ function dealertrackControl(transaction: TransactionSummary): string {
 function legacyStatementRow(row: HurstFpRecClerkRow): HurstFpRecRow {
   const amountCents = row.ending_balance_cents ?? 0;
   return {
-    unit_reference: [row.boa_vin6, row.boa_vin].filter(Boolean).join(" / "),
+    unit_reference: statementUnitReference(row),
     amount: formatCents(amountCents),
     amount_cents: amountCents,
     gl_floored_note: "",
@@ -455,12 +593,34 @@ function legacyStatementRow(row: HurstFpRecClerkRow): HurstFpRecRow {
 function legacyScheduleRow(row: HurstFpRecClerkRow): HurstFpRecRow {
   const amountCents = row.dt_2100_cents ?? 0;
   return {
-    unit_reference: [row.dt_control, row.dt_vin6].filter(Boolean).join(" / "),
+    unit_reference: scheduleUnitReference(row),
     amount: formatCents(amountCents),
     amount_cents: amountCents,
     gl_floored_note: "",
     boa_floored_note: "",
   };
+}
+
+function scheduleUnitReference(row: HurstFpRecClerkRow): string {
+  const vinTail = vinTailForWorkpaper(row.dt_description, row.dt_vin6);
+  return [row.dt_control, vinTail].filter(Boolean).join(" - ") || row.dt_description || row.dt_vin6;
+}
+
+function statementUnitReference(row: HurstFpRecClerkRow): string {
+  const vinTail = vinTailForWorkpaper(row.boa_vin, row.boa_vin6);
+  const stockOrControl = row.dt_control;
+  return [vinTail, stockOrControl].filter(Boolean).join(" - ") || row.hurst_description || row.boa_vin6;
+}
+
+function vinTailForWorkpaper(
+  vinOrDescription: string | null | undefined,
+  fallbackVin6: string,
+): string {
+  const vin = finalVinToken(vinOrDescription) || cleanVin(vinOrDescription);
+  if (vin.length >= 8) {
+    return vin.slice(-8);
+  }
+  return fallbackVin6;
 }
 
 function buildLegacySection(title: string, rows: HurstFpRecRow[]): HurstFpRecSection {
@@ -524,19 +684,20 @@ function formatDateMmDdYy(value: string | null | undefined): string {
   return trimmed;
 }
 
-function formatOptionalAccountingCents(amountCents: number | null): string {
-  return amountCents === null ? "" : escapeHtml(formatAccountingCents(amountCents));
-}
-
-function formatAccountingCents(amountCents: number): string {
+function formatWorkpaperNumberCents(amountCents: number): string {
   const absCents = Math.abs(amountCents);
   const dollars = Math.floor(absCents / 100);
   const cents = String(absCents % 100).padStart(2, "0");
   const dollarsWithCommas = String(dollars).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  if (amountCents < 0) {
-    return `(${dollarsWithCommas}.${cents})`;
+  const value = `${dollarsWithCommas}.${cents}`;
+  return amountCents < 0 ? `(${value})` : value;
+}
+
+function formatPeriodDateForWorkpaper(value: string | null | undefined): string {
+  if (!value) {
+    return "";
   }
-  return `${dollarsWithCommas}.${cents}`;
+  return value.replace(/-/g, "/");
 }
 
 function escapeHtml(value: string | null | undefined): string {

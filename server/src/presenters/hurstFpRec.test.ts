@@ -285,6 +285,21 @@ function clerkHtmlRows(detail: ReconciliationRunDetail = clerkContractDetail()):
   return extractClerkDetailRows(toHurstFpRecXlsHtml(buildHurstFpRecWorkbook(detail)));
 }
 
+function workpaperHtmlRows(detail: ReconciliationRunDetail = clerkContractDetail()): string[][] {
+  return extractTableRows(toHurstFpRecXlsHtml(buildHurstFpRecWorkbook(detail)))[0]?.map((row) => row.cells) ?? [];
+}
+
+function workpaperSectionRows(rows: string[][], sectionTitle: string): string[][] {
+  const sectionStart = rows.findIndex((row) => row[0] === sectionTitle);
+  if (sectionStart === -1) {
+    return [];
+  }
+  const afterHeader = rows.slice(sectionStart + 1);
+  const subtotalIndex = afterHeader.findIndex((row) => !hasText(row[0] ?? "") && hasText(row[1] ?? ""));
+  const sectionRows = subtotalIndex === -1 ? afterHeader : afterHeader.slice(0, subtotalIndex);
+  return sectionRows.filter((row) => hasText(row[0] ?? ""));
+}
+
 function splitCsvLine(line: string): string[] {
   const cols: string[] = [];
   let current = "";
@@ -577,71 +592,126 @@ function mergedWorkbookForStore(storeKey: StoreKey): MergedFloorplanWorkbook {
   });
 }
 
-describe("Hurst FP Rec clerk A-H export contract", () => {
-  test("exports the accepted visible columns A-H in order", () => {
+describe("Hurst FP Rec draft accounting workpaper contract", () => {
+  test("exports the Hurst workpaper summary and exception sections", () => {
     const html = toHurstFpRecXlsHtml(buildHurstFpRecWorkbook(clerkContractDetail()));
+    const rows = workpaperHtmlRows();
 
-    expect(extractHeaderRows(html)).toContainEqual(CLERK_HEADERS);
-  });
-
-  test("exports matched rows with BOA A-D and Dealertrack E-H on the same row", () => {
-    const rows = clerkHtmlRows();
-    const matchedRow = findRow(rows, (row) => row[0] === "2025 Mazda CX5");
-
-    expect(matchedRow).toBeDefined();
-    expect(matchedRow?.[1]).toBe("JM3KFBAL0S0764873");
-    expect(matchedRow?.[2]).toBe("764873");
-    expect(matchedRow?.[5]).toBe("764873");
-    expect(matchedRow?.[6]).toBe("2025 MAZDA CX-5 1/09/26 JM3KFBAL0S0764873");
-    expect(matchedRow?.[7]).toBe("M21276");
-    expect(matchedRow?.slice(0, 8).every(hasText)).toBe(true);
-  });
-
-  test("exports BOA-only rows with values only in A-D", () => {
-    const rows = clerkHtmlRows();
-    const boaOnlyRow = findRow(rows, (row) => row[0] === "BOA ONLY CX5 PF XA");
-
-    expectBoaOnlyShape(boaOnlyRow);
-    expect(boaOnlyRow?.[1]).toBe("JM3KMCHA6T0126368");
-    expect(boaOnlyRow?.[2]).toBe("126368");
-  });
-
-  test("exports Dealertrack-only rows with values only in E-H", () => {
-    const rows = clerkHtmlRows();
-    const dealertrackOnlyRow = findRow(
-      rows,
-      (row) => row[6] === "TRANSFER JM3KFBAL0S0764873 2/27/26 JM1BPABL0T1867950",
+    expect(rows.map((row) => row[0])).toEqual(
+      expect.arrayContaining([
+        "Floorplan Reconciliation - Hiley Mazda of Hurst",
+        "Outstanding per stmt",
+        "GL Balances",
+        "2100",
+        "Total GL",
+        "Difference",
+        "On schedule-not on statement",
+        "On statement-not on GL",
+        "Net adjustments",
+        "Variance",
+      ]),
     );
-
-    expectDealertrackOnlyShape(dealertrackOnlyRow);
-    expect(dealertrackOnlyRow?.[5]).toBe("867950");
-    expect(dealertrackOnlyRow?.[7]).toBe("M21317");
+    expect(findRow(rows, (row) => row[0] === "On schedule-not on statement")?.slice(2, 4)).toEqual([
+      "GL Floored",
+      "BOA Floored",
+    ]);
+    expect(findRow(rows, (row) => row[0] === "On statement-not on GL")?.slice(2, 4)).toEqual([
+      "BOA Floored",
+      "GL Floored",
+    ]);
+    expect(html).toContain('x:fmla="=B5"');
+    expect(html).toContain('x:fmla="=SUM(B3+B6)"');
+    expect(html).toContain("mso-number-format: '_\\(\\* \\#\\,\\#\\#0\\.00_\\)");
+    expect(html).toContain('<tr class="highlight-row"><td>Difference</td>');
+    expect(html).toContain('<tr class="highlight-row"><td>Net adjustments</td>');
+    expect(html).not.toContain("$");
+    expect(html).not.toContain("<th>HURST</th>");
+    expect(html).not.toContain("<th>Serial No/VIN</th>");
   });
 
-  test("exports VIN6 amount mismatches as separate BOA-only and Dealertrack-only rows", () => {
-    const rows = clerkHtmlRows();
-    const boaMismatchRow = findRow(rows, (row) => row[0] === "AMOUNT MISMATCH BOA");
-    const dealertrackMismatchRow = findRow(
-      rows,
-      (row) => row[6] === "AMOUNT MISMATCH DT 4/01/26 JM1BPBLL0T1870612",
-    );
-    const mergedMismatchRows = rows.filter(
-      (row) => row[2] === "870612" && row[5] === "870612" && hasText(row[3]) && hasText(row[4]),
-    );
+  test("omits matched rows from the draft FP REC detail sections", () => {
+    const rows = workpaperHtmlRows();
+    const flattened = rows.flat().join(" ");
 
-    expectBoaOnlyShape(boaMismatchRow);
-    expectDealertrackOnlyShape(dealertrackMismatchRow);
-    expect(mergedMismatchRows).toHaveLength(0);
+    expect(flattened).not.toContain("2025 Mazda CX5");
+    expect(flattened).not.toContain("JM3KFBAL0S0764873");
+    expect(flattened).toContain("M21317 - T1867950");
+    expect(flattened).toContain("T0126368");
+  });
+
+  test("maps Dealertrack-only rows to schedule-not-on-statement with blank clerk-entry cells", () => {
+    const scheduleRows = workpaperSectionRows(workpaperHtmlRows(), "On schedule-not on statement");
+    const dealertrackOnlyRow = findRow(scheduleRows, (row) => row[0] === "M21317 - T1867950");
+
+    expect(dealertrackOnlyRow).toBeDefined();
+    expect(dealertrackOnlyRow?.[1]).toBe("(26,251.00)");
+    expect(dealertrackOnlyRow?.[2]).toBe("");
+    expect(dealertrackOnlyRow?.[3]).toBe("");
+  });
+
+  test("maps BOA-only rows to statement-not-on-GL with blank clerk-entry cells", () => {
+    const statementRows = workpaperSectionRows(workpaperHtmlRows(), "On statement-not on GL");
+    const boaOnlyRow = findRow(statementRows, (row) => row[0] === "T0126368");
+
+    expect(boaOnlyRow).toBeDefined();
+    expect(boaOnlyRow?.[1]).toBe("35,999.00");
+    expect(boaOnlyRow?.[2]).toBe("");
+    expect(boaOnlyRow?.[3]).toBe("");
+  });
+
+  test("exports VIN6 amount mismatches as split timing-difference candidates", () => {
+    const rows = workpaperHtmlRows();
+    const scheduleRows = workpaperSectionRows(rows, "On schedule-not on statement");
+    const statementRows = workpaperSectionRows(rows, "On statement-not on GL");
+
+    expect(findRow(scheduleRows, (row) => row[0] === "M21472 - T1870612")?.[1]).toBe("(31,771.00)");
+    expect(findRow(statementRows, (row) => row[0] === "T1870612")?.[1]).toBe("32,283.00");
   });
 
   test.each([
-    ["FEB26", { matched: 238, boaOnly: 0, dealertrackOnly: 16 }],
-    ["MAR26", { matched: 217, boaOnly: 10, dealertrackOnly: 6 }],
-    ["APRIL26", { matched: 199, boaOnly: 4, dealertrackOnly: 2 }],
-  ])("exports %s golden row counts from sample-data/golden_dataset.csv", (month, expected) => {
-    const rows = clerkHtmlRows(goldenDetailForMonth(month));
+    [
+      "FEB26",
+      {
+        scheduleRows: 16,
+        statementRows: 0,
+        scheduleTotal: -57_316_800,
+        statementTotal: 0,
+        netAdjustments: -57_316_800,
+        variance: 0,
+      },
+    ],
+    [
+      "MAR26",
+      {
+        scheduleRows: 6,
+        statementRows: 10,
+        scheduleTotal: -22_475_800,
+        statementTotal: 36_051_600,
+        netAdjustments: 13_575_800,
+        variance: 0,
+      },
+    ],
+    [
+      "APRIL26",
+      {
+        scheduleRows: 2,
+        statementRows: 4,
+        scheduleTotal: -6_354_200,
+        statementTotal: 13_576_500,
+        netAdjustments: 7_222_300,
+        variance: 0,
+      },
+    ],
+  ])("exports %s draft FP REC exception sections from the Hurst golden fixture", (month, expected) => {
+    const workbook = buildHurstFpRecWorkbook(goldenDetailForMonth(month));
+    const rows = workpaperHtmlRows(goldenDetailForMonth(month));
 
-    expect(countClerkRows(rows)).toEqual(expected);
+    expect(workpaperSectionRows(rows, "On schedule-not on statement")).toHaveLength(expected.scheduleRows);
+    expect(workpaperSectionRows(rows, "On statement-not on GL")).toHaveLength(expected.statementRows);
+    expect(workbook.schedule_not_on_statement.total_amount_cents).toBe(expected.scheduleTotal);
+    expect(workbook.statement_not_on_gl.total_amount_cents).toBe(expected.statementTotal);
+    expect(workbook.net_adjustments_amount_cents).toBe(expected.netAdjustments);
+    expect(workbook.variance_amount_cents).toBe(expected.variance);
   });
 });
 
@@ -699,7 +769,7 @@ describe("buildHurstFpRecWorkbook", () => {
     ]);
   });
 
-  test("computes BOA total, DT 2100 total, and non-zero variance from visible columns", () => {
+  test("computes statement total, GL total, net adjustments, and final workpaper variance", () => {
     const workbook = buildHurstFpRecWorkbook(
       buildDetail({
         match_groups: [matchGroup(1_000_000, 1_000_000)],
@@ -742,19 +812,24 @@ describe("buildHurstFpRecWorkbook", () => {
     expect(workbook.summary.gl_2100_amount_cents).toBe(-1_010_000);
     expect(workbook.summary.difference_amount_cents).toBe(15_000);
     expect(workbook.net_adjustments_amount_cents).toBe(15_000);
-    expect(workbook.variance_amount_cents).toBe(15_000);
+    expect(workbook.variance_amount_cents).toBe(0);
   });
 
-  test("renders one clerk grid and omits old report sections", () => {
+  test("renders the draft accounting workpaper and leaves note/date cells blank", () => {
     const html = toHurstFpRecXlsHtml(buildHurstFpRecWorkbook(clerkContractDetail()));
+    const rows = workpaperHtmlRows();
+    const scheduleRows = workpaperSectionRows(rows, "On schedule-not on statement");
+    const statementRows = workpaperSectionRows(rows, "On statement-not on GL");
 
-    expect(html).toContain("Floorplan Reconciliation - Hiley Hurst");
-    expect(html).toContain("Period date");
-    expect(html).toContain("(29,855.00)");
+    expect(html).toContain("Floorplan Reconciliation - Hiley Mazda of Hurst");
+    expect(html).toContain("Outstanding per stmt");
+    expect(html).toContain("GL Balances");
+    expect(html).toContain("On schedule-not on statement");
+    expect(html).toContain("On statement-not on GL");
+    expect(html).toContain("Net adjustments");
     expect(html).toContain("Variance");
-    expect(html).not.toContain("On schedule-not on statement");
-    expect(html).not.toContain("On statement-not on GL");
-    expect(html).not.toContain("Unit / stock / VIN6 reference");
+    expect(scheduleRows.every((row) => row[2] === "" && row[3] === "")).toBe(true);
+    expect(statementRows.every((row) => row[2] === "" && row[3] === "")).toBe(true);
     expect(html).not.toContain("Needs Review");
     expect(html).not.toContain("Sign-off");
     expect(html).not.toContain("Prepared by");
@@ -804,10 +879,10 @@ describe("store-configured FP Rec from merged floorplan workbook", () => {
     const fpRecWorkbook = buildFpRecWorkbookFromMergedFloorplan(mergedWorkbookForStore("acura"));
     const html = toHurstFpRecXlsHtml(fpRecWorkbook);
 
-    expect(html).toContain("<th>ACURA</th>");
-    expect(html).toContain("<th>324</th>");
-    expect(html).not.toContain("<th>HURST</th>");
-    expect(html).not.toContain("<th>2100</th>");
+    expect(html).toContain("Floorplan Reconciliation - Acura");
+    expect(html).toContain("<td>324</td>");
+    expect(html).not.toContain("<td>2100</td>");
+    expect(html).not.toContain("Hiley Mazda of Hurst");
   });
 
   test("renders FW FP REC with 2100 display label from aggregated merged amount semantics", () => {

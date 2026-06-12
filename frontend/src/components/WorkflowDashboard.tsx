@@ -10,11 +10,13 @@ import {
   updateScheduledJob,
 } from "../api/automation";
 import {
+  getArtifactDownloadUrl,
   getFpRecExportUrl,
   getMergedFloorplanExportUrl,
   getReconciliationExceptionsCsvUrl,
   getReconciliationRun,
   getReconciliationRunAnalytics,
+  listReconciliationArtifacts,
   listReconciliationRuns,
   reconcileSourceFiles,
   replayReconciliationRun,
@@ -31,6 +33,8 @@ import { PreprocessingDiagnosticsPanel } from "./preprocessing/PreprocessingDiag
 import { VinPresenceDiagnosticsPanel } from "./VinPresenceDiagnosticsPanel";
 import type {
   ReconciledTransaction,
+  ReconciliationArtifact,
+  ReconciliationArtifactType,
   ReconciliationExceptionStatus,
   ReconciliationExceptionReviewUpdate,
   ReconciliationExceptionReviewStatus,
@@ -77,6 +81,22 @@ const initialUploadSlot: UploadSlot = {
 };
 
 const VALIDATION_ERROR_PREVIEW_LIMIT = 10;
+const ARTIFACT_LABELS: Record<ReconciliationArtifactType, string> = {
+  RAW_BOA: "Raw BOA",
+  RAW_DEALERTRACK: "Raw Dealertrack",
+  CLEANED_BOA: "Cleaned BOA",
+  CLEANED_DEALERTRACK: "Cleaned Dealertrack",
+  MERGED_FLOORPLAN: "Merged Floorplan",
+  FP_REC: "FP REC",
+};
+const ARTIFACT_SORT_ORDER: ReconciliationArtifactType[] = [
+  "RAW_BOA",
+  "RAW_DEALERTRACK",
+  "CLEANED_BOA",
+  "CLEANED_DEALERTRACK",
+  "MERGED_FLOORPLAN",
+  "FP_REC",
+];
 
 export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }) {
   const [boaUpload, setBoaUpload] = useState<UploadSlot>(initialUploadSlot);
@@ -97,6 +117,8 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
   const [activeRunDiagnostics, setActiveRunDiagnostics] = useState<VinPresenceDiagnostics | null>(null);
   const [activeRunAnalytics, setActiveRunAnalytics] = useState<ReconciliationRunComparison | null>(null);
   const [activeRunReplay, setActiveRunReplay] = useState<ReconciliationReplayResponse | null>(null);
+  const [activeRunArtifacts, setActiveRunArtifacts] = useState<ReconciliationArtifact[]>([]);
+  const [activeRunArtifactsError, setActiveRunArtifactsError] = useState<string | null>(null);
   const [isReconciling, setIsReconciling] = useState(false);
   const [isReplaying, setIsReplaying] = useState(false);
   const [historyLoadingId, setHistoryLoadingId] = useState<number | null>(null);
@@ -192,6 +214,8 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
     setIsReconciling(true);
     setWorkflowError(null);
+    setActiveRunArtifacts([]);
+    setActiveRunArtifactsError(null);
 
     try {
       const result = await reconcileSourceFiles({
@@ -205,6 +229,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       setActiveRunDiagnostics(result.vin_presence_diagnostics);
       setActiveRunAnalytics(analytics);
       setActiveRunReplay(null);
+      await loadRunArtifacts(result.reconciliation_run_id);
       setIsReconciliationStale(false);
       setReconciliationRuns(await listReconciliationRuns(selectedStoreId));
       setGroupAnalytics(await getDealerGroupAnalytics());
@@ -222,6 +247,8 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     setActiveRunDiagnostics(null);
     setActiveRunAnalytics(null);
     setActiveRunReplay(null);
+    setActiveRunArtifacts([]);
+    setActiveRunArtifactsError(null);
     setBoaUpload(initialUploadSlot);
     setDealertrackUpload(initialUploadSlot);
     const [uploads, runs, analytics, jobs, ingestion, alerts, metrics, statuses] = await Promise.all([
@@ -276,6 +303,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       setActiveRunDiagnostics(null);
       setActiveRunAnalytics(analytics);
       setActiveRunReplay(null);
+      await loadRunArtifacts(reconciliationRunId);
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Run detail could not be loaded.");
     } finally {
@@ -338,6 +366,16 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       setWorkflowError(error instanceof Error ? error.message : "Historical replay could not be run.");
     } finally {
       setIsReplaying(false);
+    }
+  }
+
+  async function loadRunArtifacts(reconciliationRunId: number) {
+    setActiveRunArtifacts([]);
+    setActiveRunArtifactsError(null);
+    try {
+      setActiveRunArtifacts(await listReconciliationArtifacts(reconciliationRunId));
+    } catch (error) {
+      setActiveRunArtifactsError(error instanceof Error ? error.message : "Artifacts could not be loaded.");
     }
   }
 
@@ -505,6 +543,8 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
       <ResultsSection
         analytics={activeRunAnalytics}
+        artifacts={activeRunArtifacts}
+        artifactsError={activeRunArtifactsError}
         diagnostics={activeRunDiagnostics}
         filters={exceptionFilters}
         replay={activeRunReplay}
@@ -1074,6 +1114,8 @@ function RecentUploads({ sourceFiles }: { sourceFiles: SourceFileSummary[] }) {
 
 function ResultsSection({
   analytics,
+  artifacts,
+  artifactsError,
   diagnostics,
   filters,
   replay,
@@ -1087,6 +1129,8 @@ function ResultsSection({
   canModify,
 }: {
   analytics: ReconciliationRunComparison | null;
+  artifacts: ReconciliationArtifact[];
+  artifactsError: string | null;
   diagnostics: VinPresenceDiagnostics | null;
   filters: ReconciliationRunFilters;
   replay: ReconciliationReplayResponse | null;
@@ -1144,6 +1188,8 @@ function ResultsSection({
 
       {run ? (
         <>
+          <ArtifactsPanel artifacts={artifacts} error={artifactsError} />
+
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Metric label="Clean matches (VIN + amount)" value={run.matched_count} />
             <Metric label="Unmatched items" value={run.exception_count} />
@@ -1178,6 +1224,74 @@ function ResultsSection({
         </>
       ) : null}
     </section>
+  );
+}
+
+function ArtifactsPanel({
+  artifacts,
+  error,
+}: {
+  artifacts: ReconciliationArtifact[];
+  error: string | null;
+}) {
+  const sortedArtifacts = [...artifacts].sort((left, right) => {
+    const leftOrder = ARTIFACT_SORT_ORDER.indexOf(left.artifact_type);
+    const rightOrder = ARTIFACT_SORT_ORDER.indexOf(right.artifact_type);
+    return leftOrder - rightOrder || left.filename.localeCompare(right.filename);
+  });
+
+  return (
+    <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-4">
+      <div>
+        <h3 className="text-base font-semibold text-slate-950">Stored artifacts</h3>
+        <p className="mt-1 text-sm text-slate-600">
+          Historical files saved for this store/month run.
+        </p>
+      </div>
+      {error ? <ErrorBanner message={error} /> : null}
+      <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">
+        <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+          <thead className="bg-slate-50 text-slate-600">
+            <tr>
+              <th className="px-3 py-2 font-semibold">Artifact</th>
+              <th className="px-3 py-2 font-semibold">Filename</th>
+              <th className="px-3 py-2 font-semibold">Size</th>
+              <th className="px-3 py-2 font-semibold">Created</th>
+              <th className="px-3 py-2 font-semibold">Download</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-200">
+            {sortedArtifacts.length === 0 ? (
+              <tr>
+                <td className="px-3 py-3 text-slate-600" colSpan={5}>
+                  No stored artifacts for this run yet.
+                </td>
+              </tr>
+            ) : (
+              sortedArtifacts.map((artifact) => (
+                <tr key={artifact.id}>
+                  <td className="px-3 py-2 font-medium text-slate-950">
+                    {ARTIFACT_LABELS[artifact.artifact_type]}
+                  </td>
+                  <td className="max-w-xs break-all px-3 py-2 text-slate-700">{artifact.filename}</td>
+                  <td className="px-3 py-2 text-slate-700">{formatFileSize(artifact.file_size)}</td>
+                  <td className="px-3 py-2 text-slate-700">{formatDateTime(artifact.created_at)}</td>
+                  <td className="px-3 py-2">
+                    <a
+                      className="inline-flex h-9 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+                      download
+                      href={getArtifactDownloadUrl(artifact.id)}
+                    >
+                      Download
+                    </a>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -1901,6 +2015,20 @@ function formatDateTime(value: string) {
     dateStyle: "short",
     timeStyle: "short",
   });
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  const units = ["KB", "MB", "GB"];
+  let size = bytes / 1024;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
 
 function formatSignedDelta(value: number) {

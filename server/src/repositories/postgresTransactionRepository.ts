@@ -15,7 +15,9 @@ import type {
   NewAuditEvent,
   NewIngestionEvent,
   NewOperationalEvent,
+  NewReconciliationArtifact,
   NewSourceFile,
+  NewSourceFileUploadContent,
   NewTransaction,
   NewScheduledReconciliationJob,
   IngestionEvent,
@@ -25,6 +27,9 @@ import type {
   ReconciliationExceptionReviewStatus,
   ReconciliationExceptionStatus,
   ReconciliationExceptionType,
+  ReconciliationArtifact,
+  ReconciliationArtifactMetadata,
+  ReconciliationArtifactType,
   ReconciliationRunDetail,
   ReconciliationRunDetailFilters,
   ReconciliationRunInputSnapshot,
@@ -34,6 +39,7 @@ import type {
   ScheduledReconciliationJob,
   ScheduledReconciliationJobUpdate,
   SourceFile,
+  SourceFileUploadContent,
   SourceFileSummary,
   SourceType,
   Transaction,
@@ -57,6 +63,32 @@ type SourceFileRow = {
   file_hash: string;
   row_count: number;
   validation_error_count: number;
+  created_at: Date | string;
+};
+
+type SourceFileUploadContentRow = {
+  source_file_id: number;
+  dealership_id: number;
+  dealership_store_id: number | null;
+  filename: string;
+  content_type: string;
+  file_size_bytes: string | number;
+  content: Buffer;
+  created_at: Date | string;
+};
+
+type ReconciliationArtifactRow = {
+  id: number;
+  reconciliation_run_id: number;
+  dealership_id: number;
+  dealership_store_id: number | null;
+  accounting_month: string;
+  uploaded_by_user_id: number | null;
+  artifact_type: ReconciliationArtifactType;
+  filename: string;
+  content_type: string;
+  file_size_bytes: string | number;
+  content: Buffer;
   created_at: Date | string;
 };
 
@@ -237,6 +269,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
     dealershipId: number,
     sourceFileInput: NewSourceFile,
     transactions: NewTransaction[],
+    uploadContent?: NewSourceFileUploadContent,
   ): Promise<SourceFileImport> {
     const client = await this.pool.connect();
     try {
@@ -246,6 +279,9 @@ export class PostgresTransactionRepository implements TransactionRepository {
         dealership_store_id:
           sourceFileInput.dealership_store_id ?? (await this.getDefaultStoreId(dealershipId)),
       });
+      if (uploadContent) {
+        await upsertSourceFileUploadContent(client, sourceFile, uploadContent);
+      }
       const scopedTransactions = transactions.map((transaction) => ({
         ...transaction,
         dealership_id: dealershipId,
@@ -270,6 +306,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
     sourceFileId: number,
     sourceFileInput: NewSourceFile,
     transactions: NewTransaction[],
+    uploadContent?: NewSourceFileUploadContent,
   ): Promise<SourceFileImport | null> {
     const client = await this.pool.connect();
     try {
@@ -313,6 +350,10 @@ export class PostgresTransactionRepository implements TransactionRepository {
           sourceFileInput.validation_error_count,
         ],
       );
+      const sourceFile = toSourceFile(updated.rows[0]);
+      if (uploadContent) {
+        await upsertSourceFileUploadContent(client, sourceFile, uploadContent);
+      }
       const scopedTransactions = transactions.map((transaction) => ({
         ...transaction,
         dealership_id: dealershipId,
@@ -320,7 +361,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
       }));
       const inserted = await insertTransactions(client, scopedTransactions);
       await client.query("COMMIT");
-      return { sourceFile: toSourceFile(updated.rows[0]), transactions: inserted };
+      return { sourceFile, transactions: inserted };
     } catch (error) {
       await client.query("ROLLBACK");
       if (isDuplicateSourceFileError(error)) {
@@ -1057,6 +1098,109 @@ export class PostgresTransactionRepository implements TransactionRepository {
     }
   }
 
+  async getSourceFileUploadContent(
+    dealershipId: number,
+    sourceFileId: number,
+  ): Promise<SourceFileUploadContent | null> {
+    const result = await this.pool.query<SourceFileUploadContentRow>(
+      `SELECT *
+       FROM source_file_upload_contents
+       WHERE dealership_id = $1
+         AND source_file_id = $2`,
+      [dealershipId, sourceFileId],
+    );
+    return result.rows[0] ? toSourceFileUploadContent(result.rows[0]) : null;
+  }
+
+  async createReconciliationArtifact(
+    dealershipId: number,
+    artifact: NewReconciliationArtifact,
+  ): Promise<ReconciliationArtifactMetadata> {
+    const result = await this.pool.query<ReconciliationArtifactRow>(
+      `INSERT INTO reconciliation_artifacts (
+        reconciliation_run_id,
+        dealership_id,
+        dealership_store_id,
+        accounting_month,
+        uploaded_by_user_id,
+        artifact_type,
+        filename,
+        content_type,
+        file_size_bytes,
+        content
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      ON CONFLICT (reconciliation_run_id, artifact_type)
+      DO UPDATE SET
+        dealership_store_id = EXCLUDED.dealership_store_id,
+        accounting_month = EXCLUDED.accounting_month,
+        uploaded_by_user_id = EXCLUDED.uploaded_by_user_id,
+        filename = EXCLUDED.filename,
+        content_type = EXCLUDED.content_type,
+        file_size_bytes = EXCLUDED.file_size_bytes,
+        content = EXCLUDED.content,
+        created_at = NOW()
+      RETURNING *`,
+      [
+        artifact.reconciliation_run_id,
+        dealershipId,
+        artifact.store_id,
+        artifact.accounting_month,
+        artifact.uploaded_by,
+        artifact.artifact_type,
+        artifact.filename,
+        artifact.content_type,
+        artifact.file_size ?? artifact.content.byteLength,
+        artifact.content,
+      ],
+    );
+    return toReconciliationArtifactMetadata(result.rows[0]);
+  }
+
+  async listReconciliationArtifacts(
+    dealershipId: number,
+    reconciliationRunId: number,
+  ): Promise<ReconciliationArtifactMetadata[]> {
+    const result = await this.pool.query<ReconciliationArtifactRow>(
+      `SELECT *
+       FROM reconciliation_artifacts
+       WHERE dealership_id = $1
+         AND reconciliation_run_id = $2
+       ORDER BY id`,
+      [dealershipId, reconciliationRunId],
+    );
+    return result.rows.map(toReconciliationArtifactMetadata);
+  }
+
+  async getReconciliationArtifact(
+    dealershipId: number,
+    artifactId: number,
+  ): Promise<ReconciliationArtifact | null> {
+    const result = await this.pool.query<ReconciliationArtifactRow>(
+      `SELECT *
+       FROM reconciliation_artifacts
+       WHERE dealership_id = $1
+         AND id = $2`,
+      [dealershipId, artifactId],
+    );
+    return result.rows[0] ? toReconciliationArtifact(result.rows[0]) : null;
+  }
+
+  async findReconciliationArtifact(
+    dealershipId: number,
+    reconciliationRunId: number,
+    artifactType: NewReconciliationArtifact["artifact_type"],
+  ): Promise<ReconciliationArtifact | null> {
+    const result = await this.pool.query<ReconciliationArtifactRow>(
+      `SELECT *
+       FROM reconciliation_artifacts
+       WHERE dealership_id = $1
+         AND reconciliation_run_id = $2
+         AND artifact_type = $3`,
+      [dealershipId, reconciliationRunId, artifactType],
+    );
+    return result.rows[0] ? toReconciliationArtifact(result.rows[0]) : null;
+  }
+
   async getReconciliationRunSnapshot(
     dealershipId: number,
     reconciliationRunId: number,
@@ -1693,6 +1837,42 @@ async function insertSourceFile(
   return toSourceFile(result.rows[0]);
 }
 
+async function upsertSourceFileUploadContent(
+  client: pg.PoolClient,
+  sourceFile: SourceFile,
+  content: NewSourceFileUploadContent,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO source_file_upload_contents (
+      source_file_id,
+      dealership_id,
+      dealership_store_id,
+      filename,
+      content_type,
+      file_size_bytes,
+      content
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+    ON CONFLICT (source_file_id)
+    DO UPDATE SET
+      dealership_id = EXCLUDED.dealership_id,
+      dealership_store_id = EXCLUDED.dealership_store_id,
+      filename = EXCLUDED.filename,
+      content_type = EXCLUDED.content_type,
+      file_size_bytes = EXCLUDED.file_size_bytes,
+      content = EXCLUDED.content,
+      created_at = NOW()`,
+    [
+      sourceFile.id,
+      sourceFile.dealership_id,
+      sourceFile.dealership_store_id,
+      content.filename,
+      content.content_type,
+      content.file_size ?? content.content.byteLength,
+      content.content,
+    ],
+  );
+}
+
 async function insertTransactions(
   client: pg.PoolClient,
   transactions: NewTransaction[],
@@ -1786,6 +1966,44 @@ function toSourceFile(row: SourceFileRow): SourceFile {
     row_count: Number(row.row_count),
     validation_error_count: Number(row.validation_error_count),
     created_at: toDateTimeString(row.created_at),
+  };
+}
+
+function toSourceFileUploadContent(row: SourceFileUploadContentRow): SourceFileUploadContent {
+  return {
+    source_file_id: row.source_file_id,
+    dealership_id: row.dealership_id,
+    dealership_store_id: row.dealership_store_id,
+    filename: row.filename,
+    content_type: row.content_type,
+    file_size: Number(row.file_size_bytes),
+    content: Buffer.from(row.content),
+    created_at: toDateTimeString(row.created_at),
+  };
+}
+
+function toReconciliationArtifactMetadata(
+  row: ReconciliationArtifactRow,
+): ReconciliationArtifactMetadata {
+  return {
+    id: row.id,
+    reconciliation_run_id: row.reconciliation_run_id,
+    dealership_id: row.dealership_id,
+    store_id: row.dealership_store_id,
+    accounting_month: row.accounting_month,
+    uploaded_by: row.uploaded_by_user_id,
+    artifact_type: row.artifact_type,
+    filename: row.filename,
+    file_size: Number(row.file_size_bytes),
+    content_type: row.content_type,
+    created_at: toDateTimeString(row.created_at),
+  };
+}
+
+function toReconciliationArtifact(row: ReconciliationArtifactRow): ReconciliationArtifact {
+  return {
+    ...toReconciliationArtifactMetadata(row),
+    content: Buffer.from(row.content),
   };
 }
 

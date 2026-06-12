@@ -1,6 +1,7 @@
 import { API_BASE_URL, apiGet, apiPatch, apiPost } from "./client";
 import type {
   ReconcileSourceFilesInput,
+  ReconciliationArtifact,
   ReconciliationExceptionReviewUpdate,
   ReconciliationRunDetailException,
   ReconciliationRunFilters,
@@ -51,6 +52,12 @@ export async function replayReconciliationRun(
   return apiGet<ReconciliationReplayResponse>(`/reconciliation-runs/${reconciliationRunId}/replay`);
 }
 
+export async function listReconciliationArtifacts(
+  reconciliationRunId: number,
+): Promise<ReconciliationArtifact[]> {
+  return apiGet<ReconciliationArtifact[]>(`/reconciliation-runs/${reconciliationRunId}/artifacts`);
+}
+
 export function getReconciliationExceptionsCsvUrl(
   reconciliationRunId: number,
   filters: ReconciliationRunFilters = {},
@@ -66,6 +73,10 @@ export function getMergedFloorplanExportUrl(reconciliationRunId: number): string
 
 export function getFpRecExportUrl(reconciliationRunId: number): string {
   return `${API_BASE_URL}/reconciliation-runs/${reconciliationRunId}/fp-rec`;
+}
+
+export function getArtifactDownloadUrl(artifactId: number): string {
+  return `${API_BASE_URL}/artifacts/${artifactId}/download`;
 }
 
 export async function updateReconciliationExceptionReview({

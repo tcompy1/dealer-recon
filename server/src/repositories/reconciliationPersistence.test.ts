@@ -42,6 +42,7 @@ describeIfDatabase("reconciliation persistence", () => {
             boaUploadCsv("M50202", "2HGCM82633A004352", "$222.00", `50202${unique}`),
           ].join("\n"),
           `boa-persist-${unique}.csv`,
+          1,
         );
 
         const dealertrackUpload = await uploadCsv(
@@ -53,11 +54,13 @@ describeIfDatabase("reconciliation persistence", () => {
             `M50303,"BOA FLOORPLAN ${unique}",333`,
           ].join("\n"),
           `dealertrack-persist-${unique}.csv`,
+          1,
         );
 
         const response = await request(app).post("/reconcile").send({
           boa_source_file_id: boaUpload.source_file_id,
           dealertrack_source_file_id: dealertrackUpload.source_file_id,
+          dealership_store_id: 1,
         });
 
         expect(response.status).toBe(200);
@@ -122,6 +125,24 @@ describeIfDatabase("reconciliation persistence", () => {
           reviewed_at: null,
           reviewed_by: null,
         });
+
+        const artifactsResponse = await request(app).get(`/reconciliation-runs/${runId}/artifacts`);
+        expect(artifactsResponse.status).toBe(200);
+        expect(artifactsResponse.body.map((artifact: { artifact_type: string }) => artifact.artifact_type)).toEqual([
+          "RAW_BOA",
+          "RAW_DEALERTRACK",
+          "CLEANED_BOA",
+          "CLEANED_DEALERTRACK",
+          "MERGED_FLOORPLAN",
+          "FP_REC",
+        ]);
+        const artifactCount = await countRows(
+          pool,
+          "reconciliation_artifacts",
+          "reconciliation_run_id",
+          runId,
+        );
+        expect(artifactCount).toBe(6);
 
         const exceptionId = runDetailResponse.body.exceptions[0].exception_id as number;
         const reviewUpdateResponse = await request(app)
@@ -353,11 +374,15 @@ async function uploadCsv(
   sourceType: string,
   csv: string,
   filename: string,
+  storeId?: number,
 ) {
-  const response = await request(app)
+  const uploadRequest = request(app)
     .post("/upload")
-    .field("source_type", sourceType)
-    .attach("file", Buffer.from(csv), filename);
+    .field("source_type", sourceType);
+  if (storeId) {
+    uploadRequest.field("store_id", String(storeId));
+  }
+  const response = await uploadRequest.attach("file", Buffer.from(csv), filename);
 
   expect(response.status).toBe(200);
   return response.body as { source_file_id: number };

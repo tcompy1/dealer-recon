@@ -237,6 +237,28 @@ export type ReconciliationRunFilters = {
   search?: string;
 };
 
+export type ReconciliationArtifactType =
+  | "RAW_BOA"
+  | "RAW_DEALERTRACK"
+  | "CLEANED_BOA"
+  | "CLEANED_DEALERTRACK"
+  | "MERGED_FLOORPLAN"
+  | "FP_REC";
+
+export type ReconciliationArtifact = {
+  id: number;
+  reconciliation_run_id: number;
+  dealership_id: number;
+  store_id: number | null;
+  accounting_month: string;
+  uploaded_by: number | null;
+  artifact_type: ReconciliationArtifactType;
+  filename: string;
+  file_size: number;
+  content_type: string;
+  created_at: string;
+};
+
 export type ReconciliationExceptionStatus = "unresolved" | "ignored" | "resolved";
 
 export type ReconciliationExceptionReviewStatus =

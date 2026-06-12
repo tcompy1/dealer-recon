@@ -1,130 +1,136 @@
-# Dealer Recon — Automotive Dealership Information System
+# Dealer-Recon
 
-> Full-stack SaaS platform for floorplan reconciliation and month-end financial reporting across multi-rooftop automotive dealer groups.
+Dealer-Recon is currently a Hiley store/month floorplan reconciliation pilot.
 
----
+The active product is not a generic reconciliation SaaS platform, dashboard analytics product, productivity tracker, triage queue, or consolidated multi-store reporting suite. Those surfaces may remain in code as advanced or future-scope capabilities, but the pilot path is the four-step artifact workflow below.
 
-## The Problem
+## Pilot Workflow
 
-Automotive dealerships manage floorplan financing across dozens or hundreds of vehicles simultaneously — reconciling their internal records against bank statements (BOA, Dealertrack) is a manual, error-prone process that routinely takes a dealership's accounting team **hours per day** using disconnected spreadsheets. Mistakes go undetected until month-end, when exception review with the CFO becomes a fire drill.
+Each reconciliation run is scoped to one store and one accounting month.
 
-I identified this problem through **direct onsite discovery sessions** with dealership accounting staff — walking the floor, mapping their actual workflows, and translating manual human processes into structured business logic before writing a single line of code.
+1. Upload the BOA file.
+2. Upload the Dealertrack file.
+3. Process reconciliation with the selected store's workflow configuration.
+4. Download the stored artifacts for that run:
+   - Merged Floorplan
+   - FP REC
+   - Raw BOA
+   - Raw Dealertrack
+   - Cleaned BOA
+   - Cleaned Dealertrack
 
----
+Every store/month run produces its own merged spreadsheet and its own FP REC. The pilot does not generate combined multi-store exports.
 
-## What It Does
+## Supported Stores
 
-- **Automated data ingestion** — Parses BOA and Dealertrack CSV/XLS exports and normalizes them into a unified PostgreSQL schema
-- **VIN-anchored matching engine** — Matches bank records to dealership inventory line-by-line using VIN6 keys, flagging exceptions where records diverge
-- **Carry-forward exception tracking** — Unresolved exceptions persist across reconciliation runs with clerk review workflow and audit trail
-- **CFO-ready exports** — Generates Hurst FP Rec-style XLS exports and month-end reports in the exact format dealership leadership expects
-- **Real-time dashboard** — Live reconciliation status, account summaries, and exception queue accessible from any browser
-- **Multi-run history** — Full run history with diff tracking for compliance and review
+| Store | Dealertrack floorplan behavior | Output labels |
+| --- | --- | --- |
+| Hurst | Uses account `2100`; excludes `2110` where applicable. | `HURST` / `2100` |
+| Acura | Uses account `324`. | `ACURA` / `324` |
+| FW | Aggregates `2100 + 2101 + 2101S`; excludes `2110`; displays `2100`. | `FW` or `FORT WORTH` / `2100` |
 
-**Result:** Reconciliation prep time reduced from hours to minutes. Month-end close becomes a review, not a recovery.
+Remaining stores still require artifact analysis and store configuration before they are pilot-supported.
 
----
+## Current Capabilities
 
-## Tech Stack
+- Upload and parse BOA and Dealertrack source files for a store/month run.
+- Supported source formats include CSV, BOA HTML-as-XLS, Dealertrack SpreadsheetML/XML-style exports, HTML, and plain text MIME variants.
+- Native OOXML `.xlsx` upload is still unsupported; resubmit as CSV, HTML-as-XLS, or SpreadsheetML-style export.
+- Normalize raw source files into BOA and Dealertrack transaction datasets.
+- Apply store-configured Dealertrack amount-column behavior.
+- Generate a Merged Floorplan artifact from the same merged-row semantics used downstream.
+- Generate FP REC from store-configured merged artifact semantics.
+- Persist historical artifact records for raw uploads, cleaned datasets, merged spreadsheet, and FP REC.
+- Reopen historical runs and download stored artifacts.
+- Preserve the legacy Hurst FP REC route while preferring the generic FP REC route.
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React, Vite, Tailwind CSS |
-| Backend | Node.js, Express, REST API |
-| Database | PostgreSQL 16 |
-| ORM / Migrations | Prisma ORM |
-| Language | TypeScript throughout |
-| Infrastructure | Docker Compose (local), GitHub Actions CI/CD |
-| Export | XLS/CSV generation via ExcelJS |
+## Primary API Endpoints
 
----
+The backend listens on `http://localhost:8000` in local Docker Compose.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `POST` | `/upload` | Upload one BOA or Dealertrack source file. |
+| `POST` | `/reconcile` | Process selected BOA and Dealertrack source files into one reconciliation run. |
+| `GET` | `/reconciliation-runs` | List reconciliation runs. |
+| `GET` | `/reconciliation-runs/:id` | Read run detail. |
+| `GET` | `/reconciliation-runs/:id/merged-floorplan` | Download the run's Merged Floorplan artifact. |
+| `GET` | `/reconciliation-runs/:id/fp-rec` | Download the run's FP REC artifact. Preferred route. |
+| `GET` | `/reconciliation-runs/:id/hurst-fp-rec` | Legacy Hurst-compatible FP REC route. |
+| `GET` | `/reconciliation-runs/:id/artifacts` | List stored artifact metadata for the run. |
+| `GET` | `/artifacts/:artifactId/download` | Download one stored historical artifact. |
+
+Additional account, report, automation, analytics, and review endpoints may still exist, but they are not part of the current pilot acceptance path.
 
 ## Architecture Overview
 
+```text
+Raw BOA + Dealertrack files
+        |
+        v
+Source-specific parsing and cleaning
+        |
+        v
+Store workflow configuration
+        |
+        v
+VIN6 + amount reconciliation
+        |
+        v
+Merged Floorplan artifact
+        |
+        v
+FP REC artifact
+        |
+        v
+Historical artifact storage and download
 ```
-CSV/XLS Upload → Ingestion Parser → Normalization Layer → PostgreSQL
-                                                              ↓
-                                                    VIN-Anchored Matcher
-                                                              ↓
-                                          Exception Engine ← Carry-Forward Store
-                                                              ↓
-                                             React Dashboard ← REST API
-                                                              ↓
-                                                  XLS Export / Month-End Report
-```
-
----
-
-## API Reference
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/upload` | Upload BOA or Dealertrack source file |
-| `POST` | `/api/reconcile` | Run reconciliation against current data |
-| `GET` | `/api/exceptions` | List all active exceptions |
-| `PUT` | `/api/exceptions/:id` | Update exception status/notes |
-| `DELETE` | `/api/exceptions/:id` | Resolve/remove exception |
-| `GET` | `/api/accounts/summary` | Account-level reconciliation summary |
-| `GET` | `/api/export/csv` | Export exception report as CSV |
-| `GET` | `/api/reports/month-end` | Generate month-end close report |
-| `GET` | `/api/reports/history` | Full reconciliation run history |
-
----
 
 ## Local Development
 
 ### Prerequisites
-- Node.js 18+
-- Docker Desktop
-- PostgreSQL 16 (via Docker Compose)
 
-### Setup
+- Docker Desktop or compatible Docker runtime
+- Node.js 18+ if running packages outside Docker
+
+### Start The App
 
 ```bash
-git clone https://github.com/tcompy1/dealer-recon.git
-cd dealer-recon
-
-# Start the database
-docker compose up -d
-
-# Install dependencies
-npm install
-
-# Run migrations
-npx prisma migrate dev
-
-# Seed reference data
-npx prisma db seed
-
-# Start dev server
-npm run dev
+docker compose up --build
 ```
 
-The app will be available at `http://localhost:3000`. API runs on port `3001`.
+Local services:
 
-### Environment Variables
+- Frontend: `http://localhost:5173`
+- Backend: `http://localhost:8000`
+- PostgreSQL: host port `5433`
 
-```env
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/dealer_recon
-PORT=3001
-NODE_ENV=development
+The backend runs migrations automatically during `docker compose up`.
+
+### Validation Commands
+
+```bash
+docker compose exec backend npm run typecheck
+docker compose exec backend npm test
+docker compose run --rm frontend npm run build
 ```
 
----
+Use `docker compose run --rm frontend npm run build` when the frontend dev service is not already running.
 
-## Project Status
+## Documentation Map
 
-Active development — shipping production releases with a live dealership client.
+- `docs/implementation/store-workflow-matrix.md` - store-specific workflow evidence for Hurst, Acura, and FW.
+- `docs/implementation/hiley-four-step-workflow-gap-analysis.md` - current pilot status and remaining gaps.
+- `docs/implementation/fp-rec-output-fidelity.md` - Hurst FP REC fidelity history and output expectations.
+- `docs/demo/hiley-demo-validation.md` - current demo walkthrough for the four-step workflow.
+- `docs/demo/workflow-assumptions.md` - assumptions still needing clerk validation.
 
-- 7+ production releases with zero data loss across schema migrations
-- Ongoing feature work: multi-rooftop support, role-based access control, automated bank statement email ingestion
+Historical PRDs and older project briefs may describe broader SaaS, dashboard, analytics, or reporting goals. Treat those as historical context unless explicitly pulled into the pilot roadmap.
 
----
+## Current Release Caveats
 
-## Background
-
-This project started from a gap I noticed while spending a decade working inside and alongside automotive dealerships as a P&C insurance agent building comprehensive policy packages for dealer groups. The accounting workflows were manual, disconnected, and error-prone in a way that software could clearly solve — so I built it.
-
----
-
-*For questions or collaboration: [linkedin.com/in/trentcompton1](https://linkedin.com/in/trentcompton1) · trentcompton88@gmail.com*
+- Native `.xlsx` uploads are not accepted yet.
+- Hurst, Acura, and FW are the only configured floorplan workflows.
+- Remaining stores need raw BOA, raw Dealertrack, merged workbook, and FP REC evidence before implementation.
+- Excel visual fidelity should continue to be checked against accepted clerk artifacts.
+- Dashboard, reporting, automation, and review workflow surfaces should stay de-emphasized until the store/month artifact workflow is fully trusted.

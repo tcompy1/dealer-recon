@@ -1,5 +1,7 @@
 # Remaining Error Handling Migration Tasks
 
+Status note: this document is historical. The migration described here was completed later; see `docs/error-handling-migration-complete.md`. It is not part of the current Hiley four-step pilot scope.
+
 ## Summary
 
 The error handling migration is partially complete. The following endpoints still need to be migrated to use `asyncHandler` and `HttpError` classes.

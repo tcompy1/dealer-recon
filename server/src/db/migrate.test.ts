@@ -26,6 +26,8 @@ describeIfDatabase("migrate", () => {
           reconciliation_match_groups: string;
         reconciliation_match_group_transactions: string;
         reconciliation_exceptions: string;
+        source_file_upload_contents: string;
+        reconciliation_artifacts: string;
         dealerships: string;
         users: string;
         }>(
@@ -36,6 +38,8 @@ describeIfDatabase("migrate", () => {
             to_regclass('public.reconciliation_match_groups')::text AS reconciliation_match_groups,
             to_regclass('public.reconciliation_match_group_transactions')::text AS reconciliation_match_group_transactions,
             to_regclass('public.reconciliation_exceptions')::text AS reconciliation_exceptions,
+            to_regclass('public.source_file_upload_contents')::text AS source_file_upload_contents,
+            to_regclass('public.reconciliation_artifacts')::text AS reconciliation_artifacts,
             to_regclass('public.dealerships')::text AS dealerships,
             to_regclass('public.users')::text AS users`,
         );
@@ -46,6 +50,8 @@ describeIfDatabase("migrate", () => {
           reconciliation_match_groups: "reconciliation_match_groups",
           reconciliation_match_group_transactions: "reconciliation_match_group_transactions",
           reconciliation_exceptions: "reconciliation_exceptions",
+          source_file_upload_contents: "source_file_upload_contents",
+          reconciliation_artifacts: "reconciliation_artifacts",
           dealerships: "dealerships",
           users: "users",
         });

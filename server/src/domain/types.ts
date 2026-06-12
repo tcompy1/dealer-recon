@@ -90,6 +90,24 @@ export type SourceFile = {
   created_at: string;
 };
 
+export type SourceFileUploadContent = {
+  source_file_id: number;
+  dealership_id: number;
+  dealership_store_id: number | null;
+  filename: string;
+  content_type: string;
+  file_size: number;
+  content: Buffer;
+  created_at: string;
+};
+
+export type NewSourceFileUploadContent = Omit<
+  SourceFileUploadContent,
+  "source_file_id" | "dealership_id" | "dealership_store_id" | "created_at" | "file_size"
+> & {
+  file_size?: number;
+};
+
 export type NewSourceFile = Omit<
   SourceFile,
   "id" | "dealership_id" | "dealership_store_id" | "created_at"
@@ -402,6 +420,42 @@ export type ReconciliationRun = {
   duplicate_count: number;
   status: string;
   created_at: string;
+};
+
+export const reconciliationArtifactTypes = [
+  "RAW_BOA",
+  "RAW_DEALERTRACK",
+  "CLEANED_BOA",
+  "CLEANED_DEALERTRACK",
+  "MERGED_FLOORPLAN",
+  "FP_REC",
+] as const;
+
+export type ReconciliationArtifactType = (typeof reconciliationArtifactTypes)[number];
+
+export type ReconciliationArtifactMetadata = {
+  id: number;
+  reconciliation_run_id: number;
+  dealership_id: number;
+  store_id: number | null;
+  accounting_month: string;
+  uploaded_by: number | null;
+  artifact_type: ReconciliationArtifactType;
+  filename: string;
+  file_size: number;
+  content_type: string;
+  created_at: string;
+};
+
+export type ReconciliationArtifact = ReconciliationArtifactMetadata & {
+  content: Buffer;
+};
+
+export type NewReconciliationArtifact = Omit<
+  ReconciliationArtifact,
+  "id" | "dealership_id" | "created_at" | "file_size"
+> & {
+  file_size?: number;
 };
 
 export type PersistReconciliationRunInput = {

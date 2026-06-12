@@ -1546,6 +1546,90 @@ describe("app", () => {
     expect(response.text).toContain("M30303");
   });
 
+  test("reconciliation artifacts persist raw, cleaned, merged, and FP REC downloads", async () => {
+    const authRepository = new MemoryAuthRepository();
+    await authRepository.addUser({
+      id: 42,
+      email: "artifact-user@example.com",
+      password: "correct-password",
+      dealership_id: 1,
+      role: "accounting_user",
+      store_ids: [1],
+    });
+    const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+    const agent = request.agent(app);
+    await agent.post("/login").send({
+      email: "artifact-user@example.com",
+      password: "correct-password",
+    });
+    const reconciliation = await createReconciliationWithAgent(agent);
+
+    const artifactsResponse = await agent.get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}/artifacts`,
+    );
+
+    expect(artifactsResponse.status).toBe(200);
+    const artifacts = artifactsResponse.body as Array<{
+      id: number;
+      artifact_type: string;
+      filename: string;
+      file_size: number;
+      content_type: string;
+      accounting_month: string;
+      uploaded_by: number | null;
+      store_id: number | null;
+      created_at: string;
+    }>;
+    expect(artifacts.map((artifact) => artifact.artifact_type)).toEqual([
+      "RAW_BOA",
+      "RAW_DEALERTRACK",
+      "CLEANED_BOA",
+      "CLEANED_DEALERTRACK",
+      "MERGED_FLOORPLAN",
+      "FP_REC",
+    ]);
+    for (const artifact of artifacts) {
+      expect(artifact.file_size).toBeGreaterThan(0);
+      expect(artifact.content_type).toEqual(expect.any(String));
+      expect(artifact.accounting_month).toBe("2025-09");
+      expect(artifact.uploaded_by).toBe(42);
+      expect(artifact.store_id).toBe(1);
+      expect(artifact.created_at).toEqual(expect.any(String));
+    }
+
+    const byType = new Map(artifacts.map((artifact) => [artifact.artifact_type, artifact]));
+    const rawBoa = await agent.get(`/artifacts/${byType.get("RAW_BOA")!.id}/download`);
+    const cleanedDealertrack = await agent.get(
+      `/artifacts/${byType.get("CLEANED_DEALERTRACK")!.id}/download`,
+    );
+    const mergedArtifact = await agent.get(
+      `/artifacts/${byType.get("MERGED_FLOORPLAN")!.id}/download`,
+    );
+    const fpRecArtifact = await agent.get(`/artifacts/${byType.get("FP_REC")!.id}/download`);
+    const mergedRoute = await agent.get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`,
+    );
+
+    expect(rawBoa.status).toBe(200);
+    expect(rawBoa.header["content-disposition"]).toContain('filename="boa-run.csv"');
+    expect(rawBoa.text).toContain("M30101");
+    expect(cleanedDealertrack.status).toBe(200);
+    expect(cleanedDealertrack.text).toContain(
+      "transaction_id,source_file_id,source_type,transaction_date,post_date,amount",
+    );
+    expect(cleanedDealertrack.text).toContain("floorplan");
+    expect(mergedArtifact.status).toBe(200);
+    expect(mergedArtifact.text).toContain("<th>HURST</th>");
+    expect(fpRecArtifact.status).toBe(200);
+    expect(fpRecArtifact.text).toContain("Floorplan Reconciliation - Hiley Mazda of Hurst");
+    expect(mergedRoute.status).toBe(200);
+    expect(mergedRoute.text).toBe(mergedArtifact.text);
+  });
+
   test("GET /reconciliation-runs/:id/merged-floorplan can use an explicit Acura override", async () => {
     const app = createApp(new MemoryTransactionRepository());
     const storeResponse = await request(app)

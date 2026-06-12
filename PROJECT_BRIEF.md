@@ -1,5 +1,7 @@
 # Dealer Group Accounting Automation Project
 
+> Historical status: this brief predates the Hiley pilot reset. Treat dashboard, month-end reporting, SaaS, and broad reconciliation concepts here as discovery context or future scope. The current pilot is the store/month floorplan artifact workflow documented in `README.md`.
+
 ## Current Product Thesis
 
 Build a reconciliation and close automation platform for auto dealer groups using Dealertrack and related systems.

@@ -1,5 +1,7 @@
 # Hurst FP Rec Output Fidelity Implementation Spec
 
+Status note: this is a Hurst-focused fidelity spec and historical implementation reference. The current primary FP REC export path is store-configured and uses merged floorplan semantics via `GET /reconciliation-runs/:id/fp-rec`; the legacy Hurst route remains as a compatibility alias. Use `docs/implementation/hiley-four-step-workflow-gap-analysis.md` and `docs/implementation/store-workflow-matrix.md` for the active multi-store pilot scope.
+
 Parent issue: #10 - Hurst FP Rec Output Fidelity
 
 Branch: `integration-cleanup-2026-06-10`

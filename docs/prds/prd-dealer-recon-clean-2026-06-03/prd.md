@@ -7,6 +7,8 @@ updated: 2026-06-03
 
 # Product Requirements Document: Dealer Recon
 
+> Historical status: this PRD predates the Hiley pilot reset. It contains broader SaaS, dashboard, analytics, review workflow, and month-end reporting concepts that are not part of the current pilot acceptance scope. The active product scope is the store/month four-step floorplan workflow documented in `README.md`, `docs/implementation/hiley-four-step-workflow-gap-analysis.md`, and `docs/implementation/store-workflow-matrix.md`.
+
 ## Executive Summary
 
 **Dealer Recon** is a production SaaS platform that automates floorplan reconciliation and month-end financial reporting for multi-rooftop automotive dealer groups. The system reduces manual reconciliation time from hours to minutes by automatically matching bank statements against dealership inventory records using VIN-anchored matching algorithms.

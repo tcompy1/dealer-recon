@@ -1,5 +1,7 @@
 # Error Handling Migration - Completion Summary
 
+Status note: this document records the 2026-06-03 error-handling migration. Route names have evolved since then; the generic FP REC route is now `/reconciliation-runs/:id/fp-rec`, while `/reconciliation-runs/:id/hurst-fp-rec` remains a legacy compatibility alias.
+
 ## Overview
 
 Successfully completed the migration of all remaining endpoints in [`server/src/app.ts`](../server/src/app.ts:1) to use the new standardized error handling pattern with [`asyncHandler`](../server/src/middleware/asyncHandler.ts:1) and [`HttpError`](../server/src/errors/HttpError.ts:1) classes.
