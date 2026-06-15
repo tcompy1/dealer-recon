@@ -1,3 +1,7 @@
+# Dealertrack Workflow Notes
+
+Status note: raw historical manual-cleaning notes. Use these only as source evidence for Hurst Dealertrack and FP REC behavior; the canonical v1 workflow is `docs/product/fp-rec-four-step-workflow.md`.
+
 - remove Straightline row
 - for this store we remove column 2110
 - sort, custom sort, add level, data has headers, sort largest to smalls, then sort vin6 A to Z

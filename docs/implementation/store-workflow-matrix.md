@@ -1,5 +1,7 @@
 # Store Workflow Matrix
 
+Status note: future-scope reference. Dealer-Recon v1 is Hurst Mazda only; use `docs/product/fp-rec-four-step-workflow.md` for the current product definition. This matrix preserves Hurst evidence and exploratory Acura/FW findings for later expansion planning.
+
 ## Purpose
 
 The pilot scope is the Hiley four-step floorplan workflow:

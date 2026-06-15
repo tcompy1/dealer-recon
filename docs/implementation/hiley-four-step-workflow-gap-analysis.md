@@ -1,5 +1,7 @@
 # Hiley Four-Step Workflow Status And Gap Analysis
 
+Status note: superseded for v1 product definition. This file describes a broader Hiley/multi-store pilot; Dealer-Recon v1 is the single-store Hurst Mazda FP REC pilot documented in `docs/product/fp-rec-four-step-workflow.md`. Keep this file as historical gap analysis only.
+
 ## Current Pilot Definition
 
 Dealer-Recon is currently a Hiley store/month floorplan reconciliation pilot.

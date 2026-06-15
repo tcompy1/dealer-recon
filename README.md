@@ -1,99 +1,92 @@
 # Dealer-Recon
 
-Dealer-Recon is currently a Hiley store/month floorplan reconciliation pilot.
+Dealer-Recon v1 automates the Hurst Mazda monthly floorplan reconciliation workflow. The product takes one BOA source file and one Dealertrack source file, cleans and reconciles them, and produces the Hurst FP REC export as the output of record.
 
-The active product is not a generic reconciliation SaaS platform, dashboard analytics product, productivity tracker, triage queue, or consolidated multi-store reporting suite. Those surfaces may remain in code as advanced or future-scope capabilities, but the pilot path is the four-step artifact workflow below.
+The dashboard exists to guide that workflow. It is not the v1 product goal, and dashboard analytics, trend metrics, reviewer workload, multi-store reporting, and full accounting-platform expansion are future scope.
 
-## Pilot Workflow
+## V1 Workflow
 
-Each reconciliation run is scoped to one store and one accounting month.
+One run represents one Hurst Mazda accounting month.
 
-1. Upload the BOA file.
-2. Upload the Dealertrack file.
-3. Process reconciliation with the selected store's workflow configuration.
-4. Download the stored artifacts for that run:
-   - Merged Floorplan
-   - FP REC
-   - Raw BOA
-   - Raw Dealertrack
-   - Cleaned BOA
-   - Cleaned Dealertrack
+1. Upload BOA and Dealertrack source files.
+2. Clean and normalize inputs, including removed-row audit and VIN6 extraction.
+3. Run reconciliation and review exceptions.
+4. Generate and store the Hurst FP REC export.
 
-Every store/month run produces its own merged spreadsheet and its own FP REC. The pilot does not generate combined multi-store exports.
+See [docs/product/fp-rec-four-step-workflow.md](docs/product/fp-rec-four-step-workflow.md) for the canonical workflow.
 
-## Supported Stores
+## V1 Scope
 
-| Store | Dealertrack floorplan behavior | Output labels |
-| --- | --- | --- |
-| Hurst | Uses account `2100`; excludes `2110` where applicable. | `HURST` / `2100` |
-| Acura | Uses account `324`. | `ACURA` / `324` |
-| FW | Aggregates `2100 + 2101 + 2101S`; excludes `2110`; displays `2100`. | `FW` or `FORT WORTH` / `2100` |
+In scope:
 
-Remaining stores still require artifact analysis and store configuration before they are pilot-supported.
+- Hurst Mazda floorplan reconciliation.
+- BOA Dealer Billing Statement style input.
+- Dealertrack floorplan input for Hurst account `2100`, excluding `2110` where applicable.
+- VIN6 extraction from BOA VINs and Dealertrack descriptions.
+- Matching only when VIN6 and absolute amount both agree.
+- Reviewable exception output for BOA-only rows, Dealertrack-only rows, and VIN6 amount mismatches.
+- Stored raw, cleaned, merged, and FP REC artifacts for each run.
 
-## Current Capabilities
+Out of scope for v1:
 
-- Upload and parse BOA and Dealertrack source files for a store/month run.
-- Supported source formats include CSV, BOA HTML-as-XLS, Dealertrack SpreadsheetML/XML-style exports, HTML, and plain text MIME variants.
-- Native OOXML `.xlsx` upload is still unsupported; resubmit as CSV, HTML-as-XLS, or SpreadsheetML-style export.
-- Normalize raw source files into BOA and Dealertrack transaction datasets.
-- Apply store-configured Dealertrack amount-column behavior.
-- Generate a Merged Floorplan artifact from the same merged-row semantics used downstream.
-- Generate FP REC from store-configured merged artifact semantics.
-- Persist historical artifact records for raw uploads, cleaned datasets, merged spreadsheet, and FP REC.
-- Reopen historical runs and download stored artifacts.
-- Preserve the legacy Hurst FP REC route while preferring the generic FP REC route.
+- Multi-store operation.
+- Full accounting-platform reconciliation.
+- Generic analytics dashboards.
+- Reviewer productivity or workload reporting.
+- Direct Dealertrack, bank, GL, or OEM integrations.
+- Native OOXML `.xlsx` upload support unless separately implemented and tested.
+
+Some historical docs and code paths mention broader Hiley or multi-store work. Treat those as historical or future-scope context unless a current source-of-truth doc says otherwise.
+
+## Exception Rules
+
+- Matched rows are not listed in exception sections.
+- BOA-only rows map to `On statement-not on GL`.
+- Dealertrack-only rows map to `On schedule-not on statement`.
+- VIN6 amount mismatches must not be merged. They remain reviewable as one BOA-side exception line and one Dealertrack-side exception line.
+
+See [docs/implementation/exception-taxonomy.md](docs/implementation/exception-taxonomy.md).
+
+## Stored Artifacts
+
+Each completed run should store:
+
+- Raw BOA upload.
+- Raw Dealertrack upload.
+- Cleaned BOA CSV.
+- Cleaned Dealertrack CSV.
+- Merged Floorplan workbook.
+- Hurst FP REC workbook.
+
+Normal artifact downloads use stored records. Export routes can regenerate output for JSON/debug or fallback behavior when a stored artifact is absent.
+
+See [docs/implementation/reconciliation-artifacts.md](docs/implementation/reconciliation-artifacts.md).
 
 ## Primary API Endpoints
 
 The backend listens on `http://localhost:8000` in local Docker Compose.
 
-| Method | Endpoint | Purpose |
+| Method | Endpoint | V1 purpose |
 | --- | --- | --- |
 | `POST` | `/upload` | Upload one BOA or Dealertrack source file. |
-| `POST` | `/reconcile` | Process selected BOA and Dealertrack source files into one reconciliation run. |
+| `POST` | `/reconcile` | Create one reconciliation run from selected BOA and Dealertrack uploads. |
 | `GET` | `/reconciliation-runs` | List reconciliation runs. |
-| `GET` | `/reconciliation-runs/:id` | Read run detail. |
-| `GET` | `/reconciliation-runs/:id/merged-floorplan` | Download the run's Merged Floorplan artifact. |
-| `GET` | `/reconciliation-runs/:id/fp-rec` | Download the run's FP REC artifact. Preferred route. |
-| `GET` | `/reconciliation-runs/:id/hurst-fp-rec` | Legacy Hurst-compatible FP REC route. |
-| `GET` | `/reconciliation-runs/:id/artifacts` | List stored artifact metadata for the run. |
-| `GET` | `/artifacts/:artifactId/download` | Download one stored historical artifact. |
+| `GET` | `/reconciliation-runs/:id` | Read run detail and exceptions. |
+| `GET` | `/reconciliation-runs/:id/merged-floorplan` | Download the merged working artifact. |
+| `GET` | `/reconciliation-runs/:id/fp-rec` | Download the Hurst FP REC export. |
+| `GET` | `/reconciliation-runs/:id/artifacts` | List stored artifacts for a run. |
+| `GET` | `/artifacts/:artifactId/download` | Download one stored artifact. |
 
-Additional account, report, automation, analytics, and review endpoints may still exist, but they are not part of the current pilot acceptance path.
-
-## Architecture Overview
-
-```text
-Raw BOA + Dealertrack files
-        |
-        v
-Source-specific parsing and cleaning
-        |
-        v
-Store workflow configuration
-        |
-        v
-VIN6 + amount reconciliation
-        |
-        v
-Merged Floorplan artifact
-        |
-        v
-FP REC artifact
-        |
-        v
-Historical artifact storage and download
-```
+`GET /reconciliation-runs/:id/hurst-fp-rec` remains as a legacy compatibility alias.
 
 ## Local Development
 
-### Prerequisites
+Prerequisites:
 
-- Docker Desktop or compatible Docker runtime
-- Node.js 18+ if running packages outside Docker
+- Docker Desktop or compatible Docker runtime.
+- Node.js 18+ if running packages outside Docker.
 
-### Start The App
+Start the app:
 
 ```bash
 docker compose up --build
@@ -105,9 +98,7 @@ Local services:
 - Backend: `http://localhost:8000`
 - PostgreSQL: host port `5433`
 
-The backend runs migrations automatically during `docker compose up`.
-
-### Validation Commands
+Validation commands:
 
 ```bash
 docker compose exec backend npm run typecheck
@@ -115,22 +106,11 @@ docker compose exec backend npm test
 docker compose run --rm frontend npm run build
 ```
 
-Use `docker compose run --rm frontend npm run build` when the frontend dev service is not already running.
-
 ## Documentation Map
 
-- `docs/implementation/store-workflow-matrix.md` - store-specific workflow evidence for Hurst, Acura, and FW.
-- `docs/implementation/hiley-four-step-workflow-gap-analysis.md` - current pilot status and remaining gaps.
-- `docs/implementation/fp-rec-output-fidelity.md` - Hurst FP REC fidelity history and output expectations.
-- `docs/demo/hiley-demo-validation.md` - current demo walkthrough for the four-step workflow.
-- `docs/demo/workflow-assumptions.md` - assumptions still needing clerk validation.
-
-Historical PRDs and older project briefs may describe broader SaaS, dashboard, analytics, or reporting goals. Treat those as historical context unless explicitly pulled into the pilot roadmap.
-
-## Current Release Caveats
-
-- Native `.xlsx` uploads are not accepted yet.
-- Hurst, Acura, and FW are the only configured floorplan workflows.
-- Remaining stores need raw BOA, raw Dealertrack, merged workbook, and FP REC evidence before implementation.
-- Excel visual fidelity should continue to be checked against accepted clerk artifacts.
-- Dashboard, reporting, automation, and review workflow surfaces should stay de-emphasized until the store/month artifact workflow is fully trusted.
+- [PROJECT_BRIEF.md](PROJECT_BRIEF.md) - v1 scope, future scope, and product boundaries.
+- [docs/product/fp-rec-four-step-workflow.md](docs/product/fp-rec-four-step-workflow.md) - canonical Hurst workflow.
+- [docs/implementation/exception-taxonomy.md](docs/implementation/exception-taxonomy.md) - exception classifications and FP REC placement.
+- [docs/implementation/reconciliation-artifacts.md](docs/implementation/reconciliation-artifacts.md) - artifact persistence, downloads, and review risks.
+- [docs/operator/monthly-fp-rec-runbook.md](docs/operator/monthly-fp-rec-runbook.md) - monthly operator runbook.
+- [docs/implementation/documentation-audit.md](docs/implementation/documentation-audit.md) - documentation inventory, contradictions, and archival recommendations.

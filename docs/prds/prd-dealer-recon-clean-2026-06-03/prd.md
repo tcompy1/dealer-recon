@@ -7,7 +7,7 @@ updated: 2026-06-03
 
 # Product Requirements Document: Dealer Recon
 
-> Historical status: this PRD predates the Hiley pilot reset. It contains broader SaaS, dashboard, analytics, review workflow, and month-end reporting concepts that are not part of the current pilot acceptance scope. The active product scope is the store/month four-step floorplan workflow documented in `README.md`, `docs/implementation/hiley-four-step-workflow-gap-analysis.md`, and `docs/implementation/store-workflow-matrix.md`.
+> Historical status: this PRD predates the v1 Hurst FP REC scope. It contains broader SaaS, dashboard, analytics, review workflow, multi-store, and month-end reporting concepts that are not current v1 behavior. The active product scope is documented in `README.md`, `PROJECT_BRIEF.md`, and `docs/product/fp-rec-four-step-workflow.md`.
 
 ## Executive Summary
 

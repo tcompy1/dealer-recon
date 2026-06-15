@@ -1,4 +1,7 @@
 # Dealer-Recon Ground Truth Reverse Engineering Report
+
+Status note: Hurst reverse-engineering reference. This file preserves useful FEB26, MAR26, and APRIL26 Hurst FP REC evidence, but it is not the canonical v1 product source of truth. Use `docs/product/fp-rec-four-step-workflow.md` first.
+
 **Source:** Hiley Mazda of Hurst — FEB26, MAR26, APRIL26 manually reconciled workbooks  
 **Date:** 2026-06-03  
 **Purpose:** Reverse-engineer the clerk's reconciliation methodology to define the exact business logic dealer-recon must reproduce and generate golden validation fixtures.

@@ -1,6 +1,6 @@
 # Hurst FP Rec Export Verification
 
-Status note: this is a Hurst fixture/CLI verification workflow. The primary application export route is now the generic `GET /reconciliation-runs/:id/fp-rec`; `GET /reconciliation-runs/:id/hurst-fp-rec` remains a legacy compatibility alias.
+Status note: Hurst fixture/CLI verification reference. It supports FP REC fidelity checks, but the canonical v1 product source of truth is `docs/product/fp-rec-four-step-workflow.md`. The primary application export route is `GET /reconciliation-runs/:id/fp-rec`; `GET /reconciliation-runs/:id/hurst-fp-rec` remains a legacy compatibility alias.
 
 Use this workflow to generate FEB/MAR/APR Hurst FP Rec exports from the accepted golden fixture and visually compare them with the clerk workbook shape.
 

@@ -1,5 +1,7 @@
 # Hiley Demo Notes
 
+Status note: archive candidate. These notes include stale dashboard metric, trend delta, and reviewer workload ideas that should not center v1. Use `docs/product/fp-rec-four-step-workflow.md` for current scope.
+
 ## web app demo
 
 can we make run id mm/yy?

@@ -1,5 +1,7 @@
 # Error Handling and Validation Improvements
 
+Status note: historical implementation reference. This file documents an error-handling migration and is not product scope guidance for v1.
+
 ## Summary
 
 This document describes the comprehensive error handling and validation improvements made to the Dealer Recon API.

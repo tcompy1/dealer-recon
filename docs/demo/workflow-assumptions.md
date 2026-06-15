@@ -1,5 +1,7 @@
 # Workflow Assumptions
 
+Status note: needs revision. These assumptions were captured for a broader Hiley store/month pilot. For v1, use the Hurst-only workflow in `docs/product/fp-rec-four-step-workflow.md`.
+
 ## Purpose
 
 These are the current assumptions behind the Hiley store/month floorplan pilot. Validate or invalidate them with Tara and the office users as more store artifacts are reviewed.

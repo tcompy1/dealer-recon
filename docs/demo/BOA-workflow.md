@@ -1,3 +1,7 @@
+# BOA Workflow Notes
+
+Status note: raw historical manual-cleaning notes. Use these only as source evidence for Hurst BOA cleaning behavior; the canonical v1 workflow is `docs/product/fp-rec-four-step-workflow.md`.
+
 Steps for cleaning BOA Floorplan Export
 
 - Remove Headers

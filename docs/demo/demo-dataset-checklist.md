@@ -1,5 +1,7 @@
 # Demo Dataset Checklist
 
+Status note: stale for v1 product scope. This checklist includes Acura and FW demo assumptions; Dealer-Recon v1 is the single-store Hurst Mazda FP REC pilot documented in `docs/product/fp-rec-four-step-workflow.md`.
+
 Use this checklist before a Hiley pilot demo to verify the selected store/month files and artifact outputs.
 
 ## Supported Demo Stores

@@ -1,5 +1,7 @@
 # Hiley Demo Validation Guide
 
+Status note: stale for v1 product scope. This guide describes a broader Hiley/multi-store demo path; Dealer-Recon v1 is the single-store Hurst Mazda FP REC pilot documented in `docs/product/fp-rec-four-step-workflow.md`.
+
 ## Purpose
 
 Use this guide to validate the current Hiley store/month floorplan pilot. The demo should stay centered on the four-step artifact workflow, not dashboards, productivity metrics, review queues, or consolidated reporting.
