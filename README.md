@@ -112,5 +112,6 @@ docker compose run --rm frontend npm run build
 - [docs/product/fp-rec-four-step-workflow.md](docs/product/fp-rec-four-step-workflow.md) - canonical Hurst workflow.
 - [docs/implementation/exception-taxonomy.md](docs/implementation/exception-taxonomy.md) - exception classifications and FP REC placement.
 - [docs/implementation/reconciliation-artifacts.md](docs/implementation/reconciliation-artifacts.md) - artifact persistence, downloads, and review risks.
+- [docs/reviews/v1-security-code-review-packet.md](docs/reviews/v1-security-code-review-packet.md) - v1 security and code review packet, readiness checklist, risks, and validation evidence.
 - [docs/operator/monthly-fp-rec-runbook.md](docs/operator/monthly-fp-rec-runbook.md) - monthly operator runbook.
 - [docs/implementation/documentation-audit.md](docs/implementation/documentation-audit.md) - documentation inventory, contradictions, and archival recommendations.
