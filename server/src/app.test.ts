@@ -357,8 +357,47 @@ describe("app", () => {
       role: "accounting_user",
       store_ids: [1],
     });
-    const nullArtifact = await repository.createReconciliationArtifact(1, {
-      reconciliation_run_id: 999,
+    const nullBoaImport = await repository.createSourceFileWithTransactions(1, {
+      dealership_store_id: 1,
+      source_type: "boa",
+      original_filename: "legacy-null-store-boa.csv",
+      stored_filename: "legacy-null-store-boa.csv",
+      file_hash: "legacy-null-store-boa",
+      row_count: 0,
+      validation_error_count: 0,
+    }, []);
+    const nullDealertrackImport = await repository.createSourceFileWithTransactions(1, {
+      dealership_store_id: 1,
+      source_type: "dealertrack",
+      original_filename: "legacy-null-store-dealertrack.csv",
+      stored_filename: "legacy-null-store-dealertrack.csv",
+      file_hash: "legacy-null-store-dealertrack",
+      row_count: 0,
+      validation_error_count: 0,
+    }, []);
+    nullBoaImport.sourceFile.dealership_store_id = null;
+    nullDealertrackImport.sourceFile.dealership_store_id = null;
+    const nullRun = await repository.createReconciliationRun({
+      dealership_id: 1,
+      dealership_store_id: 1,
+      boa_source_file_id: nullBoaImport.sourceFile.id,
+      dealertrack_source_file_id: nullDealertrackImport.sourceFile.id,
+      result: {
+        matched_count: 0,
+        exception_count: 0,
+        duplicate_count: 0,
+        match_groups: [],
+        exceptions: [],
+        vin_presence_diagnostics: {
+          extracted_vin_sets: { boa: [], dealertrack: [] },
+          vin_presence_exceptions: { dealertrack_not_in_boa: [], boa_not_in_dealertrack: [] },
+          transaction_unmatched_shared_vins: [],
+        },
+      },
+    });
+    nullRun.dealership_store_id = null;
+    const nullRunArtifact = await repository.createReconciliationArtifact(1, {
+      reconciliation_run_id: nullRun.id,
       store_id: null,
       accounting_month: "2025-09",
       uploaded_by: null,
@@ -426,7 +465,11 @@ describe("app", () => {
     const clerkAgent = request.agent(app);
     await clerkAgent.post("/login").send({ email: "store1@example.com", password: "correct-password" });
 
-    const artifactResponse = await clerkAgent.get(`/artifacts/${nullArtifact.id}/download`);
+    const filesResponse = await clerkAgent.get("/source-files");
+    const runsResponse = await clerkAgent.get("/reconciliation-runs");
+    const runResponse = await clerkAgent.get(`/reconciliation-runs/${nullRun.id}`);
+    const runArtifactsResponse = await clerkAgent.get(`/reconciliation-runs/${nullRun.id}/artifacts`);
+    const artifactResponse = await clerkAgent.get(`/artifacts/${nullRunArtifact.id}/download`);
     const ingestionResponse = await clerkAgent.get("/automation/ingestion-events");
     const operationalResponse = await clerkAgent.get("/automation/events");
     const forbiddenStoreIngestionResponse = await clerkAgent.get("/automation/ingestion-events").query({ store_id: 2 });
@@ -436,6 +479,16 @@ describe("app", () => {
       end_date: "2025-09-30",
     });
 
+    expect(filesResponse.status).toBe(200);
+    expect(filesResponse.body).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ source_file_id: nullBoaImport.sourceFile.id })]),
+    );
+    expect(runsResponse.status).toBe(200);
+    expect(runsResponse.body).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ reconciliation_run_id: nullRun.id })]),
+    );
+    expect(runResponse.status).toBe(403);
+    expect(runArtifactsResponse.status).toBe(403);
     expect(artifactResponse.status).toBe(403);
     expect(ingestionResponse.status).toBe(200);
     expect(ingestionResponse.body.map((event: { message: string }) => event.message)).toEqual([
@@ -454,13 +507,29 @@ describe("app", () => {
 
     const adminAgent = request.agent(app);
     await adminAgent.post("/login").send({ email: "admin@example.com", password: "correct-password" });
-    const adminArtifactResponse = await adminAgent.get(`/artifacts/${nullArtifact.id}/download`);
+    const adminFilesResponse = await adminAgent.get("/source-files");
+    const adminRunsResponse = await adminAgent.get("/reconciliation-runs");
+    const adminRunResponse = await adminAgent.get(`/reconciliation-runs/${nullRun.id}`);
+    const adminRunArtifactsResponse = await adminAgent.get(`/reconciliation-runs/${nullRun.id}/artifacts`);
+    const adminArtifactResponse = await adminAgent.get(`/artifacts/${nullRunArtifact.id}/download`);
     const adminIngestionResponse = await adminAgent.get("/automation/ingestion-events");
     const adminReportResponse = await adminAgent.get("/reports/month-end").query({
       start_date: "2025-09-01",
       end_date: "2025-09-30",
     });
 
+    expect(adminFilesResponse.body).toEqual(
+      expect.arrayContaining([expect.objectContaining({ source_file_id: nullBoaImport.sourceFile.id })]),
+    );
+    expect(adminRunsResponse.body).toEqual(
+      expect.arrayContaining([expect.objectContaining({ reconciliation_run_id: nullRun.id })]),
+    );
+    expect(adminRunResponse.status).toBe(200);
+    expect(adminRunResponse.body.reconciliation_run_id).toBe(nullRun.id);
+    expect(adminRunArtifactsResponse.status).toBe(200);
+    expect(adminRunArtifactsResponse.body).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: nullRunArtifact.id })]),
+    );
     expect(adminArtifactResponse.status).toBe(200);
     expect(adminIngestionResponse.body.map((event: { message: string }) => event.message)).toEqual(
       expect.arrayContaining(["null-store ingestion", "store-one ingestion", "store-two ingestion"]),
