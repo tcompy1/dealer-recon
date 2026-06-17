@@ -334,6 +334,31 @@ describe("merged floorplan presenter", () => {
     expect(toMergedFloorplanFilename(workbook)).toBe("hurst-merged-floorplan-04-30-26.xls");
   });
 
+  test("neutralizes formula-leading source text in HTML-as-XLS cells", () => {
+    const workbook = buildMergedFloorplanWorkbook({
+      storeConfig: STORE_WORKFLOW_CONFIGS.hurst,
+      storeName: "Hiley Mazda of Hurst",
+      periodDate: "04-30-26",
+      boaRecords: [boa(101, 10_000, "JM3KFBAL0S0764873", "=SUM(1+1)")],
+      dealertrackRecords: [
+        dealertrack(
+          201,
+          10_000,
+          "JM3KFBAL0S0764873",
+          "@DT DESCRIPTION",
+          "+CTRL",
+          STORE_WORKFLOW_CONFIGS.hurst.dealertrackAccountColumn,
+        ),
+      ],
+    });
+    const flattened = extractTableRows(toMergedFloorplanXlsHtml(workbook)).flat().join(" ");
+
+    expect(flattened).toContain("'=SUM(1+1)");
+    expect(flattened).toContain("'@DT DESCRIPTION");
+    expect(flattened).toContain("'+CTRL");
+    expect(flattened).toContain("100.00");
+  });
+
   test("uses Acura merged headers from store config without hardcoded Hurst account labels", () => {
     const workbook = contractWorkbook(STORE_WORKFLOW_CONFIGS.acura);
     const html = toMergedFloorplanXlsHtml(workbook);

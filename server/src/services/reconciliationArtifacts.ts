@@ -1,4 +1,5 @@
 import { formatCents } from "../domain/money.js";
+import { neutralizeSpreadsheetText } from "../spreadsheetText.js";
 import type {
   NewReconciliationArtifact,
   ReconciliationArtifactMetadata,
@@ -17,6 +18,9 @@ import {
   toHurstFpRecFilename,
   toHurstFpRecXlsHtml,
 } from "../presenters/hurstFpRec.js";
+
+type CsvScalar = string | number | null;
+type CsvCell = CsvScalar | { value: CsvScalar; preservePlainNumericText?: boolean };
 
 export async function persistReconciliationRunArtifacts({
   repository,
@@ -187,7 +191,7 @@ function toCleanedTransactionsCsv(transactions: Transaction[]): string {
     transaction.source_type,
     transaction.transaction_date,
     transaction.post_date,
-    formatCents(transaction.amount_cents),
+    { value: formatCents(transaction.amount_cents), preservePlainNumericText: true },
     transaction.amount_cents,
     transaction.reference_number,
     transaction.description,
@@ -208,13 +212,23 @@ function resolveAccountingMonth(transactions: Transaction[], fallbackIso: string
   return (dates.at(-1) ?? fallbackIso).slice(0, 7);
 }
 
-function toCsvCell(value: string | number | null): string {
+function toCsvCell(cell: CsvCell): string {
+  const value = isCsvCellOptions(cell) ? cell.value : cell;
+  const preservePlainNumericText = isCsvCellOptions(cell)
+    ? cell.preservePlainNumericText
+    : false;
   if (value === null) {
     return "";
   }
-  const text = String(value);
+  const text = typeof value === "number"
+    ? String(value)
+    : neutralizeSpreadsheetText(value, { preservePlainNumericText });
   if (/[",\n\r]/.test(text)) {
     return `"${text.replace(/"/g, '""')}"`;
   }
   return text;
+}
+
+function isCsvCellOptions(cell: CsvCell): cell is { value: CsvScalar; preservePlainNumericText?: boolean } {
+  return typeof cell === "object" && cell !== null && "value" in cell;
 }

@@ -6,6 +6,7 @@ import {
   type StoreWorkflowConfig,
 } from "../config/storeWorkflowConfig.js";
 import type { MergedFloorplanWorkbook, MergedFloorplanRow } from "./mergedFloorplan.js";
+import { neutralizeSpreadsheetText } from "../spreadsheetText.js";
 
 export type HurstFpRecRowClassification = "matched" | "boa_only" | "dealertrack_only";
 
@@ -529,7 +530,7 @@ function workpaperCellHtml(cell: WorkpaperCell): string {
   const numberAttr = cell.amountCents !== undefined ? " x:num" : "";
   const value = cell.amountCents !== undefined
     ? formatWorkpaperNumberCents(cell.amountCents)
-    : cell.text ?? "";
+    : neutralizeSpreadsheetText(cell.text ?? "");
   return `<td${classAttr}${colspanAttr}${numberAttr}${formulaAttr}>${escapeHtml(value)}</td>`;
 }
 

@@ -2,6 +2,10 @@ import type {
   MonthEndReport,
   ReconciliationRunDetail,
 } from "../domain/types.js";
+import { neutralizeSpreadsheetText } from "../spreadsheetText.js";
+
+type CsvScalar = string | number | null;
+type CsvCell = CsvScalar | { value: CsvScalar; preservePlainNumericText?: boolean };
 
 export function toExceptionsCsv(detail: ReconciliationRunDetail): string {
   const headers = [
@@ -45,7 +49,7 @@ export function toExceptionsCsv(detail: ReconciliationRunDetail): string {
       transaction.id,
       transaction.transaction_date,
       transaction.post_date,
-      transaction.amount,
+      { value: transaction.amount, preservePlainNumericText: true },
       transaction.amount_cents,
       transaction.reference_number,
       transaction.stock_number,
@@ -110,9 +114,9 @@ export function toMonthEndReportCsv(report: MonthEndReport): string {
   const rows = report.account_summaries.map((account) => [
     account.account_identifier,
     account.account_type,
-    sourceTotalAmount(account.source_totals, "boa"),
-    sourceTotalAmount(account.source_totals, "dealertrack"),
-    account.net_difference_amount,
+    { value: sourceTotalAmount(account.source_totals, "boa"), preservePlainNumericText: true },
+    { value: sourceTotalAmount(account.source_totals, "dealertrack"), preservePlainNumericText: true },
+    { value: account.net_difference_amount, preservePlainNumericText: true },
     account.unresolved_exception_count,
     account.resolved_exception_count,
     account.ignored_exception_count,
@@ -128,13 +132,23 @@ function sourceTotalAmount(
   return sourceTotals.find((total) => total.source_type === sourceType)?.amount ?? "0.00";
 }
 
-function toCsvCell(value: string | number | null): string {
+function toCsvCell(cell: CsvCell): string {
+  const value = isCsvCellOptions(cell) ? cell.value : cell;
+  const preservePlainNumericText = isCsvCellOptions(cell)
+    ? cell.preservePlainNumericText
+    : false;
   if (value === null) {
     return "";
   }
-  const text = String(value);
+  const text = typeof value === "number"
+    ? String(value)
+    : neutralizeSpreadsheetText(value, { preservePlainNumericText });
   if (/[",\n\r]/.test(text)) {
     return `"${text.replace(/"/g, '""')}"`;
   }
   return text;
+}
+
+function isCsvCellOptions(cell: CsvCell): cell is { value: CsvScalar; preservePlainNumericText?: boolean } {
+  return typeof cell === "object" && cell !== null && "value" in cell;
 }

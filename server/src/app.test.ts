@@ -19,6 +19,17 @@ const BOA_CSV_HEADER =
 
 const DEALERTRACK_CSV_HEADER = "Control,Description,2100,2110";
 
+function createFallbackApp(
+  repository: Parameters<typeof createApp>[0] = new MemoryTransactionRepository(),
+  dealershipId = 1,
+  readinessCheck: () => Promise<void> = async () => undefined,
+) {
+  return createApp(repository, [], dealershipId, readinessCheck, {
+    nodeEnv: "test",
+    allowDevDealershipFallback: true,
+  });
+}
+
 function boaUploadRow(
   stockNumber: string,
   vin: string,
@@ -169,6 +180,59 @@ describe("app", () => {
     const response = await request(app).get("/source-files");
 
     expect(response.status).toBe(401);
+  });
+
+  test("protected routes require authentication when fallback is not explicitly enabled", async () => {
+    const app = createApp(new MemoryTransactionRepository());
+
+    const response = await request(app).get("/source-files");
+
+    expect(response.status).toBe(401);
+  });
+
+  test("explicit local fallback opt-in grants the test platform admin user", async () => {
+    const app = createFallbackApp();
+
+    const response = await request(app).get("/me");
+
+    expect(response.status).toBe(200);
+    expect(response.body.user).toMatchObject({
+      email: "local-dev-fallback@dealer-recon.local",
+      role: "platform_admin",
+    });
+  });
+
+  test("production and staging app construction fail closed without auth", () => {
+    expect(() =>
+      createApp(
+        new MemoryTransactionRepository(),
+        ["https://app.example.com"],
+        1,
+        async () => undefined,
+        { nodeEnv: "production" },
+      ),
+    ).toThrow("Authentication repository is required");
+    expect(() =>
+      createApp(
+        new MemoryTransactionRepository(),
+        ["https://app.example.com"],
+        1,
+        async () => undefined,
+        { nodeEnv: "staging" },
+      ),
+    ).toThrow("Authentication repository is required");
+  });
+
+  test("fallback auth cannot be enabled outside local environments", () => {
+    expect(() =>
+      createApp(
+        new MemoryTransactionRepository(),
+        ["https://app.example.com"],
+        1,
+        async () => undefined,
+        { nodeEnv: "production", allowDevDealershipFallback: true },
+      ),
+    ).toThrow("Development auth fallback is not allowed");
   });
 
   test("accounting users are scoped to assigned stores", async () => {
@@ -363,7 +427,7 @@ describe("app", () => {
   });
 
   test("GET /health returns ok", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
 
     const response = await request(app).get("/health");
 
@@ -372,7 +436,7 @@ describe("app", () => {
   });
 
   test("GET /ready returns ready when dependencies are available", async () => {
-    const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined);
+    const app = createFallbackApp(new MemoryTransactionRepository(), 1, async () => undefined);
 
     const response = await request(app).get("/ready").set("X-Request-ID", "test-request-id");
 
@@ -382,7 +446,7 @@ describe("app", () => {
   });
 
   test("GET /ready returns 503 when dependencies are unavailable", async () => {
-    const app = createApp(new MemoryTransactionRepository(), [], 1, async () => {
+    const app = createFallbackApp(new MemoryTransactionRepository(), 1, async () => {
       throw new Error("database unavailable");
     });
 
@@ -394,7 +458,7 @@ describe("app", () => {
   });
 
   test("POST /upload accepts CSV upload", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
 
     const response = await request(app)
       .post("/upload")
@@ -421,7 +485,7 @@ describe("app", () => {
   });
 
   test("POST /upload returns preprocessing diagnostics summary for BOA HTML XLS uploads", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const buffer = await loadFixture("sample-data/synthetic/boa_billing_statement_sample.xls.html");
 
     const response = await request(app)
@@ -475,7 +539,7 @@ describe("app", () => {
   });
 
   test("POST /upload returns preprocessing diagnostics summary for Dealertrack SpreadsheetML uploads", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const buffer = await loadFixture("sample-data/synthetic/dealertrack_floorplan_sample.xml");
 
     const response = await request(app)
@@ -491,8 +555,33 @@ describe("app", () => {
     });
   });
 
+  test("POST /upload fails safely when Dealertrack SpreadsheetML ss:Index exceeds the column guard", async () => {
+    const app = createFallbackApp();
+    const xml = `<?xml version="1.0"?>
+<Workbook xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+<Worksheet><Table>
+<Row><Cell><Data ss:Type="String">Control</Data></Cell><Cell><Data ss:Type="String">Description</Data></Cell></Row>
+<Row><Cell ss:Index="1000000000"><Data ss:Type="String">boom</Data></Cell></Row>
+</Table></Worksheet></Workbook>`;
+
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "dealertrack")
+      .attach("file", Buffer.from(xml), "dealertrack-hostile.xml");
+
+    expect(response.status).toBe(422);
+    expect(response.body.error.message).toContain("maximum supported column count");
+    expect(response.body.error.details.preprocessing).toMatchObject({
+      detected_format: "xml_spreadsheet",
+      parser_route: "dealertrack_xml",
+      legacy_csv_path: false,
+      unsupported_reason: expect.stringContaining("maximum supported column count"),
+      summary: null,
+    });
+  });
+
   test("POST /upload routes BOA CSV uploads through source-specific preprocessing (not legacy)", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const response = await request(app)
       .post("/upload")
       .field("source_type", "boa")
@@ -513,7 +602,7 @@ describe("app", () => {
   });
 
   test("POST /upload routes Dealertrack CSV uploads through source-specific preprocessing (not legacy)", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const response = await request(app)
       .post("/upload")
       .field("source_type", "dealertrack")
@@ -534,7 +623,7 @@ describe("app", () => {
   });
 
   test("POST /upload returns 422 with preprocessing metadata for true .xlsx OOXML uploads", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     // OOXML zip signature ("PK\x03\x04"). The detector only sniffs the
     // leading bytes; the rest of the buffer can be opaque since the native
     // xlsx parser is not implemented yet.
@@ -571,7 +660,7 @@ describe("app", () => {
     // Dealertrack SpreadsheetML XML uploaded under source_type=boa; the
     // router resolves to `unsupported` because xml_spreadsheet only routes
     // for source_type=dealertrack.
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const buffer = await loadFixture("sample-data/synthetic/dealertrack_floorplan_sample.xml");
 
     const response = await request(app)
@@ -597,7 +686,7 @@ describe("app", () => {
     // A binary blob with no known signature and no recognizable leading
     // text; the detector classifies it as `unknown` and the router falls
     // through to `unsupported`.
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const opaqueBytes = Buffer.from([
       0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
       0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
@@ -622,7 +711,7 @@ describe("app", () => {
   });
 
   test("POST /upload rejects invalid source_type", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
 
     const response = await request(app)
       .post("/upload")
@@ -633,7 +722,7 @@ describe("app", () => {
   });
 
   test("POST /upload requires file", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
 
     const response = await request(app).post("/upload").field("source_type", "bank");
 
@@ -641,7 +730,7 @@ describe("app", () => {
   });
 
   test("POST /upload reuses duplicate file contents for the same source type", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const csv = [
       "transaction_date,post_date,amount,reference_number,description,account,stock_number,vin",
       "2026-04-30,2026-05-01,100.00,DEP-1001,Daily deposit,1000,STK123,1HGCM82633A004352",
@@ -672,7 +761,7 @@ describe("app", () => {
 
   test("POST /upload reprocesses unhealthy duplicate Dealertrack source files", async () => {
     const repository = new MemoryTransactionRepository();
-    const app = createApp(repository);
+    const app = createFallbackApp(repository);
     const dealertrackFixture = await loadFixture(
       "server/src/services/__fixtures__/DT HURST APRIL (1).csv",
     );
@@ -742,8 +831,8 @@ describe("app", () => {
 
   test("uploads are scoped by dealership and attach dealership_id", async () => {
     const repository = new MemoryTransactionRepository();
-    const firstDealershipApp = createApp(repository, [], 1);
-    const secondDealershipApp = createApp(repository, [], 2);
+    const firstDealershipApp = createFallbackApp(repository, 1);
+    const secondDealershipApp = createFallbackApp(repository, 2);
     const csv = [
       "transaction_date,post_date,amount,reference_number,description,account,stock_number,vin",
       "2026-04-30,2026-05-01,100.00,DEP-1001,Daily deposit,1000,STK123,1HGCM82633A004352",
@@ -779,7 +868,7 @@ describe("app", () => {
   });
 
   test("POST /upload rejects non-CSV files", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
 
     const response = await request(app)
       .post("/upload")
@@ -790,7 +879,7 @@ describe("app", () => {
   });
 
   test("POST /upload rejects files over the CSV row limit", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const csv = [
       "transaction_date,post_date,amount,reference_number,description,account,stock_number,vin",
       ...Array.from(
@@ -809,7 +898,7 @@ describe("app", () => {
   });
 
   test("GET /source-files lists uploaded source files", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     await uploadCsv(
       app,
       "bank",
@@ -848,7 +937,7 @@ describe("app", () => {
   });
 
   test("GET /source-files supports source_type filter", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     await uploadCsv(
       app,
       "boa",
@@ -873,7 +962,7 @@ describe("app", () => {
   });
 
   test("stores can be created and source files/runs filter by store", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const storesResponse = await request(app).get("/stores");
     expect(storesResponse.status).toBe(200);
     expect(storesResponse.body).toEqual(
@@ -921,7 +1010,7 @@ describe("app", () => {
   });
 
   test("scheduled jobs can auto-run reconciliation when expected files arrive", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
 
     const jobResponse = await request(app).post("/automation/scheduled-jobs").send({
       dealership_store_id: 1,
@@ -966,7 +1055,7 @@ describe("app", () => {
   });
 
   test("scheduled due jobs run and missing expected files generate alerts", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     await uploadCsv(app, "boa", boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"), "due-boa.csv", 1);
     await uploadCsv(app, "dealertrack", dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"), "due-dt.csv", 1);
     await request(app).post("/automation/scheduled-jobs").send({
@@ -1003,7 +1092,7 @@ describe("app", () => {
   });
 
   test("duplicate uploads reuse the existing source file and create a warning event", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const csv = boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101");
     const firstUpload = await uploadCsv(app, "boa", csv, "duplicate-boa.csv", 1);
 
@@ -1046,7 +1135,7 @@ describe("app", () => {
   });
 
   test("automation status and metrics expose stale store and auto/manual rates", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     await createReconciliation(app);
 
     const statusResponse = await request(app).get("/automation/status");
@@ -1075,7 +1164,7 @@ describe("app", () => {
   });
 
   test("POST /reconcile requires selected source file IDs", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
 
     const response = await request(app).post("/reconcile").send({});
 
@@ -1084,7 +1173,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs lists persisted runs", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
 
     const response = await request(app).get("/reconciliation-runs");
@@ -1105,7 +1194,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id returns run details", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
 
     const response = await request(app).get(
@@ -1165,7 +1254,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id/snapshot returns immutable normalized inputs", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
 
     const response = await request(app).get(
@@ -1203,7 +1292,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id/replay uses persisted snapshots and reports unchanged results", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
 
     const response = await request(app).get(
@@ -1232,7 +1321,7 @@ describe("app", () => {
 
   test("snapshot records are returned as immutable copies", async () => {
     const repository = new MemoryTransactionRepository();
-    const app = createApp(repository);
+    const app = createFallbackApp(repository);
     const reconciliation = await createReconciliation(app);
     const firstSnapshot = await repository.getReconciliationRunSnapshot(
       1,
@@ -1252,7 +1341,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id returns 404 for missing run", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
 
     const response = await request(app).get("/reconciliation-runs/999999");
 
@@ -1260,7 +1349,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id filters exceptions", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
 
     const response = await request(app)
@@ -1285,7 +1374,7 @@ describe("app", () => {
   });
 
   test("PATCH /reconciliation-runs/:id/exceptions/:exception_id updates exception review state", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
     const detailResponse = await request(app).get(
       `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
@@ -1338,7 +1427,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id filters exceptions by review status", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
     const detailResponse = await request(app).get(
       `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
@@ -1368,7 +1457,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id filters exceptions by workflow review fields", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
     const detailResponse = await request(app).get(
       `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
@@ -1404,7 +1493,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id/analytics compares current run with previous run", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const previous = await createReconciliation(app);
     const current = await createReconciliationWithRows(app, {
       boaCsv: boaUploadCsvMulti([
@@ -1450,7 +1539,7 @@ describe("app", () => {
   });
 
   test("GET /dealer-groups/analytics aggregates store-level trends", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const storesResponse = await request(app).get("/stores");
     const hurstStoreId = (storesResponse.body as Array<{ id: number; name: string }>).find(
       (store) => store.name === "Hiley Mazda of Hurst",
@@ -1479,7 +1568,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id/exceptions.csv exports filtered exceptions", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
 
     const response = await request(app)
@@ -1525,7 +1614,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id/merged-floorplan resolves Hurst config from the run store", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
 
     const response = await request(app).get(
@@ -1630,8 +1719,44 @@ describe("app", () => {
     expect(mergedRoute.text).toBe(mergedArtifact.text);
   });
 
+  test("formula-leading source text is inert in exception and cleaned CSV artifact downloads", async () => {
+    const app = createFallbackApp();
+    const reconciliation = await createReconciliationWithRows(app, {
+      boaCsv: boaUploadCsv("M80101", "1HGCM82633A004352", "$801.00", "80101"),
+      dealertrackCsv: [
+        DEALERTRACK_CSV_HEADER,
+        'M80202,"=SUM(1+1) JM3KFBAL0S0764873",-802,0',
+      ].join("\n"),
+      boaFilename: "boa-formula.csv",
+      dealertrackFilename: "dealertrack-formula.csv",
+      storeId: 1,
+    });
+
+    const exceptionsCsv = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}/exceptions.csv`,
+    );
+    const artifactsResponse = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}/artifacts`,
+    );
+    const cleanedDealertrack = (artifactsResponse.body as Array<{ id: number; artifact_type: string }>).find(
+      (artifact) => artifact.artifact_type === "CLEANED_DEALERTRACK",
+    );
+    const cleanedCsv = await request(app).get(`/artifacts/${cleanedDealertrack!.id}/download`);
+
+    expect(exceptionsCsv.status).toBe(200);
+    expect(exceptionsCsv.text).toContain(",-802.00,-80200,");
+    expect(exceptionsCsv.text).toContain("'=SUM(1+1) JM3KFBAL0S0764873");
+    expect(exceptionsCsv.text).not.toContain(",'-802.00,-80200");
+    expect(artifactsResponse.status).toBe(200);
+    expect(cleanedDealertrack).toBeDefined();
+    expect(cleanedCsv.status).toBe(200);
+    expect(cleanedCsv.text).toContain(",-802.00,-80200,");
+    expect(cleanedCsv.text).toContain("'=SUM(1+1) JM3KFBAL0S0764873");
+    expect(cleanedCsv.text).not.toContain(",'-802.00,-80200");
+  });
+
   test("GET /reconciliation-runs/:id/merged-floorplan can use an explicit Acura override", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const storeResponse = await request(app)
       .post("/stores")
       .send({ name: "Hiley Acura" });
@@ -1685,7 +1810,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id/merged-floorplan resolves Acura config and 324 preprocessing from the run store", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const storeResponse = await request(app)
       .post("/stores")
       .send({ name: "Hiley Acura" });
@@ -1770,7 +1895,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id/merged-floorplan resolves FW config from raw upload flow", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const storeResponse = await request(app)
       .post("/stores")
       .send({ name: "Hiley Cars Fort Worth" });
@@ -1878,7 +2003,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id/merged-floorplan validates unconfigured stores and bad overrides", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const storeResponse = await request(app)
       .post("/stores")
       .send({ name: "Hiley Mazda of Test" });
@@ -1942,7 +2067,7 @@ describe("app", () => {
   });
 
   test("merged floorplan export keeps Dealertrack account_identifier grouped as floorplan", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
 
     const exportResponse = await request(app)
@@ -1975,7 +2100,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id/exceptions.csv excludes weak amount-only duplicate candidates", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const boaUpload = await uploadCsv(
       app,
       "boa",
@@ -2009,7 +2134,7 @@ describe("app", () => {
   });
 
   test("GET /reconciliation-runs/:id/exceptions.csv includes Dealertrack VIN from Hiley export", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const boaUpload = await uploadCsv(
       app,
       "boa",
@@ -2043,7 +2168,7 @@ describe("app", () => {
   });
 
   test("GET /accounts/summary aggregates integer cents and unresolved exceptions", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     await createReconciliation(app);
 
     const response = await request(app).get("/accounts/summary");
@@ -2073,7 +2198,7 @@ describe("app", () => {
   });
 
   test("GET /accounts/:account_identifier returns account detail from persisted records", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
 
     const response = await request(app).get("/accounts/floorplan");
@@ -2111,7 +2236,7 @@ describe("app", () => {
   });
 
   test("account unresolved exception counts change when reviews are resolved", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
     const detailResponse = await request(app).get(
       `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
@@ -2134,8 +2259,8 @@ describe("app", () => {
 
   test("account endpoints respect dealership scoping", async () => {
     const repository = new MemoryTransactionRepository();
-    const firstDealershipApp = createApp(repository, [], 1);
-    const secondDealershipApp = createApp(repository, [], 2);
+    const firstDealershipApp = createFallbackApp(repository, 1);
+    const secondDealershipApp = createFallbackApp(repository, 2);
 
     await uploadCsv(
       firstDealershipApp,
@@ -2170,7 +2295,7 @@ describe("app", () => {
   });
 
   test("GET /reports/month-end filters account totals by reporting period", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     await uploadCsv(
       app,
       "bank",
@@ -2214,7 +2339,7 @@ describe("app", () => {
   });
 
   test("GET /reports/month-end reports cent totals and exception status counts", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const boaUpload = await uploadCsv(
       app,
       "boa",
@@ -2286,7 +2411,7 @@ describe("app", () => {
   });
 
   test("GET /reports/month-end exports CSV", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     await createReconciliation(app);
 
     const response = await request(app).get("/reports/month-end").query({
@@ -2316,7 +2441,7 @@ describe("app", () => {
   });
 
   test("GET /reports/month-end rejects invalid query parameters", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
 
     const response = await request(app).get("/reports/month-end").query({
       start_date: "2026-05-01",
@@ -2328,7 +2453,7 @@ describe("app", () => {
   });
 
   test("POST /reconcile only compares selected source files", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const boaUpload = await uploadCsv(
       app,
       "boa",
@@ -2364,8 +2489,8 @@ describe("app", () => {
 
   test("POST /reconcile rejects cross-dealership source files", async () => {
     const repository = new MemoryTransactionRepository();
-    const firstDealershipApp = createApp(repository, [], 1);
-    const secondDealershipApp = createApp(repository, [], 2);
+    const firstDealershipApp = createFallbackApp(repository, 1);
+    const secondDealershipApp = createFallbackApp(repository, 2);
     const boaUpload = await uploadCsv(
       firstDealershipApp,
       "boa",
@@ -2389,8 +2514,8 @@ describe("app", () => {
 
   test("reconciliation reads reject cross-dealership runs and exceptions", async () => {
     const repository = new MemoryTransactionRepository();
-    const firstDealershipApp = createApp(repository, [], 1);
-    const secondDealershipApp = createApp(repository, [], 2);
+    const firstDealershipApp = createFallbackApp(repository, 1);
+    const secondDealershipApp = createFallbackApp(repository, 2);
     const reconciliation = await createReconciliation(firstDealershipApp);
     const detail = await request(firstDealershipApp).get(
       `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
@@ -2413,7 +2538,7 @@ describe("app", () => {
   });
 
   test("POST /reconcile repeated uploads do not pollute later reconciliation", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const boaCsv = boaUploadCsv("M22222", "2HGCM82633A004352", "$222.00", "222222");
     const dealertrackCsv = dealertrackUploadCsv("M22222", "-222", "2HGCM82633A004352");
 
@@ -2450,7 +2575,7 @@ describe("app", () => {
   });
 
   test("POST /reconcile rejects mismatched source file source types", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const bankUpload = await uploadCsv(
       app,
       "bank",
@@ -2476,7 +2601,7 @@ describe("app", () => {
   });
 
   test("PATCH on a BOA-side exception routes review_notes into boa_notes", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
     const detail = await request(app).get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}`);
     const boaException = detail.body.exceptions.find(
@@ -2497,7 +2622,7 @@ describe("app", () => {
   });
 
   test("PATCH supports explicit boa_notes and gl_notes overrides", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const reconciliation = await createReconciliation(app);
     const detail = await request(app).get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}`);
     const exceptionId = detail.body.exceptions[0].exception_id;
@@ -2514,7 +2639,7 @@ describe("app", () => {
   });
 
   test("fp-rec returns a compact accounting worksheet export model and preserves the legacy Hurst alias", async () => {
-    const app = createApp(new MemoryTransactionRepository());
+    const app = createFallbackApp();
     const first = await createReconciliationWithRows(app, {
       boaCsv: boaUploadCsvMulti([
         { stock: "M30101", vin: "1HGCM82633A004352", amount: "$301.00", reference: "30101" },

@@ -11,6 +11,7 @@
     "migrate:down": "tsx src/db/migrate.ts down",
     "migrate:prod": "node dist/db/migrate.js",
     "migrate:prod:down": "node dist/db/migrate.js down",
+    "seed:demo-auth": "tsx src/db/seedDemoAuth.ts",
     "test": "vitest run",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit",

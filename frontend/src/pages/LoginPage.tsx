@@ -8,8 +8,8 @@ type LoginPageProps = {
 };
 
 export function LoginPage({ onLogin }: LoginPageProps) {
-  const [email, setEmail] = useState("demo@dealer-recon.local");
-  const [password, setPassword] = useState("dealer-recon-demo");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 

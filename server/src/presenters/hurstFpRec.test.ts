@@ -629,6 +629,35 @@ describe("Hurst FP Rec draft accounting workpaper contract", () => {
     expect(html).not.toContain("<th>Serial No/VIN</th>");
   });
 
+  test("neutralizes formula-leading source text while preserving workbook formulas", () => {
+    const detail = buildDetail({
+      exceptions: [
+        exception({
+          exception_type: "missing_in_boa",
+          exception_category: "missing_in_boa",
+          source_type: "dealertrack",
+          transaction: transaction({
+            id: 701,
+            source_type: "dealertrack",
+            amount: "-123.45",
+            amount_cents: -12_345,
+            description: "TRANSFER JM1BPABL0T1867950",
+            reference_number: "=SUM(1+1)",
+            stock_number: "=SUM(1+1)",
+            vin: "JM1BPABL0T1867950",
+          }),
+        }),
+      ],
+    });
+    const html = toHurstFpRecXlsHtml(buildHurstFpRecWorkbook(detail));
+    const flattened = workpaperHtmlRows(detail).flat().join(" ");
+
+    expect(flattened).toContain("'=SUM(1+1) - T1867950");
+    expect(flattened).toContain("(123.45)");
+    expect(html).toContain('x:fmla="=B5"');
+    expect(html).toContain('x:fmla="=SUM(B3+B6)"');
+  });
+
   test("omits matched rows from the draft FP REC detail sections", () => {
     const rows = workpaperHtmlRows();
     const flattened = rows.flat().join(" ");

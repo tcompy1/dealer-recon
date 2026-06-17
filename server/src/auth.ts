@@ -110,7 +110,11 @@ export async function hashPassword(password: string): Promise<string> {
 }
 
 export async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
-  return bcrypt.compare(password, storedHash);
+  try {
+    return await bcrypt.compare(password, storedHash);
+  } catch {
+    return false;
+  }
 }
 
 export function createSessionToken(

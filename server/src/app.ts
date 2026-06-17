@@ -152,8 +152,13 @@ export function createApp(
   const nodeEnv = authOptions.nodeEnv ?? "development";
   const isProduction = nodeEnv === "production";
   const isLocalEnv = nodeEnv === "development" || nodeEnv === "test";
-  const allowDevDealershipFallback =
-    authOptions.allowDevDealershipFallback ?? authRepository === undefined;
+  const allowDevDealershipFallback = authOptions.allowDevDealershipFallback ?? false;
+  if (allowDevDealershipFallback && !isLocalEnv) {
+    throw new Error(`Development auth fallback is not allowed when NODE_ENV=${nodeEnv}.`);
+  }
+  if (!authRepository && !allowDevDealershipFallback && !isLocalEnv) {
+    throw new Error(`Authentication repository is required when NODE_ENV=${nodeEnv}.`);
+  }
 
   app.use(requestLogger);
   app.use((_request, response, next) => {

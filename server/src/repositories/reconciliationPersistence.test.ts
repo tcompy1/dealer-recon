@@ -29,7 +29,10 @@ describeIfDatabase("reconciliation persistence", () => {
       await migrate(databaseUrl);
       const pool = createPool(databaseUrl);
       const repository = new PostgresTransactionRepository(pool);
-      const app = createApp(repository);
+      const app = createApp(repository, [], 1, async () => undefined, {
+        nodeEnv: "test",
+        allowDevDealershipFallback: true,
+      });
       const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
       const unique = `${Date.now()}-${Math.random()}`;
 

@@ -2,6 +2,7 @@ import { formatCents } from "../domain/money.js";
 import { computeVin6, extractVin6FromDescription } from "../domain/vin6.js";
 import type { ReconciliationRunDetail, SourceType, TransactionSummary } from "../domain/types.js";
 import type { StoreWorkflowConfig } from "../config/storeWorkflowConfig.js";
+import { neutralizeSpreadsheetText } from "../spreadsheetText.js";
 
 export type MergedFloorplanRowClassification = "matched" | "boa_only" | "dealertrack_only";
 
@@ -109,9 +110,9 @@ export function toMergedFloorplanXlsHtml(workbook: MergedFloorplanWorkbook): str
     "<body>",
     `<table>${colgroup}`,
     "<thead>",
-    `<tr class="title-row"><td colspan="8">Merged Floorplan - ${escapeHtml(workbook.store_name)}</td></tr>`,
-    `<tr class="period-row"><td colspan="8">Period date ${escapeHtml(workbook.period_date ?? "")}</td></tr>`,
-    `<tr>${workbook.headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>`,
+    `<tr class="title-row"><td colspan="8">Merged Floorplan - ${spreadsheetTextCell(workbook.store_name)}</td></tr>`,
+    `<tr class="period-row"><td colspan="8">Period date ${spreadsheetTextCell(workbook.period_date ?? "")}</td></tr>`,
+    `<tr>${workbook.headers.map((header) => `<th>${spreadsheetTextCell(header)}</th>`).join("")}</tr>`,
     "</thead>",
     `<tbody>${workbook.rows.map(rowHtml).join("")}</tbody>`,
     "<tfoot>",
@@ -359,33 +360,33 @@ function dealertrackVinPrefixMatches(
 
 function rowHtml(row: MergedFloorplanRow): string {
   return `<tr>
-    <td>${escapeHtml(row.store_description)}</td>
-    <td>${escapeHtml(row.serial_no_vin)}</td>
-    <td>${escapeHtml(row.boa_vin6)}</td>
+    <td>${spreadsheetTextCell(row.store_description)}</td>
+    <td>${spreadsheetTextCell(row.serial_no_vin)}</td>
+    <td>${spreadsheetTextCell(row.boa_vin6)}</td>
     <td class="amount">${formatOptionalAccountingCents(row.ending_balance_cents)}</td>
     <td class="amount${(row.dealertrack_account_amount_cents ?? 0) < 0 ? " amount-negative" : ""}">${formatOptionalAccountingCents(row.dealertrack_account_amount_cents)}</td>
-    <td>${escapeHtml(row.dealertrack_vin6)}</td>
-    <td>${escapeHtml(row.dealertrack_description)}</td>
-    <td>${escapeHtml(row.dealertrack_control)}</td>
+    <td>${spreadsheetTextCell(row.dealertrack_vin6)}</td>
+    <td>${spreadsheetTextCell(row.dealertrack_description)}</td>
+    <td>${spreadsheetTextCell(row.dealertrack_control)}</td>
   </tr>`;
 }
 
 function totalRowHtml(workbook: MergedFloorplanWorkbook): string {
   return `<tr class="total-row">
-    <td>${escapeHtml(workbook.store_config.totalsRowLabels.boaTotalLabel)}</td>
+    <td>${spreadsheetTextCell(workbook.store_config.totalsRowLabels.boaTotalLabel)}</td>
     <td></td>
     <td></td>
     <td class="amount">${escapeHtml(formatAccountingCents(workbook.boa_total_amount_cents))}</td>
     <td class="amount${workbook.dealertrack_total_amount_cents < 0 ? " amount-negative" : ""}">${escapeHtml(formatAccountingCents(workbook.dealertrack_total_amount_cents))}</td>
     <td></td>
-    <td>${escapeHtml(workbook.store_config.totalsRowLabels.dealertrackTotalLabel)}</td>
+    <td>${spreadsheetTextCell(workbook.store_config.totalsRowLabels.dealertrackTotalLabel)}</td>
     <td></td>
   </tr>`;
 }
 
 function varianceRowHtml(workbook: MergedFloorplanWorkbook): string {
   return `<tr class="variance-row">
-    <td>${escapeHtml(workbook.store_config.totalsRowLabels.varianceLabel)}</td>
+    <td>${spreadsheetTextCell(workbook.store_config.totalsRowLabels.varianceLabel)}</td>
     <td></td>
     <td></td>
     <td class="amount${workbook.variance_amount_cents < 0 ? " amount-negative" : ""}">${escapeHtml(formatAccountingCents(workbook.variance_amount_cents))}</td>
@@ -394,6 +395,10 @@ function varianceRowHtml(workbook: MergedFloorplanWorkbook): string {
     <td></td>
     <td></td>
   </tr>`;
+}
+
+function spreadsheetTextCell(value: string | null | undefined): string {
+  return escapeHtml(neutralizeSpreadsheetText(value ?? ""));
 }
 
 function filterDealertrackRecordsByConfiguredAccount(

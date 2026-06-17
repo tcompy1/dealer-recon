@@ -96,6 +96,16 @@ export function preprocessUpload(
     };
   }
 
+  const fatalParserWarning = parsed.warnings.find((warning) => warning.fatal);
+  if (fatalParserWarning) {
+    return {
+      kind: "unsupported",
+      detection,
+      route,
+      reason: fatalParserWarning.message,
+    };
+  }
+
   const preprocessing = runPreprocessor(sourceType, parsed, options);
   return {
     kind: "preprocessed",
