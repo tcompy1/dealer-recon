@@ -12,9 +12,9 @@ import type { TransactionRepository } from "../repositories/transactionRepositor
 import {
   resolveStoreWorkflowConfigFromStoreName,
 } from "../config/storeWorkflowConfig.js";
-import { buildMergedFloorplanArtifactFromTransactions } from "./mergedFloorplanExport.js";
+import { buildMergedFloorplanArtifact } from "./mergedFloorplanExport.js";
 import {
-  buildFpRecWorkbookFromMergedFloorplan,
+  buildHurstFpRecWorkbook,
   toHurstFpRecFilename,
   toHurstFpRecXlsHtml,
 } from "../presenters/hurstFpRec.js";
@@ -69,13 +69,8 @@ export async function persistReconciliationRunArtifacts({
 
   const storeConfig = resolveStoreWorkflowConfigFromStoreName(detail.store_name);
   if (storeConfig) {
-    const mergedArtifact = buildMergedFloorplanArtifactFromTransactions(
-      detail,
-      storeConfig,
-      boaTransactions,
-      dealertrackTransactions,
-    );
-    const fpRecWorkbook = buildFpRecWorkbookFromMergedFloorplan(mergedArtifact.workbook);
+    const mergedArtifact = buildMergedFloorplanArtifact(detail, storeConfig);
+    const fpRecWorkbook = buildHurstFpRecWorkbook(detail, storeConfig);
     const fpRecHtml = toHurstFpRecXlsHtml(fpRecWorkbook);
     artifacts.push(
       {

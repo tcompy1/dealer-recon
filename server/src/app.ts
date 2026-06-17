@@ -43,7 +43,7 @@ import type {
 } from "./services/preprocessing/types.js";
 import { toExceptionsCsv, toMonthEndReportCsv } from "./presenters/csv.js";
 import {
-  buildFpRecWorkbookFromMergedFloorplan,
+  buildHurstFpRecWorkbook,
   toHurstFpRecFilename,
   toHurstFpRecXlsHtml,
 } from "./presenters/hurstFpRec.js";
@@ -54,7 +54,7 @@ import {
   STORE_KEYS,
   type StoreWorkflowConfig,
 } from "./config/storeWorkflowConfig.js";
-import { buildMergedFloorplanArtifactFromTransactions } from "./services/mergedFloorplanExport.js";
+import { buildMergedFloorplanArtifact } from "./services/mergedFloorplanExport.js";
 import { applyCarryForwardToDetail } from "./services/exceptionCarryForward.js";
 import {
   parseExceptionReviewUpdate,
@@ -308,9 +308,7 @@ export function createApp(
     if (storeId === false) {
       throw new ValidationError("Invalid store_id.", "INVALID_STORE_ID");
     }
-    if (!(await canAccessStore(repository, getAuthenticatedUser(response), storeId ?? null))) {
-      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
-    }
+    await requireRequestedStoreAccess(repository, getAuthenticatedUser(response), storeId);
     response.json(
       await filterByStoreAccess(
         repository,
@@ -386,53 +384,49 @@ export function createApp(
     });
   }));
 
-  app.get("/automation/ingestion-events", async (request, response, next) => {
-    try {
-      const storeId = parseOptionalPositiveInteger(request.query.store_id);
-      const limit = parseOptionalPositiveInteger(request.query.limit);
-      if (storeId === false || limit === false) {
-        response.status(422).json({ detail: "Invalid ingestion event query." });
-        return;
-      }
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), storeId ?? null))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
-      response.json(
-        await repository.listIngestionEvents(
-          getRequestDealershipId(response),
-          storeId,
-          limit,
-        ),
-      );
-    } catch (error) {
-      next(error);
+  app.get("/automation/ingestion-events", asyncHandler(async (request, response) => {
+    const storeId = parseOptionalPositiveInteger(request.query.store_id);
+    const limit = parseOptionalPositiveInteger(request.query.limit);
+    if (storeId === false || limit === false) {
+      throw new ValidationError("Invalid ingestion event query.", "INVALID_QUERY");
     }
-  });
+    await requireRequestedStoreAccess(repository, getAuthenticatedUser(response), storeId);
+    const events = await repository.listIngestionEvents(
+      getRequestDealershipId(response),
+      storeId,
+      limit,
+    );
+    response.json(
+      await filterByStoreAccess(
+        repository,
+        getAuthenticatedUser(response),
+        events,
+        (event) => event.dealership_store_id,
+      ),
+    );
+  }));
 
-  app.get("/automation/events", async (request, response, next) => {
-    try {
-      const storeId = parseOptionalPositiveInteger(request.query.store_id);
-      const limit = parseOptionalPositiveInteger(request.query.limit);
-      if (storeId === false || limit === false) {
-        response.status(422).json({ detail: "Invalid operational event query." });
-        return;
-      }
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), storeId ?? null))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
-      response.json(
-        await repository.listOperationalEvents(
-          getRequestDealershipId(response),
-          storeId,
-          limit,
-        ),
-      );
-    } catch (error) {
-      next(error);
+  app.get("/automation/events", asyncHandler(async (request, response) => {
+    const storeId = parseOptionalPositiveInteger(request.query.store_id);
+    const limit = parseOptionalPositiveInteger(request.query.limit);
+    if (storeId === false || limit === false) {
+      throw new ValidationError("Invalid operational event query.", "INVALID_QUERY");
     }
-  });
+    await requireRequestedStoreAccess(repository, getAuthenticatedUser(response), storeId);
+    const events = await repository.listOperationalEvents(
+      getRequestDealershipId(response),
+      storeId,
+      limit,
+    );
+    response.json(
+      await filterByStoreAccess(
+        repository,
+        getAuthenticatedUser(response),
+        events,
+        (event) => event.dealership_store_id,
+      ),
+    );
+  }));
 
   app.get("/automation/status", async (_request, response, next) => {
     try {
@@ -459,37 +453,28 @@ export function createApp(
     }
   });
 
-  app.get("/source-files", async (request, response, next) => {
-    try {
-      const requestDealershipId = getRequestDealershipId(response);
-      const sourceType = parseSourceTypeQuery(request.query.source_type);
-      if (sourceType === false) {
-        response.status(422).json({ detail: "Invalid source_type." });
-        return;
-      }
-      const dealershipStoreId = parseOptionalPositiveInteger(request.query.store_id);
-      if (dealershipStoreId === false) {
-        response.status(422).json({ detail: "Invalid store_id." });
-        return;
-      }
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), dealershipStoreId ?? null))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
-
-      const files = await repository.listSourceFiles(requestDealershipId, sourceType, dealershipStoreId);
-      response.json(
-        await filterByStoreAccess(
-          repository,
-          getAuthenticatedUser(response),
-          files,
-          (file) => file.dealership_store_id,
-        ),
-      );
-    } catch (error) {
-      next(error);
+  app.get("/source-files", asyncHandler(async (request, response) => {
+    const requestDealershipId = getRequestDealershipId(response);
+    const sourceType = parseSourceTypeQuery(request.query.source_type);
+    if (sourceType === false) {
+      throw new ValidationError("Invalid source_type.", "INVALID_SOURCE_TYPE");
     }
-  });
+    const dealershipStoreId = parseOptionalPositiveInteger(request.query.store_id);
+    if (dealershipStoreId === false) {
+      throw new ValidationError("Invalid store_id.", "INVALID_STORE_ID");
+    }
+    await requireRequestedStoreAccess(repository, getAuthenticatedUser(response), dealershipStoreId);
+
+    const files = await repository.listSourceFiles(requestDealershipId, sourceType, dealershipStoreId);
+    response.json(
+      await filterByStoreAccess(
+        repository,
+        getAuthenticatedUser(response),
+        files,
+        (file) => file.dealership_store_id,
+      ),
+    );
+  }));
 
   app.get("/accounts/summary", async (_request, response, next) => {
     try {
@@ -525,6 +510,12 @@ export function createApp(
     const reportQuery = parseMonthEndReportQuery(request.query);
     if (reportQuery === false) {
       throw new ValidationError("Invalid month-end report query.", "INVALID_QUERY");
+    }
+    if (getAuthenticatedUser(response).role !== "platform_admin") {
+      throw new ForbiddenError(
+        "Month-end report access requires platform-level authorization.",
+        "REPORT_ACCESS_DENIED",
+      );
     }
 
     const report = await repository.getMonthEndReport(
@@ -904,6 +895,7 @@ export function createApp(
     if (dealershipStoreId === false) {
       throw new ValidationError("Invalid store_id.", "INVALID_STORE_ID");
     }
+    await requireRequestedStoreAccess(repository, getAuthenticatedUser(response), dealershipStoreId);
     const runs = await repository.listReconciliationRuns(getRequestDealershipId(response), {
         ...(dealershipStoreId ? { dealershipStoreId } : {}),
       });
@@ -1226,16 +1218,7 @@ export function createApp(
       }
     }
 
-    const [boaTransactions, dealertrackTransactions] = await Promise.all([
-      repository.listBySourceFile(getRequestDealershipId(response), detail.boa_source_file_id),
-      repository.listBySourceFile(getRequestDealershipId(response), detail.dealertrack_source_file_id),
-    ]);
-    const artifact = buildMergedFloorplanArtifactFromTransactions(
-      detail,
-      storeConfig,
-      boaTransactions,
-      dealertrackTransactions,
-    );
+    const artifact = buildMergedFloorplanArtifact(detail, storeConfig);
     if (format === "json") {
       response.json(artifact.workbook);
       return;
@@ -1309,17 +1292,7 @@ export function createApp(
       }
     }
 
-    const [boaTransactions, dealertrackTransactions] = await Promise.all([
-      repository.listBySourceFile(getRequestDealershipId(response), detail.boa_source_file_id),
-      repository.listBySourceFile(getRequestDealershipId(response), detail.dealertrack_source_file_id),
-    ]);
-    const mergedArtifact = buildMergedFloorplanArtifactFromTransactions(
-      detail,
-      storeConfig,
-      boaTransactions,
-      dealertrackTransactions,
-    );
-    const workbook = buildFpRecWorkbookFromMergedFloorplan(mergedArtifact.workbook);
+    const workbook = buildHurstFpRecWorkbook(detail, storeConfig);
     if (format === "json") {
       response.json(workbook);
       return;
@@ -1609,6 +1582,16 @@ function getAuthenticatedUser(response: express.Response): AuthUser {
 
 function getRequestDealershipId(response: express.Response): number {
   return getAuthenticatedUser(response).dealership_id;
+}
+
+async function requireRequestedStoreAccess(
+  repository: TransactionRepository,
+  user: AuthUser,
+  storeId: number | undefined,
+): Promise<void> {
+  if (storeId !== undefined && !(await canAccessStore(repository, user, storeId))) {
+    throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+  }
 }
 
 function sendArtifactDownload(

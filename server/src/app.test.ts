@@ -268,6 +268,218 @@ describe("app", () => {
     expect(forbiddenUploadResponse.status).toBe(403);
   });
 
+  test("store-scoped users cannot access other-store source files, runs, or artifacts", async () => {
+    const authRepository = new MemoryAuthRepository();
+    await authRepository.addUser({
+      email: "admin@example.com",
+      password: "correct-password",
+      dealership_id: 1,
+      role: "platform_admin",
+    });
+    await authRepository.addUser({
+      email: "store1@example.com",
+      password: "correct-password",
+      dealership_id: 1,
+      role: "accounting_user",
+      store_ids: [1],
+    });
+    const repository = new MemoryTransactionRepository();
+    const app = createApp(repository, [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+    const adminAgent = request.agent(app);
+    await adminAgent.post("/login").send({ email: "admin@example.com", password: "correct-password" });
+    const reconciliation = await createReconciliationWithAgentRows(adminAgent, {
+      boaCsv: boaUploadCsv("M90202", "1HGCM82633A004352", "$902.00", "90202"),
+      dealertrackCsv: dealertrackUploadCsv("M90202", "-902", "1HGCM82633A004352"),
+      boaFilename: "store2-boa.csv",
+      dealertrackFilename: "store2-dealertrack.csv",
+      storeId: 2,
+    });
+    const fpRecArtifact = await repository.createReconciliationArtifact(1, {
+      reconciliation_run_id: reconciliation.reconciliation_run_id,
+      store_id: 2,
+      accounting_month: "2025-09",
+      uploaded_by: null,
+      artifact_type: "FP_REC",
+      filename: "store-two-fp-rec.xls",
+      content_type: "application/vnd.ms-excel",
+      content: Buffer.from("store two artifact"),
+    });
+
+    const clerkAgent = request.agent(app);
+    await clerkAgent.post("/login").send({ email: "store1@example.com", password: "correct-password" });
+
+    const forbiddenFilesResponse = await clerkAgent.get("/source-files").query({ store_id: 2 });
+    const filteredFilesResponse = await clerkAgent.get("/source-files");
+    const forbiddenRunListResponse = await clerkAgent.get("/reconciliation-runs").query({ store_id: 2 });
+    const filteredRunsResponse = await clerkAgent.get("/reconciliation-runs");
+    const forbiddenRunResponse = await clerkAgent.get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
+    );
+    const forbiddenArtifactsResponse = await clerkAgent.get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}/artifacts`,
+    );
+    const forbiddenDownloadResponse = await clerkAgent.get(`/artifacts/${fpRecArtifact.id}/download`);
+
+    expect(forbiddenFilesResponse.status).toBe(403);
+    expect(forbiddenFilesResponse.body.error.message).toBe("Not authorized for this store.");
+    expect(filteredFilesResponse.status).toBe(200);
+    expect(filteredFilesResponse.body).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ dealership_store_id: 2 })]),
+    );
+    expect(forbiddenRunListResponse.status).toBe(403);
+    expect(forbiddenRunListResponse.body.error.message).toBe("Not authorized for this store.");
+    expect(filteredRunsResponse.status).toBe(200);
+    expect(filteredRunsResponse.body).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ dealership_store_id: 2 })]),
+    );
+    expect(forbiddenRunResponse.status).toBe(403);
+    expect(forbiddenArtifactsResponse.status).toBe(403);
+    expect(forbiddenDownloadResponse.status).toBe(403);
+  });
+
+  test("store-scoped users cannot access null-store artifacts, events, or reports", async () => {
+    const repository = new MemoryTransactionRepository();
+    const authRepository = new MemoryAuthRepository();
+    await authRepository.addUser({
+      email: "admin@example.com",
+      password: "correct-password",
+      dealership_id: 1,
+      role: "platform_admin",
+    });
+    await authRepository.addUser({
+      email: "store1@example.com",
+      password: "correct-password",
+      dealership_id: 1,
+      role: "accounting_user",
+      store_ids: [1],
+    });
+    const nullArtifact = await repository.createReconciliationArtifact(1, {
+      reconciliation_run_id: 999,
+      store_id: null,
+      accounting_month: "2025-09",
+      uploaded_by: null,
+      artifact_type: "FP_REC",
+      filename: "null-store-fp-rec.xls",
+      content_type: "application/vnd.ms-excel",
+      content: Buffer.from("null-store artifact"),
+    });
+    await repository.createIngestionEvent(1, {
+      dealership_store_id: null,
+      source_file_id: null,
+      reconciliation_run_id: null,
+      source_type: "boa",
+      state: "uploaded",
+      message: "null-store ingestion",
+      metadata: {},
+    });
+    await repository.createIngestionEvent(1, {
+      dealership_store_id: 1,
+      source_file_id: null,
+      reconciliation_run_id: null,
+      source_type: "boa",
+      state: "uploaded",
+      message: "store-one ingestion",
+      metadata: {},
+    });
+    await repository.createIngestionEvent(1, {
+      dealership_store_id: 2,
+      source_file_id: null,
+      reconciliation_run_id: null,
+      source_type: "boa",
+      state: "uploaded",
+      message: "store-two ingestion",
+      metadata: {},
+    });
+    await repository.createOperationalEvent(1, {
+      dealership_store_id: null,
+      reconciliation_run_id: null,
+      event_type: "missing_expected_file",
+      severity: "warning",
+      message: "null-store operational",
+      metadata: {},
+    });
+    await repository.createOperationalEvent(1, {
+      dealership_store_id: 1,
+      reconciliation_run_id: null,
+      event_type: "missing_expected_file",
+      severity: "warning",
+      message: "store-one operational",
+      metadata: {},
+    });
+    await repository.createOperationalEvent(1, {
+      dealership_store_id: 2,
+      reconciliation_run_id: null,
+      event_type: "missing_expected_file",
+      severity: "warning",
+      message: "store-two operational",
+      metadata: {},
+    });
+    const app = createApp(repository, [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+    const clerkAgent = request.agent(app);
+    await clerkAgent.post("/login").send({ email: "store1@example.com", password: "correct-password" });
+
+    const artifactResponse = await clerkAgent.get(`/artifacts/${nullArtifact.id}/download`);
+    const ingestionResponse = await clerkAgent.get("/automation/ingestion-events");
+    const operationalResponse = await clerkAgent.get("/automation/events");
+    const forbiddenStoreIngestionResponse = await clerkAgent.get("/automation/ingestion-events").query({ store_id: 2 });
+    const forbiddenStoreOperationalResponse = await clerkAgent.get("/automation/events").query({ store_id: 2 });
+    const reportResponse = await clerkAgent.get("/reports/month-end").query({
+      start_date: "2025-09-01",
+      end_date: "2025-09-30",
+    });
+
+    expect(artifactResponse.status).toBe(403);
+    expect(ingestionResponse.status).toBe(200);
+    expect(ingestionResponse.body.map((event: { message: string }) => event.message)).toEqual([
+      "store-one ingestion",
+    ]);
+    expect(operationalResponse.status).toBe(200);
+    expect(operationalResponse.body.map((event: { message: string }) => event.message)).toEqual([
+      "store-one operational",
+    ]);
+    expect(forbiddenStoreIngestionResponse.status).toBe(403);
+    expect(forbiddenStoreOperationalResponse.status).toBe(403);
+    expect(reportResponse.status).toBe(403);
+    expect(reportResponse.body.error.message).toBe(
+      "Month-end report access requires platform-level authorization.",
+    );
+
+    const adminAgent = request.agent(app);
+    await adminAgent.post("/login").send({ email: "admin@example.com", password: "correct-password" });
+    const adminArtifactResponse = await adminAgent.get(`/artifacts/${nullArtifact.id}/download`);
+    const adminIngestionResponse = await adminAgent.get("/automation/ingestion-events");
+    const adminReportResponse = await adminAgent.get("/reports/month-end").query({
+      start_date: "2025-09-01",
+      end_date: "2025-09-30",
+    });
+
+    expect(adminArtifactResponse.status).toBe(200);
+    expect(adminIngestionResponse.body.map((event: { message: string }) => event.message)).toEqual(
+      expect.arrayContaining(["null-store ingestion", "store-one ingestion", "store-two ingestion"]),
+    );
+    expect(adminReportResponse.status).toBe(200);
+  });
+
+  test("workflow validation errors use standardized concrete backend messages", async () => {
+    const app = createFallbackApp();
+
+    const invalidSourceFilesResponse = await request(app).get("/source-files").query({ store_id: "bad" });
+    const invalidEventsResponse = await request(app).get("/automation/events").query({ limit: "bad" });
+
+    expect(invalidSourceFilesResponse.status).toBe(422);
+    expect(invalidSourceFilesResponse.body.error.message).toBe("Invalid store_id.");
+    expect(invalidEventsResponse.status).toBe(422);
+    expect(invalidEventsResponse.body.error.message).toBe("Invalid operational event query.");
+  });
+
   test("read-only auditors cannot modify review workflow state", async () => {
     const authRepository = new MemoryAuthRepository();
     await authRepository.addUser({
@@ -1635,6 +1847,75 @@ describe("app", () => {
     expect(response.text).toContain("M30303");
   });
 
+  test("stored merged and FP REC artifacts are generated from reviewed detail", async () => {
+    const app = createFallbackApp();
+    const reconciliation = await createReconciliationWithRows(app, {
+      boaCsv: boaUploadCsv("M90101", "1HGCM82633A004352", "$901.00", "90101"),
+      dealertrackCsv: dealertrackUploadCsv("M90101", "-901"),
+      boaFilename: "reviewed-detail-boa.csv",
+      dealertrackFilename: "reviewed-detail-dealertrack.csv",
+      storeId: 1,
+    });
+
+    const detailResponse = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
+    );
+    const artifactsResponse = await request(app).get(
+      `/reconciliation-runs/${reconciliation.reconciliation_run_id}/artifacts`,
+    );
+    const artifacts = artifactsResponse.body as Array<{ id: number; artifact_type: string }>;
+    const mergedArtifact = artifacts.find((artifact) => artifact.artifact_type === "MERGED_FLOORPLAN");
+    const fpRecArtifact = artifacts.find((artifact) => artifact.artifact_type === "FP_REC");
+
+    const mergedJson = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
+      .query({ store_key: "hurst", format: "json" });
+    const fpRecJson = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/fp-rec`)
+      .query({ store_key: "hurst", format: "json" });
+    const storedMerged = await request(app).get(`/artifacts/${mergedArtifact!.id}/download`);
+    const regeneratedMerged = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
+      .query({ store_key: "hurst" });
+    const storedFpRec = await request(app).get(`/artifacts/${fpRecArtifact!.id}/download`);
+    const regeneratedFpRec = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/fp-rec`)
+      .query({ store_key: "hurst" });
+
+    expect(detailResponse.status).toBe(200);
+    expect(detailResponse.body.match_groups).toHaveLength(0);
+    expect(detailResponse.body.exceptions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source_type: "boa",
+          transaction: expect.objectContaining({ stock_number: "M90101" }),
+        }),
+        expect.objectContaining({
+          source_type: "dealertrack",
+          transaction: expect.objectContaining({ stock_number: "M90101" }),
+        }),
+      ]),
+    );
+    expect(artifactsResponse.status).toBe(200);
+    expect(mergedArtifact).toBeDefined();
+    expect(fpRecArtifact).toBeDefined();
+    expect(mergedJson.status).toBe(200);
+    expect(countApiRows(mergedJson.body.rows)).toEqual({
+      matched: 0,
+      boaOnly: 1,
+      dealertrackOnly: 1,
+    });
+    expect(fpRecJson.status).toBe(200);
+    expect(countApiRows(fpRecJson.body.rows)).toEqual(countApiRows(mergedJson.body.rows));
+    expect(storedMerged.status).toBe(200);
+    expect(regeneratedMerged.status).toBe(200);
+    expect(regeneratedMerged.text).toBe(storedMerged.text);
+    expect(storedMerged.text.match(/<tr>\n    <td>/g) ?? []).toHaveLength(2);
+    expect(storedFpRec.status).toBe(200);
+    expect(regeneratedFpRec.status).toBe(200);
+    expect(regeneratedFpRec.text).toBe(storedFpRec.text);
+  });
+
   test("reconciliation artifacts persist raw, cleaned, merged, and FP REC downloads", async () => {
     const authRepository = new MemoryAuthRepository();
     await authRepository.addUser({
@@ -1955,20 +2236,20 @@ describe("app", () => {
     });
     expect(response.body.headers).not.toContain("2110");
     expect(response.body.store_config.dealertrackAmountColumns).not.toContain("2110");
-    const classifications = response.body.rows.map(
-      (row: { classification: string }) => row.classification,
-    );
-    expect(classifications.filter((classification: string) => classification === "matched"))
-      .toHaveLength(620);
-    expect(classifications.filter((classification: string) => classification === "boa_only"))
-      .toHaveLength(53);
-    expect(
-      classifications.filter((classification: string) => classification === "dealertrack_only"),
-    ).toHaveLength(15);
+    expect(detailResponse.status).toBe(200);
+    const detailCounts = {
+      matched: detailResponse.body.match_groups.length,
+      boaOnly: detailResponse.body.exceptions.filter(
+        (exception: { source_type: string }) => exception.source_type === "boa",
+      ).length,
+      dealertrackOnly: detailResponse.body.exceptions.filter(
+        (exception: { source_type: string }) => exception.source_type === "dealertrack",
+      ).length,
+    };
+    expect(countApiRows(response.body.rows)).toEqual(detailCounts);
     expect(response.body.boa_total_amount_cents).toBe(3_449_894_154);
     expect(response.body.dealertrack_total_amount_cents).toBe(-3_275_177_349);
 
-    expect(detailResponse.status).toBe(200);
     const dealertrackTransactions = [
       ...detailResponse.body.match_groups.flatMap(
         (group: { transactions: Array<{ source_type: string; transaction: { account: string; account_identifier: string } }> }) =>
@@ -1993,11 +2274,7 @@ describe("app", () => {
       dealertrackAmountColumns: ["2100", "2101", "2101S"],
       dealertrackExcludedAccountColumns: ["2110"],
     });
-    expect(countApiRows(fpRecResponse.body.rows)).toEqual({
-      matched: 620,
-      boaOnly: 53,
-      dealertrackOnly: 15,
-    });
+    expect(countApiRows(fpRecResponse.body.rows)).toEqual(detailCounts);
     expect(fpRecResponse.body.boa_total_amount_cents).toBe(3_449_894_154);
     expect(fpRecResponse.body.dealertrack_total_amount_cents).toBe(-3_275_177_349);
   });
@@ -2808,6 +3085,57 @@ async function createReconciliation(app: ReturnType<typeof createApp>) {
     dealertrackFilename: "dealertrack-run.csv",
     storeId: undefined,
   });
+}
+
+async function uploadCsvWithAgent(
+  agent: ReturnType<typeof request.agent>,
+  sourceType: string,
+  csv: string,
+  filename: string,
+  storeId: number,
+) {
+  const response = await agent
+    .post("/upload")
+    .field("source_type", sourceType)
+    .field("store_id", String(storeId))
+    .attach("file", Buffer.from(csv), filename);
+
+  expect(response.status).toBe(200);
+  return response.body as { source_file_id: number; automated_reconciliation_run_id?: number | null };
+}
+
+async function createReconciliationWithAgentRows(
+  agent: ReturnType<typeof request.agent>,
+  {
+    boaCsv,
+    dealertrackCsv,
+    boaFilename,
+    dealertrackFilename,
+    storeId,
+  }: {
+    boaCsv: string;
+    dealertrackCsv: string;
+    boaFilename: string;
+    dealertrackFilename: string;
+    storeId: number;
+  },
+) {
+  const boaUpload = await uploadCsvWithAgent(agent, "boa", boaCsv, boaFilename, storeId);
+  const dealertrackUpload = await uploadCsvWithAgent(
+    agent,
+    "dealertrack",
+    dealertrackCsv,
+    dealertrackFilename,
+    storeId,
+  );
+  const response = await agent.post("/reconcile").send({
+    boa_source_file_id: boaUpload.source_file_id,
+    dealertrack_source_file_id: dealertrackUpload.source_file_id,
+    dealership_store_id: storeId,
+  });
+
+  expect(response.status).toBe(200);
+  return response.body as { reconciliation_run_id: number };
 }
 
 async function createReconciliationWithAgent(agent: ReturnType<typeof request.agent>) {
