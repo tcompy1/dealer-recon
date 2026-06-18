@@ -1979,7 +1979,7 @@ describe("app", () => {
     expect(storedMerged.status).toBe(200);
     expect(regeneratedMerged.status).toBe(200);
     expect(regeneratedMerged.text).toBe(storedMerged.text);
-    expect(storedMerged.text.match(/<tr>\n    <td>/g) ?? []).toHaveLength(2);
+    expect(storedMerged.text.match(/<tr>\n {4}<td>/g) ?? []).toHaveLength(2);
     expect(storedFpRec.status).toBe(200);
     expect(regeneratedFpRec.status).toBe(200);
     expect(regeneratedFpRec.text).toBe(storedFpRec.text);
