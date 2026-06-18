@@ -27,6 +27,9 @@ The canonical workflow is documented in [../product/fp-rec-four-step-workflow.md
 | [Deployment Readiness Checklist](../operator/v1-deployment-readiness.md) | Environment variables, migrations, backup/recovery, deployment checks, rollback checks, and production-default warnings. |
 | [Risk Register](v1-risk-register.md) | Known limitations and owner decisions required before or after v1 pilot deployment. |
 | [Validation Evidence](v1-validation-evidence-2026-06-17.md) | Current validation commands and green-state evidence for the review packet. |
+| [Launch Decision Matrix](v1-launch-decision-matrix.md) | Owner decisions required before the single-store pilot can proceed. |
+| [Launch Gate Checklist](v1-launch-gate-checklist.md) | Must-complete gates, accepted pilot risks, post-pilot deferrals, and no-go conditions. |
+| [Pilot Recommendation Summary](v1-pilot-recommendation-summary.md) | Conditional go/no-go recommendation for the private Hurst pilot and broader-rollout guidance. |
 
 ## Source-Of-Truth Map
 

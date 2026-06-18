@@ -113,5 +113,8 @@ docker compose run --rm frontend npm run build
 - [docs/implementation/exception-taxonomy.md](docs/implementation/exception-taxonomy.md) - exception classifications and FP REC placement.
 - [docs/implementation/reconciliation-artifacts.md](docs/implementation/reconciliation-artifacts.md) - artifact persistence, downloads, and review risks.
 - [docs/reviews/v1-security-code-review-packet.md](docs/reviews/v1-security-code-review-packet.md) - v1 security and code review packet, readiness checklist, risks, and validation evidence.
+- [docs/reviews/v1-launch-decision-matrix.md](docs/reviews/v1-launch-decision-matrix.md) - owner launch decisions for the single-store Hurst pilot.
+- [docs/reviews/v1-launch-gate-checklist.md](docs/reviews/v1-launch-gate-checklist.md) - must-complete launch gates, accepted pilot risks, and post-pilot deferrals.
+- [docs/reviews/v1-pilot-recommendation-summary.md](docs/reviews/v1-pilot-recommendation-summary.md) - conditional pilot recommendation and broader-rollout guidance.
 - [docs/operator/monthly-fp-rec-runbook.md](docs/operator/monthly-fp-rec-runbook.md) - monthly operator runbook.
 - [docs/implementation/documentation-audit.md](docs/implementation/documentation-audit.md) - documentation inventory, contradictions, and archival recommendations.
