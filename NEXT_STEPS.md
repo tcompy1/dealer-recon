@@ -21,13 +21,14 @@ Latest merged work:
 
 - PR #14 / Issue #13: Batch 3 review hardening.
 - PR #16 / Issue #15: v1 security and code review packet.
+- PR #18 / Issue #17: launch decision package.
 
 Current open work:
 
-- Draft PR #18 / Issue #17: launch decision package.
-- PR #18 is based on integration-cleanup-2026-06-10 and should be reviewed first tomorrow.
+- Draft PR #20 / Issue #19 is open for the next-steps handoff refresh.
+- PR #20 is based on integration-cleanup-2026-06-10.
 
-Issue #19 creates this next-steps handoff document only. It should not change application code or include PR #18's launch decision docs unless PR #18 is merged separately.
+Issue #19 creates this next-steps handoff document and keeps the already-committed server lint fixes on PR #20. This update is documentation-only and should not change application or reconciliation behavior.
 
 ## Current Project State
 
@@ -48,24 +49,23 @@ Completed areas:
 - Frontend/backend error handling hardening.
 - v1 security/code review packet.
 - Deployment readiness docs.
-- Launch decision docs in draft PR #18.
+- Launch decision docs merged in PR #18.
 
 Current launch decision state:
 
-- Owner decision package is drafted in PR #18 but not merged yet.
+- Owner decision package is merged in PR #18 / Issue #17.
 - Owner decisions are still pending for artifact retention, artifact integrity, accounting month boundary, upload security, CSRF posture, rate limiting, and infrastructure readiness.
-- The next engineering activity should be final validation after PR #18 is merged, not new feature work.
+- The next engineering activity should be final validation after PR #20 is merged, not new feature work.
 
 ## Tomorrow's First Steps
 
-1. Review PR #18 docs.
-2. If acceptable, mark PR #18 ready and merge into integration-cleanup-2026-06-10.
+1. Merge PR #20 into integration-cleanup-2026-06-10.
+2. Pull latest integration-cleanup-2026-06-10.
 3. Confirm the local working tree is clean.
-4. Pull latest integration-cleanup-2026-06-10.
-5. Decide whether to create a release branch or continue final readiness on the integration branch.
-6. Create the next GitHub issue only after PR #18 is merged.
+4. Create Issue: v1 Final Validation Signoff.
+5. Use that issue for final validation signoff work.
 
-## Next Likely Issue After PR #18
+## Next Issue After PR #20
 
 Likely issue title:
 
@@ -73,7 +73,7 @@ v1 Final Validation Signoff
 
 Expected scope:
 
-- Run final validation after PR #18 is merged.
+- Run final validation after PR #20 is merged.
 - Re-run server/frontend validation commands.
 - Validate known Hurst datasets if available locally.
 - Capture final validation signoff doc.
@@ -106,7 +106,7 @@ git pull
 git status --short
 ```
 
-After PR #18 is merged:
+After PR #20 is merged:
 
 ```bash
 cd server && npm run typecheck
@@ -119,16 +119,16 @@ git diff --check
 Useful PR checks:
 
 ```bash
-gh pr view 18 --json number,title,state,isDraft,mergeable,baseRefName,headRefName,url
-gh pr checkout 18
+gh pr view 20 --json number,title,state,isDraft,mergeable,baseRefName,headRefName,url
+gh pr checkout 20
 ```
 
 ## Session Handoff Summary
 
 For tomorrow's ChatGPT/Codex session:
 
-Start by reviewing draft PR #18 for Issue #17. If the launch decision matrix, launch gate checklist, and pilot recommendation summary are acceptable, mark PR #18 ready and merge it into integration-cleanup-2026-06-10. Then update the local checkout, confirm the worktree is clean, and create the next issue for v1 Final Validation Signoff. Do not begin new feature work or Batch 4 work.
+Start by merging PR #20 for Issue #19 into integration-cleanup-2026-06-10. Then pull latest integration-cleanup-2026-06-10, confirm the worktree is clean, and create Issue: v1 Final Validation Signoff. Do not begin new feature work or Batch 4 work.
 
 For the human owner:
 
-The project is ready for owner launch decisions, not automatic launch. The next meaningful decision is whether PR #18's launch decision package is acceptable as the go/no-go framework for the private Hurst Mazda FP REC pilot.
+The project is ready for owner launch decisions, not automatic launch. PR #18's launch decision package is merged as the go/no-go framework for the private Hurst Mazda FP REC pilot.
