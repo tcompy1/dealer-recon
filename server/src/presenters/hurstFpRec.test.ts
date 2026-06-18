@@ -281,7 +281,7 @@ function clerkContractDetail(): ReconciliationRunDetail {
   });
 }
 
-function clerkHtmlRows(detail: ReconciliationRunDetail = clerkContractDetail()): string[][] {
+function _clerkHtmlRows(detail: ReconciliationRunDetail = clerkContractDetail()): string[][] {
   return extractClerkDetailRows(toHurstFpRecXlsHtml(buildHurstFpRecWorkbook(detail)));
 }
 
@@ -443,7 +443,7 @@ function requireAmount(
   return amountCents;
 }
 
-function extractHeaderRows(html: string): string[][] {
+function _extractHeaderRows(html: string): string[][] {
   return extractTableRows(html).flatMap((rows) =>
     rows.filter((row) => row.headerCellCount > 0).map((row) => row.cells),
   );
@@ -498,19 +498,19 @@ function findRow(rows: string[][], predicate: (row: string[]) => boolean): strin
   return rows.find(predicate);
 }
 
-function expectBoaOnlyShape(row: string[] | undefined): void {
+function _expectBoaOnlyShape(row: string[] | undefined): void {
   expect(row).toBeDefined();
   expect(row?.slice(0, 4).every(hasText)).toBe(true);
   expect(row?.slice(4, 8)).toEqual(["", "", "", ""]);
 }
 
-function expectDealertrackOnlyShape(row: string[] | undefined): void {
+function _expectDealertrackOnlyShape(row: string[] | undefined): void {
   expect(row).toBeDefined();
   expect(row?.slice(0, 4)).toEqual(["", "", "", ""]);
   expect(row?.slice(4, 8).every(hasText)).toBe(true);
 }
 
-function countClerkRows(rows: string[][]): {
+function _countClerkRows(rows: string[][]): {
   matched: number;
   boaOnly: number;
   dealertrackOnly: number;
