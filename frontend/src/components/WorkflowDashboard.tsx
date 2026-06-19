@@ -249,13 +249,11 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       <TaskSelectionPanel />
 
       <section className="forge-panel forge-panel-pad grid gap-3">
-        <div className="flex flex-col gap-1">
-          <p className="forge-eyebrow">Step 3</p>
-          <h2 className="forge-section-title">Upload Inputs</h2>
-          <p className="forge-copy">
-            Upload the BOA and Dealertrack source files for the selected store/month run.
-          </p>
-        </div>
+        <StepHeading
+          step="Step 3"
+          title="Upload Inputs"
+          description="Upload the BOA and Dealertrack source files for the selected store/month run."
+        />
 
         <div className="grid gap-4 lg:grid-cols-2">
           <UploadPanel
@@ -305,14 +303,13 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       </section>
 
       <section className="forge-panel forge-panel-pad flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="flex-1">
-          <p className="forge-eyebrow">Step 4</p>
-          <h2 className="forge-section-title">Run Workflow</h2>
-          <p className="forge-copy mt-1">
-            Selected BOA #{boaUpload.upload?.source_file_id ?? "none"} and Dealertrack #
-            {dealertrackUpload.upload?.source_file_id ?? "none"}
-          </p>
-        </div>
+        <StepHeading
+          step="Step 4"
+          title="Run Workflow"
+          description={`Selected BOA #${boaUpload.upload?.source_file_id ?? "none"} and Dealertrack #${
+            dealertrackUpload.upload?.source_file_id ?? "none"
+          }`}
+        />
         <button
           className="forge-button-primary w-full md:w-auto md:flex-shrink-0"
           disabled={!canModify || !canReconcile || isReconciling}
@@ -387,14 +384,14 @@ function PilotWorkflowIntro({
   return (
     <section className="forge-workflow-intro grid gap-3">
       <div className="grid gap-1">
-        <p className="forge-eyebrow">v1 floorplan workflow</p>
+        <p className="forge-brand-kicker">v1 floorplan workflow</p>
         <h2 className="forge-section-title">Five steps to the FP REC workpaper</h2>
         <p className="forge-copy max-w-4xl">
           Select the store, confirm Floorplan Reconciliation, upload the source files, run the workflow,
           then download the merged export and FP REC final workpaper.
         </p>
       </div>
-      <div className="grid gap-3 md:grid-cols-5">
+      <div className="forge-workflow-map md:grid-cols-5">
         {steps.map((step) => (
           <PilotWorkflowStep
             detail={step.detail}
@@ -444,6 +441,26 @@ function PilotWorkflowStep({
   );
 }
 
+function StepHeading({
+  description,
+  step,
+  title,
+}: {
+  description: string;
+  step: string;
+  title: string;
+}) {
+  return (
+    <div className="forge-step-heading flex-1">
+      <span className="forge-step-number">{step}</span>
+      <div className="grid gap-1">
+        <h2 className="forge-section-title">{title}</h2>
+        <p className="forge-copy">{description}</p>
+      </div>
+    </div>
+  );
+}
+
 function StoreManagementPanel({
   newStoreName,
   selectedStoreId,
@@ -461,13 +478,11 @@ function StoreManagementPanel({
 }) {
   return (
     <section className="forge-panel forge-panel-pad grid gap-3">
-      <div className="grid gap-1">
-        <p className="forge-eyebrow">Step 1</p>
-        <h2 className="forge-section-title">Select Store</h2>
-        <p className="forge-copy">
-          Choose the store for this run before uploading BOA and Dealertrack files.
-        </p>
-      </div>
+      <StepHeading
+        step="Step 1"
+        title="Select Store"
+        description="Choose the store for this run before uploading BOA and Dealertrack files."
+      />
       <div className="flex flex-col gap-3 lg:max-w-md">
         <label className="forge-field">
           Store
@@ -517,13 +532,11 @@ function StoreManagementPanel({
 function TaskSelectionPanel() {
   return (
     <section className="forge-panel forge-panel-pad grid gap-3">
-      <div className="grid gap-1">
-        <p className="forge-eyebrow">Step 2</p>
-        <h2 className="forge-section-title">Select Task</h2>
-        <p className="forge-copy">
-          The v1 task is fixed to Floorplan Reconciliation for the selected store/month.
-        </p>
-      </div>
+      <StepHeading
+        step="Step 2"
+        title="Select Task"
+        description="The v1 task is fixed to Floorplan Reconciliation for the selected store/month."
+      />
       <div className="forge-task-band">
         <p className="text-sm font-semibold text-slate-950">Floorplan Reconciliation</p>
         <p className="forge-copy mt-1">
@@ -716,16 +729,17 @@ function ResultsSection({
   return (
     <section className="forge-panel forge-panel-pad grid gap-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-        <div className="flex flex-col gap-1">
-          <p className="forge-eyebrow">Step 5</p>
-          <h2 className="forge-section-title">Download Outputs</h2>
-          {run ? (
-            <p className="forge-copy">
-              Run {formatRunId(run.created_at)} for {run.store_name ?? "Unassigned store"} from{" "}
-              {formatDateTime(run.created_at)} is ready for its merged export and FP REC final workpaper.
-            </p>
-          ) : null}
-        </div>
+        <StepHeading
+          step="Step 5"
+          title="Download Outputs"
+          description={
+            run
+              ? `Run ${formatRunId(run.created_at)} for ${
+                  run.store_name ?? "Unassigned store"
+                } from ${formatDateTime(run.created_at)} is ready for its merged export and FP REC final workpaper.`
+              : "Download the merged export and FP REC final workpaper when the run is ready."
+          }
+        />
         {run ? (
           <div className="flex flex-wrap gap-2">
             <a
