@@ -43,7 +43,7 @@ export function PreprocessingDiagnosticsPanel({
 
   if (preprocessing.unsupported_reason) {
     return (
-      <section className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-950">
+      <section className="forge-notice forge-notice-danger">
         <h4 className="text-sm font-semibold">{sourceLabel} upload could not be processed</h4>
         <p className="mt-1">{preprocessing.unsupported_reason}</p>
         <FormatLine preprocessing={preprocessing} />
@@ -53,7 +53,7 @@ export function PreprocessingDiagnosticsPanel({
 
   if (preprocessing.legacy_csv_path) {
     return (
-      <section className="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+      <section className="forge-notice forge-notice-info">
         <h4 className="text-sm font-semibold text-slate-950">
           {sourceLabel} upload processed (legacy CSV path)
         </h4>
@@ -72,17 +72,17 @@ export function PreprocessingDiagnosticsPanel({
   const canRepairVin = sourceType === "dealertrack" && typeof sourceFileId === "number";
 
   return (
-    <section className="grid gap-3 rounded-md border border-cyan-200 bg-cyan-50 text-sm text-cyan-950">
+    <section className="forge-panel forge-panel-muted grid gap-3 text-sm text-slate-800">
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="flex w-full items-center justify-between gap-3 p-4 text-left transition hover:bg-cyan-100/50"
+        className="flex w-full items-center justify-between gap-3 p-3 text-left transition hover:bg-white/60"
         type="button"
       >
         <div className="flex flex-col gap-1">
-          <h4 className="text-base font-semibold text-slate-950">
+          <h4 className="text-sm font-semibold text-slate-950">
             What the system did with this {sourceLabel} file
           </h4>
-          <p className="text-sm text-slate-700">
+          <p className="forge-copy">
             {isExpanded ? "Click to collapse details" : "Click to expand preprocessing details"}
           </p>
         </div>
@@ -97,12 +97,12 @@ export function PreprocessingDiagnosticsPanel({
       </button>
 
       {isExpanded ? (
-        <div className="grid gap-3 px-4 pb-4">
+        <div className="grid gap-3 px-3 pb-3">
           <FormatLine preprocessing={preprocessing} />
           <HeadlineMetrics metrics={metrics} />
 
           {amountColumnNote ? (
-            <div className="rounded-md border border-cyan-300 bg-white px-3 py-2 text-sm font-medium text-slate-800">
+            <div className="forge-task-band text-sm font-medium text-slate-800">
               {amountColumnNote}
             </div>
           ) : null}
@@ -119,7 +119,7 @@ export function PreprocessingDiagnosticsPanel({
           </div>
         </div>
       ) : (
-        <div className="px-4 pb-4">
+        <div className="px-3 pb-3">
           <HeadlineMetrics metrics={metrics} />
         </div>
       )}
@@ -196,8 +196,8 @@ function MetricChip({
             : "border-slate-300 bg-white text-slate-800";
   return (
     <div className={`rounded-md border px-3 py-2 ${toneClass}`}>
-      <p className="text-xs font-semibold uppercase tracking-wide">{label}</p>
-      <p className="mt-1 text-xl font-semibold">{value}</p>
+      <p className="text-xs font-semibold uppercase">{label}</p>
+      <p className="mt-1 text-lg font-semibold">{value}</p>
     </div>
   );
 }
@@ -282,8 +282,8 @@ function DiagnosticList({
         ))}
       </ul>
       {remaining.length > 0 ? (
-        <details className="rounded-md border border-slate-200 bg-white px-3 py-2">
-          <summary className="cursor-pointer text-xs font-semibold text-slate-700">
+        <details className="forge-panel px-3 py-2">
+          <summary className="forge-summary text-xs">
             Show {remaining.length} more
           </summary>
           <ul className="mt-2 grid gap-1">
@@ -320,12 +320,12 @@ function DiagnosticRow({
       ? "File-level"
       : `Row ${diagnostic.source_row_number}`;
   return (
-    <li className="rounded-md bg-white px-3 py-2 text-sm shadow-sm">
+    <li className="rounded-sm bg-white px-3 py-2 text-sm">
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="inline-flex rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700">
+        <span className="inline-flex rounded-sm bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700">
           {rowLabel}
         </span>
-        <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+        <span className="text-xs font-semibold uppercase text-slate-500">
           {labelForKind(diagnostic.kind)}
         </span>
       </div>

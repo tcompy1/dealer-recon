@@ -10,12 +10,12 @@ export function DashboardPage({
   embedded?: boolean;
 }) {
   const content = (
-    <section className={embedded ? "grid gap-8" : "grid flex-1 content-start gap-8 py-8"}>
+    <section className={embedded ? "grid gap-5" : "forge-page-stack"}>
       {!embedded ? (
-        <div className="flex flex-col gap-2">
-          <p className="text-sm font-semibold text-cyan-700">Dealer Recon</p>
-          <h1 className="text-3xl font-semibold text-slate-950">Store/month floorplan workflow</h1>
-          <p className="text-sm text-slate-600">
+        <div className="forge-page-header">
+          <p className="forge-eyebrow">Dealer Recon</p>
+          <h1 className="forge-page-title">Store/month floorplan workflow</h1>
+          <p className="forge-copy max-w-3xl">
             Upload raw BOA and Dealertrack files, process the selected store's workflow, then download
             that run's merged spreadsheet and FP REC.
           </p>

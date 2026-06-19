@@ -120,7 +120,7 @@ export function VinEnrichmentModal({
       <div className="mt-2">
         <button
           type="button"
-          className="inline-flex items-center rounded-md border border-cyan-300 bg-white px-2.5 py-1 text-xs font-semibold text-cyan-800 shadow-sm hover:bg-cyan-50"
+          className="forge-button-secondary min-h-8 px-3 text-xs"
           onClick={() => {
             setIsOpen(true);
             setSuccessMessage(null);
@@ -139,11 +139,11 @@ export function VinEnrichmentModal({
       aria-modal="true"
       aria-label="Repair VIN"
     >
-      <div className="w-full max-w-lg rounded-lg bg-white p-5 shadow-xl">
+      <div className="forge-panel forge-panel-pad w-full max-w-lg">
         <header className="flex items-start justify-between gap-4">
           <div>
-            <h3 className="text-base font-semibold text-slate-950">Repair VIN</h3>
-            <p className="text-xs text-slate-600">
+            <h3 className="text-sm font-semibold text-slate-950">Repair VIN</h3>
+            <p className="forge-copy text-xs">
               Manual VIN enrichment for a Dealertrack row. Reconciliation will not auto-rerun.
             </p>
           </div>
@@ -156,7 +156,7 @@ export function VinEnrichmentModal({
           </button>
         </header>
 
-        <dl className="mt-4 grid gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+        <dl className="forge-panel forge-panel-muted mt-4 grid gap-2 p-3 text-xs text-slate-700">
           <div className="flex justify-between gap-2">
             <dt className="font-semibold">Source row</dt>
             <dd>{sourceRowNumber ?? "n/a"}</dd>
@@ -186,14 +186,14 @@ export function VinEnrichmentModal({
         </dl>
 
         {transactionsError ? (
-          <p className="mt-3 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-900">
+          <p className="forge-notice forge-notice-danger mt-3 text-xs">
             {transactionsError}
           </p>
         ) : null}
 
         {isMatchUnsafe ? (
           <p
-            className="mt-3 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-900"
+            className="forge-notice forge-notice-danger mt-3 text-xs"
             data-testid="unsafe-match-notice"
           >
             {UNSAFE_DIAGNOSTIC_MATCH_MESSAGE}
@@ -201,21 +201,21 @@ export function VinEnrichmentModal({
         ) : null}
 
         {successMessage ? (
-          <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+          <div className="forge-notice forge-notice-success mt-4">
             {successMessage}
           </div>
         ) : null}
 
         {!successMessage ? (
           <form className="mt-4 grid gap-3" onSubmit={handleSubmit}>
-            <label className="grid gap-1 text-sm">
+            <label className="forge-field">
               <span className="font-semibold text-slate-800">Corrected VIN (17 chars)</span>
               <input
                 type="text"
                 value={vin}
                 maxLength={17}
                 onChange={(event) => setVin(event.target.value.toUpperCase())}
-                className="rounded-md border border-slate-300 px-2 py-1 font-mono uppercase"
+                className="forge-control font-mono uppercase"
                 aria-invalid={vin.length > 0 && !isVinValid}
                 data-testid="vin-input"
               />
@@ -226,12 +226,12 @@ export function VinEnrichmentModal({
               ) : null}
             </label>
 
-            <label className="grid gap-1 text-sm">
+            <label className="forge-field">
               <span className="font-semibold text-slate-800">Source</span>
               <select
                 value={source}
                 onChange={(event) => setSource(event.target.value as VinEnrichmentSource)}
-                className="rounded-md border border-slate-300 px-2 py-1"
+                className="forge-control"
                 data-testid="source-select"
               >
                 <option value="manual_enrichment">Manual entry (clerk)</option>
@@ -240,32 +240,32 @@ export function VinEnrichmentModal({
               </select>
             </label>
 
-            <label className="grid gap-1 text-sm">
+            <label className="forge-field">
               <span className="font-semibold text-slate-800">Reason / note</span>
               <textarea
                 value={reason}
                 rows={3}
                 onChange={(event) => setReason(event.target.value)}
-                className="rounded-md border border-slate-300 px-2 py-1"
+                className="forge-control min-h-20 py-2"
                 data-testid="reason-input"
                 placeholder="What did you verify, and where?"
               />
             </label>
 
-            <label className="grid gap-1 text-sm">
+            <label className="forge-field">
               <span className="font-semibold text-slate-800">DMS reference (optional)</span>
               <input
                 type="text"
                 value={dmsReference}
                 onChange={(event) => setDmsReference(event.target.value)}
-                className="rounded-md border border-slate-300 px-2 py-1"
+                className="forge-control"
                 placeholder="e.g. Reynolds deal #123"
               />
             </label>
 
             {submitError ? (
               <p
-                className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-900"
+                className="forge-notice forge-notice-danger text-xs"
                 data-testid="submit-error"
               >
                 {submitError}
@@ -276,7 +276,7 @@ export function VinEnrichmentModal({
               <button
                 type="button"
                 onClick={close}
-                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-700"
+                className="forge-button-secondary"
               >
                 Cancel
               </button>
@@ -288,7 +288,7 @@ export function VinEnrichmentModal({
                   !isReasonProvided ||
                   matchedTransaction === null
                 }
-                className="rounded-md bg-cyan-700 px-3 py-1.5 text-sm font-semibold text-white hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                className="forge-button-accent"
               >
                 {isSubmitting ? "Applying…" : "Apply VIN repair"}
               </button>
@@ -299,7 +299,7 @@ export function VinEnrichmentModal({
             <button
               type="button"
               onClick={close}
-              className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white"
+              className="forge-button-primary"
             >
               Close
             </button>
