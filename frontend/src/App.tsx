@@ -113,7 +113,7 @@ export default function App() {
 
         {section === "reconciliation" ? <DashboardPage currentUser={currentUser} embedded /> : null}
         {section === "accounts" ? <AccountsPage /> : null}
-        {section === "reports" ? <ReportsPage /> : null}
+        {section === "reports" ? <ReportsPage currentUser={currentUser} /> : null}
       </section>
     </Layout>
   );

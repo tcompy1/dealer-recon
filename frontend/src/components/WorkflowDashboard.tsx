@@ -1,65 +1,33 @@
-import { type ChangeEvent, useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, useEffect, useState } from "react";
 
-import {
-  createScheduledJob,
-  getAutomationStatus,
-  getOperationalMetrics,
-  listIngestionEvents,
-  listOperationalEvents,
-  listScheduledJobs,
-  updateScheduledJob,
-} from "../api/automation";
 import {
   getArtifactDownloadUrl,
   getFpRecExportUrl,
   getMergedFloorplanExportUrl,
-  getReconciliationExceptionsCsvUrl,
   getReconciliationRun,
-  getReconciliationRunAnalytics,
   listReconciliationArtifacts,
-  listReconciliationRuns,
   reconcileSourceFiles,
   replayReconciliationRun,
-  updateReconciliationExceptionReview,
 } from "../api/reconciliation";
-import {
-  createDealershipStore,
-  getDealerGroupAnalytics,
-  listDealerGroups,
-  listDealershipStores,
-} from "../api/stores";
-import { UploadError, listSourceFiles, uploadSourceFile } from "../api/uploads";
+import { createDealershipStore, listDealerGroups, listDealershipStores } from "../api/stores";
+import { UploadError, uploadSourceFile } from "../api/uploads";
 import { PreprocessingDiagnosticsPanel } from "./preprocessing/PreprocessingDiagnosticsPanel";
 import { VinPresenceDiagnosticsPanel } from "./VinPresenceDiagnosticsPanel";
 import type {
   ReconciledTransaction,
   ReconciliationArtifact,
   ReconciliationArtifactType,
-  ReconciliationExceptionStatus,
-  ReconciliationExceptionReviewUpdate,
-  ReconciliationExceptionReviewStatus,
-  ReconciliationRunComparison,
-  ReconciliationRunFilters,
   ReconciliationRunDetail,
-  ReconciliationRunListItem,
   ReconciliationReplayResponse,
   VinPresenceDiagnostics,
 } from "../types/reconciliation";
 import type {
-  SourceFileSummary,
   UploadPreprocessingMetadata,
   UploadResponse,
   UploadValidationError,
 } from "../types/sourceFile";
-import type {
-  IngestionEvent,
-  OperationalEvent,
-  OperationalMetrics,
-  ScheduledReconciliationJob,
-  StoreAutomationStatus,
-} from "../types/automation";
 import type { CurrentUser } from "../types/auth";
-import type { DealerGroup, DealerGroupAnalytics, DealershipStore } from "../types/store";
+import type { DealerGroup, DealershipStore } from "../types/store";
 import { formatRunId } from "../utils/formatRunId";
 
 type UploadSlot = {
@@ -101,29 +69,17 @@ const ARTIFACT_SORT_ORDER: ReconciliationArtifactType[] = [
 export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }) {
   const [boaUpload, setBoaUpload] = useState<UploadSlot>(initialUploadSlot);
   const [dealertrackUpload, setDealertrackUpload] = useState<UploadSlot>(initialUploadSlot);
-  const [sourceFiles, setSourceFiles] = useState<SourceFileSummary[]>([]);
-  const [reconciliationRuns, setReconciliationRuns] = useState<ReconciliationRunListItem[]>([]);
   const [dealerGroups, setDealerGroups] = useState<DealerGroup[]>([]);
   const [stores, setStores] = useState<DealershipStore[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState<number | null>(null);
   const [newStoreName, setNewStoreName] = useState("");
-  const [groupAnalytics, setGroupAnalytics] = useState<DealerGroupAnalytics[]>([]);
-  const [scheduledJobs, setScheduledJobs] = useState<ScheduledReconciliationJob[]>([]);
-  const [automationStatuses, setAutomationStatuses] = useState<StoreAutomationStatus[]>([]);
-  const [ingestionEvents, setIngestionEvents] = useState<IngestionEvent[]>([]);
-  const [operationalEvents, setOperationalEvents] = useState<OperationalEvent[]>([]);
-  const [operationalMetrics, setOperationalMetrics] = useState<OperationalMetrics | null>(null);
   const [activeRun, setActiveRun] = useState<ReconciliationRunDetail | null>(null);
   const [activeRunDiagnostics, setActiveRunDiagnostics] = useState<VinPresenceDiagnostics | null>(null);
-  const [activeRunAnalytics, setActiveRunAnalytics] = useState<ReconciliationRunComparison | null>(null);
   const [activeRunReplay, setActiveRunReplay] = useState<ReconciliationReplayResponse | null>(null);
   const [activeRunArtifacts, setActiveRunArtifacts] = useState<ReconciliationArtifact[]>([]);
   const [activeRunArtifactsError, setActiveRunArtifactsError] = useState<string | null>(null);
   const [isReconciling, setIsReconciling] = useState(false);
   const [isReplaying, setIsReplaying] = useState(false);
-  const [historyLoadingId, setHistoryLoadingId] = useState<number | null>(null);
-  const [exceptionFilters, setExceptionFilters] = useState<ReconciliationRunFilters>({});
-  const [reviewUpdatingId, setReviewUpdatingId] = useState<number | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
   const [isReconciliationStale, setIsReconciliationStale] = useState(false);
 
@@ -142,26 +98,8 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     if (selectedStoreId === null && activeStoreId !== null) {
       setSelectedStoreId(activeStoreId);
     }
-    const [uploads, runs, analytics, jobs, statuses, ingestion, alerts, metrics] = await Promise.all([
-      listSourceFiles(undefined, activeStoreId),
-      listReconciliationRuns(activeStoreId),
-      getDealerGroupAnalytics(),
-      listScheduledJobs(activeStoreId),
-      getAutomationStatus(),
-      listIngestionEvents(activeStoreId),
-      listOperationalEvents(activeStoreId),
-      getOperationalMetrics(),
-    ]);
     setDealerGroups(groups);
     setStores(storeList);
-    setSourceFiles(uploads);
-    setReconciliationRuns(runs);
-    setGroupAnalytics(analytics);
-    setScheduledJobs(jobs);
-    setAutomationStatuses(statuses);
-    setIngestionEvents(ingestion);
-    setOperationalEvents(alerts);
-    setOperationalMetrics(metrics);
   }
 
   async function handleUpload(kind: SourceKind) {
@@ -194,7 +132,6 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         isUploading: false,
         errorPreprocessing: null,
       }));
-      await refreshAutomationPanels(selectedStoreId);
     } catch (error) {
       const errorPreprocessing =
         error instanceof UploadError ? error.preprocessing : null;
@@ -223,17 +160,12 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         dealertrackSourceFileId: dealertrackUpload.upload.source_file_id,
         dealershipStoreId: selectedStoreId,
       });
-      const detail = await getReconciliationRun(result.reconciliation_run_id, exceptionFilters);
-      const analytics = await getReconciliationRunAnalytics(result.reconciliation_run_id);
+      const detail = await getReconciliationRun(result.reconciliation_run_id);
       setActiveRun(detail);
       setActiveRunDiagnostics(result.vin_presence_diagnostics);
-      setActiveRunAnalytics(analytics);
       setActiveRunReplay(null);
       await loadRunArtifacts(result.reconciliation_run_id);
       setIsReconciliationStale(false);
-      setReconciliationRuns(await listReconciliationRuns(selectedStoreId));
-      setGroupAnalytics(await getDealerGroupAnalytics());
-      await refreshAutomationPanels(selectedStoreId);
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Reconciliation failed.");
     } finally {
@@ -241,34 +173,15 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     }
   }
 
-  async function handleStoreChange(storeId: number | null) {
+  function handleStoreChange(storeId: number | null) {
     setSelectedStoreId(storeId);
     setActiveRun(null);
     setActiveRunDiagnostics(null);
-    setActiveRunAnalytics(null);
     setActiveRunReplay(null);
     setActiveRunArtifacts([]);
     setActiveRunArtifactsError(null);
     setBoaUpload(initialUploadSlot);
     setDealertrackUpload(initialUploadSlot);
-    const [uploads, runs, analytics, jobs, ingestion, alerts, metrics, statuses] = await Promise.all([
-      listSourceFiles(undefined, storeId),
-      listReconciliationRuns(storeId),
-      getDealerGroupAnalytics(),
-      listScheduledJobs(storeId),
-      listIngestionEvents(storeId),
-      listOperationalEvents(storeId),
-      getOperationalMetrics(),
-      getAutomationStatus(),
-    ]);
-    setSourceFiles(uploads);
-    setReconciliationRuns(runs);
-    setGroupAnalytics(analytics);
-    setScheduledJobs(jobs);
-    setIngestionEvents(ingestion);
-    setOperationalEvents(alerts);
-    setOperationalMetrics(metrics);
-    setAutomationStatuses(statuses);
   }
 
   async function handleCreateStore() {
@@ -284,73 +197,9 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       });
       setNewStoreName("");
       setStores(await listDealershipStores());
-      await handleStoreChange(store.id);
+      handleStoreChange(store.id);
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "Store could not be created.");
-    }
-  }
-
-  async function handleViewRun(reconciliationRunId: number) {
-    setHistoryLoadingId(reconciliationRunId);
-    setWorkflowError(null);
-
-    try {
-      const [detail, analytics] = await Promise.all([
-        getReconciliationRun(reconciliationRunId, exceptionFilters),
-        getReconciliationRunAnalytics(reconciliationRunId),
-      ]);
-      setActiveRun(detail);
-      setActiveRunDiagnostics(null);
-      setActiveRunAnalytics(analytics);
-      setActiveRunReplay(null);
-      await loadRunArtifacts(reconciliationRunId);
-    } catch (error) {
-      setWorkflowError(error instanceof Error ? error.message : "Run detail could not be loaded.");
-    } finally {
-      setHistoryLoadingId(null);
-    }
-  }
-
-  async function handleFilterChange(filters: ReconciliationRunFilters) {
-    setExceptionFilters(filters);
-    if (!activeRun) {
-      return;
-    }
-
-    setWorkflowError(null);
-    try {
-      setActiveRun(await getReconciliationRun(activeRun.reconciliation_run_id, filters));
-    } catch (error) {
-      setWorkflowError(error instanceof Error ? error.message : "Run detail could not be loaded.");
-    }
-  }
-
-  async function handleExceptionReviewUpdate(
-    exceptionId: number,
-    update: ReconciliationExceptionReviewUpdate,
-  ) {
-    if (!activeRun) {
-      return;
-    }
-
-    setReviewUpdatingId(exceptionId);
-    setWorkflowError(null);
-    try {
-      await updateReconciliationExceptionReview({
-        reconciliationRunId: activeRun.reconciliation_run_id,
-        exceptionId,
-        update,
-      });
-      const [detail, analytics] = await Promise.all([
-        getReconciliationRun(activeRun.reconciliation_run_id, exceptionFilters),
-        getReconciliationRunAnalytics(activeRun.reconciliation_run_id),
-      ]);
-      setActiveRun(detail);
-      setActiveRunAnalytics(analytics);
-    } catch (error) {
-      setWorkflowError(error instanceof Error ? error.message : "Exception review could not be saved.");
-    } finally {
-      setReviewUpdatingId(null);
     }
   }
 
@@ -379,103 +228,39 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     }
   }
 
-  async function refreshAutomationPanels(storeId: number | null) {
-    const [uploads, runs, jobs, ingestion, alerts, metrics, statuses] = await Promise.all([
-      listSourceFiles(undefined, storeId),
-      listReconciliationRuns(storeId),
-      listScheduledJobs(storeId),
-      listIngestionEvents(storeId),
-      listOperationalEvents(storeId),
-      getOperationalMetrics(),
-      getAutomationStatus(),
-    ]);
-    setSourceFiles(uploads);
-    setReconciliationRuns(runs);
-    setScheduledJobs(jobs);
-    setIngestionEvents(ingestion);
-    setOperationalEvents(alerts);
-    setOperationalMetrics(metrics);
-    setAutomationStatuses(statuses);
-  }
-
-  async function handleCreateScheduledJob() {
-    if (!selectedStoreId) {
-      return;
-    }
-    setWorkflowError(null);
-    try {
-      await createScheduledJob({
-        dealership_store_id: selectedStoreId,
-        cadence: "daily",
-        expected_source_types: ["boa", "dealertrack"],
-        enabled: true,
-        auto_run_on_pair: true,
-      });
-      await refreshAutomationPanels(selectedStoreId);
-    } catch (error) {
-      setWorkflowError(error instanceof Error ? error.message : "Scheduled job could not be created.");
-    }
-  }
-
-  async function handleToggleScheduledJob(job: ScheduledReconciliationJob, enabled: boolean) {
-    setWorkflowError(null);
-    try {
-      await updateScheduledJob(job.id, { enabled });
-      await refreshAutomationPanels(selectedStoreId);
-    } catch (error) {
-      setWorkflowError(error instanceof Error ? error.message : "Scheduled job could not be updated.");
-    }
-  }
-
   return (
     <div className="grid gap-6">
       <PilotWorkflowIntro
+        hasStore={Boolean(selectedStoreId)}
         hasBoaUpload={Boolean(boaUpload.upload)}
         hasDealertrackUpload={Boolean(dealertrackUpload.upload)}
         hasRun={Boolean(activeRun)}
       />
 
-      <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm md:p-5">
-        <StoreManagementPanel
-          analytics={groupAnalytics}
-          newStoreName={newStoreName}
-          selectedStoreId={selectedStoreId}
-          stores={stores}
-          onCreateStore={() => void handleCreateStore()}
-          onNewStoreNameChange={setNewStoreName}
-          onStoreChange={(storeId) => void handleStoreChange(storeId)}
-        />
-        <details className="border-t border-slate-200 pt-3">
-          <summary className="cursor-pointer text-sm font-semibold text-slate-600">
-            Advanced automation and operational status
-          </summary>
-          <div className="mt-4 opacity-80">
-            <AutomationOverview
-              events={operationalEvents}
-              ingestionEvents={ingestionEvents}
-              jobs={scheduledJobs}
-              metrics={operationalMetrics}
-              selectedStoreId={selectedStoreId}
-              statuses={automationStatuses}
-              onCreateJob={() => void handleCreateScheduledJob()}
-              onToggleJob={(job, enabled) => void handleToggleScheduledJob(job, enabled)}
-              canModify={canModify}
-            />
-          </div>
-        </details>
+      <StoreManagementPanel
+        newStoreName={newStoreName}
+        selectedStoreId={selectedStoreId}
+        stores={stores}
+        onCreateStore={() => void handleCreateStore()}
+        onNewStoreNameChange={setNewStoreName}
+        onStoreChange={(storeId) => void handleStoreChange(storeId)}
+      />
 
-        <div className="flex flex-col gap-1 border-t border-slate-200 pt-4">
-          <p className="text-xs font-semibold uppercase text-cyan-700">Steps 1 and 2</p>
-          <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Upload raw BOA and Dealertrack files</h2>
+      <TaskSelectionPanel />
+
+      <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+        <div className="flex flex-col gap-1">
+          <p className="text-xs font-semibold uppercase text-cyan-700">Step 3</p>
+          <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Upload Inputs</h2>
           <p className="text-sm text-slate-600">
-            Work one store/month run at a time so each run produces its own merged spreadsheet and FP REC.
+            Upload the BOA and Dealertrack source files for the selected store/month run.
           </p>
         </div>
 
         <div className="grid gap-4 md:gap-6 lg:grid-cols-2">
           <UploadPanel
             kind="boa"
-            label="Step 1: Upload BOA"
+            label="BOA input"
             slot={boaUpload}
             onFileChange={(file) =>
               setBoaUpload((current) => ({
@@ -491,7 +276,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
           />
           <UploadPanel
             kind="dealertrack"
-            label="Step 2: Upload Dealertrack"
+            label="Dealertrack input"
             slot={dealertrackUpload}
             onFileChange={(file) =>
               setDealertrackUpload((current) => ({
@@ -517,13 +302,12 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
           </div>
         ) : null}
 
-        <RecentUploads sourceFiles={sourceFiles} />
       </section>
 
       <section className="flex flex-col gap-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm md:flex-row md:items-center md:justify-between md:p-5">
         <div className="flex-1">
-          <p className="text-xs font-semibold uppercase text-cyan-700">Step 3</p>
-          <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Clean/process reconciliation</h2>
+          <p className="text-xs font-semibold uppercase text-cyan-700">Step 4</p>
+          <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Run Workflow</h2>
           <p className="mt-1 text-sm text-slate-600">
             Selected BOA #{boaUpload.upload?.source_file_id ?? "none"} and Dealertrack #
             {dealertrackUpload.upload?.source_file_id ?? "none"}
@@ -535,73 +319,67 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
           type="button"
           onClick={() => void handleReconcile()}
         >
-          {isReconciling ? "Processing..." : "Run/process reconciliation"}
+          {isReconciling ? "Running workflow..." : "Run Workflow"}
         </button>
       </section>
 
       {workflowError ? <ErrorBanner message={workflowError} /> : null}
 
       <ResultsSection
-        analytics={activeRunAnalytics}
         artifacts={activeRunArtifacts}
         artifactsError={activeRunArtifactsError}
         diagnostics={activeRunDiagnostics}
-        filters={exceptionFilters}
         replay={activeRunReplay}
         run={activeRun}
         isReconciling={isReconciling}
         isReplaying={isReplaying}
-        onFiltersChange={(filters) => void handleFilterChange(filters)}
         onReplay={() => void handleReplayRun()}
-        onReviewUpdate={(exceptionId, update) =>
-          void handleExceptionReviewUpdate(exceptionId, update)
-        }
-        reviewUpdatingId={reviewUpdatingId}
-        canModify={canModify}
-      />
-
-      <HistorySection
-        activeRunId={activeRun?.reconciliation_run_id ?? null}
-        loadingRunId={historyLoadingId}
-        runs={reconciliationRuns}
-        onViewRun={(runId) => void handleViewRun(runId)}
       />
     </div>
   );
 }
 
 function PilotWorkflowIntro({
+  hasStore,
   hasBoaUpload,
   hasDealertrackUpload,
   hasRun,
 }: {
+  hasStore: boolean;
   hasBoaUpload: boolean;
   hasDealertrackUpload: boolean;
   hasRun: boolean;
 }) {
+  const hasInputs = hasBoaUpload && hasDealertrackUpload;
   const steps = [
     {
       label: "Step 1",
-      title: "Upload BOA",
-      detail: "Raw billing statement",
-      state: hasBoaUpload ? "complete" : "current",
+      title: "Select Store",
+      detail: "Choose the store for this run",
+      state: hasStore ? "complete" : "current",
     },
     {
       label: "Step 2",
-      title: "Upload Dealertrack",
-      detail: "Raw schedule export",
-      state: hasDealertrackUpload ? "complete" : hasBoaUpload ? "current" : "waiting",
+      title: "Select Task",
+      detail: "Floorplan Reconciliation",
+      state: hasStore ? "complete" : "waiting",
     },
     {
       label: "Step 3",
-      title: "Run/process",
-      detail: "Store workflow cleaning",
-      state: hasRun ? "complete" : hasBoaUpload && hasDealertrackUpload ? "current" : "waiting",
+      title: "Upload Inputs",
+      detail: "BOA and Dealertrack files",
+      state: hasInputs ? "complete" : hasStore ? "current" : "waiting",
     },
     {
       label: "Step 4",
-      title: "Download artifacts",
-      detail: "Merged spreadsheet and FP REC",
+      title: "Run Workflow",
+      detail: "Generate the workpaper outputs",
+      state: hasRun ? "complete" : hasInputs ? "current" : "waiting",
+    },
+    {
+      label: "Step 5",
+      title: "Download Outputs",
+      detail: "Merged export and FP REC",
       state: hasRun ? "current" : "waiting",
     },
   ] as const;
@@ -609,14 +387,14 @@ function PilotWorkflowIntro({
   return (
     <section className="grid gap-4 rounded-md border border-cyan-200 bg-cyan-50 p-4 shadow-sm md:p-5">
       <div className="grid gap-1">
-        <p className="text-xs font-semibold uppercase text-cyan-800">Hiley floorplan pilot workflow</p>
-        <h2 className="text-xl font-semibold text-slate-950">One store/month run, two artifacts</h2>
+        <p className="text-xs font-semibold uppercase text-cyan-800">v1 floorplan workflow</p>
+        <h2 className="text-xl font-semibold text-slate-950">Five steps to the FP REC workpaper</h2>
         <p className="max-w-4xl text-sm text-slate-700">
-          Upload the raw BOA and Dealertrack files for the selected store, process them with that store's
-          workflow, then download that run's merged spreadsheet and FP REC.
+          Select the store, confirm Floorplan Reconciliation, upload the source files, run the workflow,
+          then download the merged export and FP REC final workpaper.
         </p>
       </div>
-      <div className="grid gap-3 md:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-5">
         {steps.map((step) => (
           <PilotWorkflowStep
             detail={step.detail}
@@ -667,7 +445,6 @@ function PilotWorkflowStep({
 }
 
 function StoreManagementPanel({
-  analytics,
   newStoreName,
   selectedStoreId,
   stores,
@@ -675,7 +452,6 @@ function StoreManagementPanel({
   onNewStoreNameChange,
   onStoreChange,
 }: {
-  analytics: DealerGroupAnalytics[];
   newStoreName: string;
   selectedStoreId: number | null;
   stores: DealershipStore[];
@@ -684,14 +460,15 @@ function StoreManagementPanel({
   onStoreChange: (storeId: number | null) => void;
 }) {
   return (
-    <div className="grid gap-4 rounded-md border border-slate-200 bg-slate-50 p-4">
+    <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm md:p-5">
       <div className="grid gap-1">
-        <h2 className="text-base font-semibold text-slate-950">Store/month setup</h2>
+        <p className="text-xs font-semibold uppercase text-cyan-700">Step 1</p>
+        <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Select Store</h2>
         <p className="text-sm text-slate-600">
           Choose the store for this run before uploading BOA and Dealertrack files.
         </p>
       </div>
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+      <div className="flex flex-col gap-3 lg:max-w-md">
         <label className="grid gap-1 text-sm font-medium text-slate-700">
           Store
           <select
@@ -707,6 +484,11 @@ function StoreManagementPanel({
             ))}
           </select>
         </label>
+      </div>
+      <details className="border-t border-slate-200 pt-3" open={stores.length === 0}>
+        <summary className="cursor-pointer text-sm font-semibold text-slate-600">
+          Secondary store setup
+        </summary>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <label className="grid gap-1 text-sm font-medium text-slate-700">
             Add store
@@ -727,188 +509,27 @@ function StoreManagementPanel({
             Create Store
           </button>
         </div>
-      </div>
-      <details className="border-t border-slate-200 pt-3">
-        <summary className="cursor-pointer text-sm font-semibold text-slate-600">
-          Advanced store analytics
-        </summary>
-        <div className="mt-3 opacity-80">
-          <GroupAnalyticsSummary analytics={analytics} selectedStoreId={selectedStoreId} />
-        </div>
       </details>
-    </div>
+    </section>
   );
 }
 
-function GroupAnalyticsSummary({
-  analytics,
-  selectedStoreId,
-}: {
-  analytics: DealerGroupAnalytics[];
-  selectedStoreId: number | null;
-}) {
-  const selectedStore = analytics
-    .flatMap((group) => group.stores)
-    .find((store) => store.dealership_store_id === selectedStoreId);
-  if (!selectedStore) {
-    return null;
-  }
-
+function TaskSelectionPanel() {
   return (
-    <div className="grid gap-3 sm:grid-cols-3">
-      <Metric label="Store runs" value={selectedStore.run_count} />
-      <Metric label="Store unresolved" value={selectedStore.unresolved_count} />
-      <Metric label="Recurring at store" value={selectedStore.recurring_exception_count} />
-    </div>
-  );
-}
-
-function AutomationOverview({
-  events,
-  ingestionEvents,
-  jobs,
-  metrics,
-  selectedStoreId,
-  statuses,
-  onCreateJob,
-  onToggleJob,
-  canModify,
-}: {
-  events: OperationalEvent[];
-  ingestionEvents: IngestionEvent[];
-  jobs: ScheduledReconciliationJob[];
-  metrics: OperationalMetrics | null;
-  selectedStoreId: number | null;
-  statuses: StoreAutomationStatus[];
-  onCreateJob: () => void;
-  onToggleJob: (job: ScheduledReconciliationJob, enabled: boolean) => void;
-  canModify: boolean;
-}) {
-  const selectedStatus = statuses.find((status) => status.dealership_store_id === selectedStoreId);
-
-  return (
-    <div className="grid gap-4">
-      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
-        <Metric label="Scheduled jobs" value={jobs.length} />
-        <Metric label="Enabled jobs" value={jobs.filter((job) => job.enabled).length} />
-        <Metric
-          label="Avg completion"
-          value={
-            metrics?.average_reconciliation_completion_time_ms === null ||
-            metrics?.average_reconciliation_completion_time_ms === undefined
-              ? "n/a"
-              : `${metrics.average_reconciliation_completion_time_ms}ms`
-          }
-        />
-        <Metric
-          label="Auto reconciliation"
-          value={`${metrics?.auto_vs_manual_reconciliation_rates.automated_percent.toFixed(2) ?? "0.00"}%`}
-        />
+    <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+      <div className="grid gap-1">
+        <p className="text-xs font-semibold uppercase text-cyan-700">Step 2</p>
+        <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Select Task</h2>
+        <p className="text-sm text-slate-600">
+          The v1 task is fixed to Floorplan Reconciliation for the selected store/month.
+        </p>
       </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <section className="rounded-md border border-slate-200 bg-white p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h3 className="text-sm font-semibold text-slate-950">Scheduled Jobs</h3>
-              <p className="mt-1 text-sm text-slate-600">
-                Store-level automation rules for recurring reconciliation.
-              </p>
-            </div>
-            <button
-              className="inline-flex h-9 items-center justify-center rounded-md bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-              disabled={!canModify || !selectedStoreId}
-              type="button"
-              onClick={onCreateJob}
-            >
-              Add Daily
-            </button>
-          </div>
-          <div className="mt-3 grid gap-2">
-            {jobs.length === 0 ? (
-              <p className="text-sm text-slate-600">No scheduled jobs for this store.</p>
-            ) : (
-              jobs.map((job) => (
-                <div
-                  className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 p-3"
-                  key={job.id}
-                >
-                  <div>
-                    <p className="text-sm font-semibold text-slate-950">
-                      {formatReason(job.cadence)} / {job.expected_source_types.join(" + ")}
-                    </p>
-                    <p className="text-xs text-slate-600">
-                      Next {job.next_run_at ? formatDateTime(job.next_run_at) : "not scheduled"}
-                    </p>
-                  </div>
-                  <label className="flex items-center gap-2 text-sm text-slate-700">
-                    Enabled
-                    <input
-                      checked={job.enabled}
-                      disabled={!canModify}
-                      type="checkbox"
-                      onChange={(event) => onToggleJob(job, event.target.checked)}
-                    />
-                  </label>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-
-        <section className="rounded-md border border-slate-200 bg-white p-4">
-          <h3 className="text-sm font-semibold text-slate-950">Store Automation Status</h3>
-          {selectedStatus ? (
-            <div className="mt-3 grid gap-2 text-sm text-slate-700">
-              <p>Last upload: {selectedStatus.last_upload_at ? formatDateTime(selectedStatus.last_upload_at) : "None"}</p>
-              <p>
-                Last reconciliation:{" "}
-                {selectedStatus.last_reconciliation_at
-                  ? formatDateTime(selectedStatus.last_reconciliation_at)
-                  : "None"}
-              </p>
-              <p>Missing files: {selectedStatus.missing_expected_source_types.join(", ") || "None"}</p>
-              <p className={selectedStatus.stale_reconciliation ? "font-semibold text-amber-700" : "text-emerald-700"}>
-                {selectedStatus.stale_reconciliation ? "Stale activity detected" : "Activity current"}
-              </p>
-            </div>
-          ) : (
-            <p className="mt-3 text-sm text-slate-600">No status for this store yet.</p>
-          )}
-        </section>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <EventList title="Recent Ingestion Events" rows={ingestionEvents} />
-        <EventList title="Operational Alerts" rows={events} />
-      </div>
-    </div>
-  );
-}
-
-function EventList({
-  title,
-  rows,
-}: {
-  title: string;
-  rows: Array<IngestionEvent | OperationalEvent>;
-}) {
-  return (
-    <section className="rounded-md border border-slate-200 bg-white p-4">
-      <h3 className="text-sm font-semibold text-slate-950">{title}</h3>
-      <div className="mt-3 grid gap-2">
-        {rows.length === 0 ? (
-          <p className="text-sm text-slate-600">None</p>
-        ) : (
-          rows.slice(0, 5).map((row) => (
-            <div className="rounded-md border border-slate-200 bg-slate-50 p-3" key={`${title}-${row.id}`}>
-              <p className="text-sm font-semibold text-slate-950">{row.message}</p>
-              <p className="mt-1 text-xs text-slate-600">
-                {row.store_name ?? "Unassigned store"} / {formatDateTime(row.created_at)}
-              </p>
-            </div>
-          ))
-        )}
+      <div className="rounded-md border border-cyan-200 bg-cyan-50 p-4">
+        <p className="text-sm font-semibold text-cyan-950">Floorplan Reconciliation</p>
+        <p className="mt-1 text-sm text-slate-700">
+          Generates the merged export and FP REC final workpaper. Exception review happens outside
+          the app through the FP REC export.
+        </p>
       </div>
     </section>
   );
@@ -1069,79 +690,24 @@ function ValidationErrors({ errors }: { errors: UploadValidationError[] }) {
   );
 }
 
-function RecentUploads({ sourceFiles }: { sourceFiles: SourceFileSummary[] }) {
-  const recentFloorplanUploads = useMemo(
-    () =>
-      sourceFiles
-        .filter((sourceFile) => sourceFile.source_type === "boa" || sourceFile.source_type === "dealertrack")
-        .slice(0, 6),
-    [sourceFiles],
-  );
-
-  if (recentFloorplanUploads.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="overflow-hidden rounded-md border border-slate-200">
-      <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-        <thead className="bg-slate-50 text-slate-600">
-          <tr>
-            <th className="px-3 py-2 font-semibold">source_file_id</th>
-            <th className="px-3 py-2 font-semibold">Store</th>
-            <th className="px-3 py-2 font-semibold">Source</th>
-            <th className="px-3 py-2 font-semibold">Filename</th>
-            <th className="px-3 py-2 font-semibold">Rows</th>
-            <th className="px-3 py-2 font-semibold">Errors</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-200 bg-white">
-          {recentFloorplanUploads.map((sourceFile) => (
-            <tr key={sourceFile.source_file_id}>
-              <td className="px-3 py-2 font-medium text-slate-950">{sourceFile.source_file_id}</td>
-              <td className="px-3 py-2 text-slate-700">{sourceFile.store_name ?? "n/a"}</td>
-              <td className="px-3 py-2 text-slate-700">{sourceFile.source_type.toUpperCase()}</td>
-              <td className="px-3 py-2 text-slate-700">{sourceFile.filename}</td>
-              <td className="px-3 py-2 text-slate-700">{sourceFile.row_count}</td>
-              <td className="px-3 py-2 text-slate-700">{sourceFile.validation_error_count}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function ResultsSection({
-  analytics,
   artifacts,
   artifactsError,
   diagnostics,
-  filters,
   replay,
   run,
   isReconciling,
   isReplaying,
-  onFiltersChange,
   onReplay,
-  onReviewUpdate,
-  reviewUpdatingId,
-  canModify,
 }: {
-  analytics: ReconciliationRunComparison | null;
   artifacts: ReconciliationArtifact[];
   artifactsError: string | null;
   diagnostics: VinPresenceDiagnostics | null;
-  filters: ReconciliationRunFilters;
   replay: ReconciliationReplayResponse | null;
   run: ReconciliationRunDetail | null;
   isReconciling: boolean;
   isReplaying: boolean;
-  onFiltersChange: (filters: ReconciliationRunFilters) => void;
   onReplay: () => void;
-  onReviewUpdate: (exceptionId: number, update: ReconciliationExceptionReviewUpdate) => void;
-  reviewUpdatingId: number | null;
-  canModify: boolean;
 }) {
   if (!run && !isReconciling) {
     return null;
@@ -1151,12 +717,12 @@ function ResultsSection({
     <section className="grid gap-5 rounded-md border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="flex flex-col gap-1">
-          <p className="text-xs font-semibold uppercase text-cyan-700">Step 4</p>
-          <h2 className="text-lg font-semibold text-slate-950">Download store/month artifacts</h2>
+          <p className="text-xs font-semibold uppercase text-cyan-700">Step 5</p>
+          <h2 className="text-lg font-semibold text-slate-950">Download Outputs</h2>
           {run ? (
             <p className="text-sm text-slate-600">
               Run {formatRunId(run.created_at)} for {run.store_name ?? "Unassigned store"} from{" "}
-              {formatDateTime(run.created_at)} is ready for its merged spreadsheet and FP REC.
+              {formatDateTime(run.created_at)} is ready for its merged export and FP REC final workpaper.
             </p>
           ) : null}
         </div>
@@ -1167,7 +733,7 @@ function ResultsSection({
               download
               href={getMergedFloorplanExportUrl(run.reconciliation_run_id)}
             >
-              Download Merged Spreadsheet
+              Download Merged Export
             </a>
             <a
               className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
@@ -1188,22 +754,21 @@ function ResultsSection({
 
       {run ? (
         <>
-          <ArtifactsPanel artifacts={artifacts} error={artifactsError} />
-
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Metric label="Clean matches (VIN + amount)" value={run.matched_count} />
-            <Metric label="Unmatched items" value={run.exception_count} />
-            <Metric label="Duplicates" value={run.duplicate_count} />
-            <Metric label="Run ID" value={formatRunId(run.created_at)} />
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950">
+            <p className="font-semibold">FP REC is the final workpaper.</p>
+            <p className="mt-1">
+              Download FP REC for exception review and annotation outside the app.
+            </p>
           </div>
 
           <details className="border-t border-slate-200 pt-4">
             <summary className="cursor-pointer text-sm font-semibold text-slate-600">
-              Advanced review, analytics, and audit details
+              Secondary export and audit details
             </summary>
             <div className="mt-4 grid gap-5 opacity-80">
+              <ArtifactsPanel artifacts={artifacts} error={artifactsError} />
+              <RunSummaryMetrics run={run} />
               <ExceptionBreakdown run={run} />
-              <RunTrendAnalyticsPanel analytics={analytics} />
               <HistoricalReplayPanel
                 replay={replay}
                 isReplaying={isReplaying}
@@ -1211,19 +776,22 @@ function ResultsSection({
               />
               <VinPresenceDiagnosticsPanel diagnostics={diagnostics} />
               <MatchGroupsTable run={run} />
-              <ExceptionsTable
-                filters={filters}
-                run={run}
-                onFiltersChange={onFiltersChange}
-                onReviewUpdate={onReviewUpdate}
-                reviewUpdatingId={reviewUpdatingId}
-                canModify={canModify}
-              />
             </div>
           </details>
         </>
       ) : null}
     </section>
+  );
+}
+
+function RunSummaryMetrics({ run }: { run: ReconciliationRunDetail }) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <Metric label="Clean matches (VIN + amount)" value={run.matched_count} />
+      <Metric label="Unmatched items" value={run.exception_count} />
+      <Metric label="Duplicates" value={run.duplicate_count} />
+      <Metric label="Run ID" value={formatRunId(run.created_at)} />
+    </div>
   );
 }
 
@@ -1303,7 +871,7 @@ function ExceptionBreakdown({ run }: { run: ReconciliationRunDetail }) {
       <div>
         <h3 className="text-base font-semibold text-slate-950">Unmatched items breakdown</h3>
         <p className="mt-1 text-sm text-slate-600">
-          Rows are grouped by Hiley worksheet placement. Same-VIN rows that do not cleanly
+          Rows are grouped by FP REC worksheet placement. Same-VIN rows that do not cleanly
           match stay in manual review.
         </p>
       </div>
@@ -1312,41 +880,6 @@ function ExceptionBreakdown({ run }: { run: ReconciliationRunDetail }) {
         <Metric label="On schedule-not on statement" value={breakdown.scheduleNotOnStatement} />
         <Metric label="Needs manual review" value={breakdown.manualReview} />
       </div>
-    </div>
-  );
-}
-
-function RunTrendAnalyticsPanel({ analytics }: { analytics: ReconciliationRunComparison | null }) {
-  if (!analytics) {
-    return null;
-  }
-
-  const summary = analytics.run_comparison_summary;
-  const current = summary.current;
-
-  return (
-    <div className="grid gap-3">
-      <div>
-        <h3 className="text-base font-semibold text-slate-950">Run trend analytics</h3>
-        <p className="mt-1 text-sm text-slate-600">
-          {analytics.previous_run_id ? "Compared with the previous run." : "No previous run is available."}
-        </p>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Metric label="Unresolved" value={current.unresolved_count} />
-      </div>
-
-      <div className="grid gap-3 lg:grid-cols-2">
-        <TrendSummaryCard
-          label="New Exceptions"
-          value={summary.newly_created_count}
-          detail="Current exceptions absent from the prior run"
-          tone={summary.newly_created_count > 0 ? "attention" : "neutral"}
-        />
-      </div>
-
-      <CategoryTrendTable rows={analytics.category_summary} />
     </div>
   );
 }
@@ -1492,73 +1025,6 @@ function ReplayKeyList({ label, rows }: { label: string; rows: string[] }) {
   );
 }
 
-function TrendSummaryCard({
-  label,
-  value,
-  detail,
-  tone,
-}: {
-  label: string;
-  value: number;
-  detail: string;
-  tone: "positive" | "attention" | "neutral";
-}) {
-  const toneClass =
-    tone === "positive"
-      ? "border-emerald-200 bg-emerald-50 text-emerald-950"
-      : tone === "attention"
-        ? "border-amber-200 bg-amber-50 text-amber-950"
-        : "border-slate-200 bg-slate-50 text-slate-950";
-
-  return (
-    <div className={`rounded-md border p-4 ${toneClass}`}>
-      <p className="text-sm font-semibold">{label}</p>
-      <p className="mt-1 text-2xl font-semibold">{value}</p>
-      <p className="mt-1 text-sm">{detail}</p>
-    </div>
-  );
-}
-
-function CategoryTrendTable({
-  rows,
-}: {
-  rows: ReconciliationRunComparison["category_summary"];
-}) {
-  const displayRows = aggregateCategoryTrendRows(rows);
-
-  return (
-    <div className="overflow-hidden rounded-md border border-slate-200">
-      <div className="border-b border-slate-200 bg-slate-50 px-3 py-2">
-        <h4 className="text-sm font-semibold text-slate-950">Category trend</h4>
-      </div>
-      <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-        <thead className="bg-white text-slate-600">
-          <tr>
-            <th className="px-3 py-2 font-semibold">Category</th>
-            <th className="px-3 py-2 font-semibold">Current</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-200 bg-white">
-          {displayRows.length === 0 ? (
-            <tr>
-              <td className="px-3 py-3 text-slate-600" colSpan={2}>
-                No current categories.
-              </td>
-            </tr>
-          ) : (
-            displayRows.map((row) => (
-              <tr key={row.label}>
-                <td className="px-3 py-2 font-medium text-slate-950">{row.label}</td>
-                <td className="px-3 py-2 text-slate-700">{row.currentCount}</td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function MatchGroupsTable({ run }: { run: ReconciliationRunDetail }) {
   return (
     <div className="grid gap-2">
@@ -1619,348 +1085,6 @@ function MatchGroupsTable({ run }: { run: ReconciliationRunDetail }) {
   );
 }
 
-function ExceptionsTable({
-  filters,
-  run,
-  onFiltersChange,
-  onReviewUpdate,
-  reviewUpdatingId,
-  canModify,
-}: {
-  filters: ReconciliationRunFilters;
-  run: ReconciliationRunDetail;
-  onFiltersChange: (filters: ReconciliationRunFilters) => void;
-  onReviewUpdate: (
-    exceptionId: number,
-    update: ReconciliationExceptionReviewUpdate,
-  ) => void;
-  reviewUpdatingId: number | null;
-  canModify: boolean;
-}) {
-  const exportUrl = getReconciliationExceptionsCsvUrl(run.reconciliation_run_id, filters);
-  const reviewStatusCounts = getReviewStatusCounts(run);
-
-  return (
-    <div className="grid gap-2">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <h3 className="text-base font-semibold text-slate-950">Unmatched items</h3>
-          <p className="mt-1 text-sm text-slate-600">
-            Items that did not pair cleanly become On statement-not on GL, On schedule-not on
-            statement, or Needs manual review. Showing {run.exceptions.length} of {run.exception_count}.
-          </p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {reviewStatusCounts.map(([status, count]) => (
-              <span className={reviewStatusBadgeClassName(status)} key={status}>
-                {formatReason(status)}: {count}
-              </span>
-            ))}
-          </div>
-        </div>
-        <div className="grid gap-3 md:grid-cols-[140px_170px_150px_160px_160px_minmax(180px,1fr)_auto]">
-          <label className="grid gap-1 text-sm font-medium text-slate-700">
-            Source
-            <select
-              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
-              value={filters.sourceType ?? ""}
-              onChange={(event) =>
-                onFiltersChange({ ...filters, sourceType: event.target.value as never })
-              }
-            >
-              <option value="">All sources</option>
-              <option value="boa">BOA</option>
-              <option value="dealertrack">Dealertrack</option>
-            </select>
-          </label>
-          <label className="grid gap-1 text-sm font-medium text-slate-700">
-            Type
-            <select
-              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
-              value={filters.exceptionType ?? ""}
-              onChange={(event) =>
-                onFiltersChange({ ...filters, exceptionType: event.target.value as never })
-              }
-            >
-              <option value="">All types</option>
-              <option value="missing_in_dealertrack">On statement-not on GL</option>
-              <option value="missing_in_boa">On schedule-not on statement</option>
-            </select>
-          </label>
-          <label className="grid gap-1 text-sm font-medium text-slate-700">
-            Search
-            <input
-              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
-              placeholder="Stock, VIN, reason"
-              type="search"
-              value={filters.search ?? ""}
-              onChange={(event) => onFiltersChange({ ...filters, search: event.target.value })}
-            />
-          </label>
-          <label className="grid gap-1 text-sm font-medium text-slate-700">
-            Status
-            <select
-              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
-              value={filters.status ?? ""}
-              onChange={(event) =>
-                onFiltersChange({
-                  ...filters,
-                  status: event.target.value as ReconciliationExceptionStatus | "",
-                })
-              }
-            >
-              <option value="">All statuses</option>
-              <option value="unresolved">Only unresolved</option>
-              <option value="resolved">Resolved</option>
-              <option value="ignored">Ignored</option>
-            </select>
-          </label>
-          <label className="grid gap-1 text-sm font-medium text-slate-700">
-            Review
-            <select
-              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
-              value={filters.reviewStatus ?? ""}
-              onChange={(event) =>
-                onFiltersChange({
-                  ...filters,
-                  reviewStatus: event.target.value as ReconciliationExceptionReviewStatus | "",
-                })
-              }
-            >
-              <option value="">All review states</option>
-              <option value="unreviewed">Unreviewed</option>
-              <option value="investigating">Investigating</option>
-              <option value="resolved">Resolved</option>
-              <option value="ignored">Ignored</option>
-            </select>
-          </label>
-          <label className="grid gap-1 text-sm font-medium text-slate-700">
-            Assigned
-            <input
-              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
-              placeholder="Reviewer"
-              type="search"
-              value={filters.assignedTo ?? ""}
-              onChange={(event) => onFiltersChange({ ...filters, assignedTo: event.target.value })}
-            />
-          </label>
-          <a
-            className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
-            download
-            href={exportUrl}
-          >
-            Export Unmatched Items CSV
-          </a>
-        </div>
-      </div>
-      <div className="overflow-x-auto rounded-md border border-slate-200">
-        <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-          <thead className="bg-slate-50 text-slate-600">
-            <tr>
-              <th className="px-3 py-2 font-semibold">Placement</th>
-              <th className="px-3 py-2 font-semibold">Status</th>
-              <th className="px-3 py-2 font-semibold">Review</th>
-              <th className="px-3 py-2 font-semibold">Assigned</th>
-              <th className="px-3 py-2 font-semibold">Source</th>
-              <th className="px-3 py-2 font-semibold">Stock</th>
-              <th className="px-3 py-2 font-semibold">VIN6</th>
-              <th className="px-3 py-2 font-semibold">Amount</th>
-              <th className="px-3 py-2 font-semibold">Research prompt</th>
-              <th className="px-3 py-2 font-semibold">Note</th>
-              <th className="px-3 py-2 font-semibold">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200 bg-white">
-            {run.exceptions.length === 0 ? (
-              <tr>
-                <td className="px-3 py-3 text-slate-600" colSpan={11}>
-                  No unmatched items.
-                </td>
-              </tr>
-            ) : (
-              run.exceptions.map((exception) => (
-                <tr
-                  className={exceptionRowClassName(exception.status)}
-                  key={exception.exception_id}
-                >
-                  <td className="px-3 py-2 font-medium">
-                    {formatExceptionPlacement(exception)}
-                  </td>
-                  <td className="px-3 py-2">
-                    <span className={statusBadgeClassName(exception.status)}>
-                      {formatReason(exception.status)}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2">
-                    <select
-                      className="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
-                      disabled={!canModify || reviewUpdatingId === exception.exception_id}
-                      value={exception.review_status}
-                      onChange={(event) =>
-                        onReviewUpdate(exception.exception_id, {
-                          review_status: event.target.value as ReconciliationExceptionReviewStatus,
-                        })
-                      }
-                    >
-                      <option value="unreviewed">Unreviewed</option>
-                      <option value="investigating">Investigating</option>
-                      <option value="resolved">Resolved</option>
-                      <option value="ignored">Ignored</option>
-                    </select>
-                  </td>
-                  <td className="min-w-40 px-3 py-2">
-                    <input
-                      className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
-                      defaultValue={exception.assigned_to ?? ""}
-                      disabled={!canModify || reviewUpdatingId === exception.exception_id}
-                      placeholder="Assign reviewer"
-                      type="text"
-                      onBlur={(event) => {
-                        const nextValue = event.currentTarget.value.trim();
-                        if (nextValue !== (exception.assigned_to ?? "")) {
-                          onReviewUpdate(exception.exception_id, {
-                            assigned_to: nextValue || null,
-                          });
-                        }
-                      }}
-                    />
-                  </td>
-                  <td className="px-3 py-2">{exception.source_type.toUpperCase()}</td>
-                  <td className="px-3 py-2">{exception.transaction.stock_number ?? "n/a"}</td>
-                  <td className="px-3 py-2">{computeDisplayVin6(exception.transaction)}</td>
-                  <td className="px-3 py-2">{formatAmount(exception.transaction)}</td>
-                  <td className="px-3 py-2">{neutralExceptionPrompt(exception)}</td>
-                  <td className="min-w-56 px-3 py-2">
-                    <input
-                      className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100"
-                      defaultValue={exception.review_notes}
-                      disabled={!canModify || reviewUpdatingId === exception.exception_id}
-                      placeholder="Add review notes"
-                      type="text"
-                      onBlur={(event) => {
-                        if (event.currentTarget.value !== exception.review_notes) {
-                          onReviewUpdate(exception.exception_id, {
-                            review_notes: event.currentTarget.value,
-                          });
-                        }
-                      }}
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        className="inline-flex h-8 items-center justify-center rounded-md border border-emerald-300 bg-white px-3 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:text-slate-400"
-                        disabled={
-                          exception.review_status === "resolved" ||
-                          !canModify || reviewUpdatingId === exception.exception_id
-                        }
-                        type="button"
-                        onClick={() =>
-                          onReviewUpdate(exception.exception_id, { review_status: "resolved" })
-                        }
-                      >
-                        Resolve
-                      </button>
-                      <button
-                        className="inline-flex h-8 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-                        disabled={
-                          exception.review_status === "ignored" ||
-                          !canModify || reviewUpdatingId === exception.exception_id
-                        }
-                        type="button"
-                        onClick={() =>
-                          onReviewUpdate(exception.exception_id, { review_status: "ignored" })
-                        }
-                      >
-                        Ignore
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function HistorySection({
-  runs,
-  activeRunId,
-  loadingRunId,
-  onViewRun,
-}: {
-  runs: ReconciliationRunListItem[];
-  activeRunId: number | null;
-  loadingRunId: number | null;
-  onViewRun: (runId: number) => void;
-}) {
-  return (
-    <details className="rounded-md border border-slate-200 bg-white p-5 shadow-sm">
-      <summary className="cursor-pointer text-lg font-semibold text-slate-950">
-        Advanced run history
-      </summary>
-      <div className="mt-4 overflow-x-auto rounded-md border border-slate-200 opacity-80">
-        <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-          <thead className="bg-slate-50 text-slate-600">
-            <tr>
-              <th className="px-3 py-2 font-semibold">Run</th>
-              <th className="px-3 py-2 font-semibold">Store</th>
-              <th className="px-3 py-2 font-semibold">BOA file</th>
-              <th className="px-3 py-2 font-semibold">Dealertrack file</th>
-              <th className="px-3 py-2 font-semibold">Matched</th>
-              <th className="px-3 py-2 font-semibold">Exceptions</th>
-              <th className="px-3 py-2 font-semibold">Duplicates</th>
-              <th className="px-3 py-2 font-semibold">Status</th>
-              <th className="px-3 py-2 font-semibold">Created</th>
-              <th className="px-3 py-2 font-semibold">View</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200 bg-white">
-            {runs.length === 0 ? (
-              <tr>
-                <td className="px-3 py-3 text-slate-600" colSpan={10}>
-                  No reconciliation runs.
-                </td>
-              </tr>
-            ) : (
-              runs.map((run) => (
-                <tr
-                  className={activeRunId === run.reconciliation_run_id ? "bg-cyan-50" : ""}
-                  key={run.reconciliation_run_id}
-                >
-                  <td className="px-3 py-2 font-medium text-slate-950">
-                    {formatRunId(run.created_at)}
-                  </td>
-                  <td className="px-3 py-2 text-slate-700">{run.store_name ?? "n/a"}</td>
-                  <td className="px-3 py-2 text-slate-700">{run.boa_filename}</td>
-                  <td className="px-3 py-2 text-slate-700">{run.dealertrack_filename}</td>
-                  <td className="px-3 py-2 text-slate-700">{run.matched_count}</td>
-                  <td className="px-3 py-2 text-slate-700">{run.exception_count}</td>
-                  <td className="px-3 py-2 text-slate-700">{run.duplicate_count}</td>
-                  <td className="px-3 py-2 text-slate-700">{run.status}</td>
-                  <td className="px-3 py-2 text-slate-700">{formatDateTime(run.created_at)}</td>
-                  <td className="px-3 py-2">
-                    <button
-                      className="inline-flex h-9 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-                      disabled={loadingRunId === run.reconciliation_run_id}
-                      type="button"
-                      onClick={() => onViewRun(run.reconciliation_run_id)}
-                    >
-                      {loadingRunId === run.reconciliation_run_id ? "Loading..." : "View"}
-                    </button>
-                  </td>
-                </tr>
-              ))
-          )}
-        </tbody>
-      </table>
-      </div>
-    </details>
-  );
-}
-
 function Metric({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
@@ -1989,27 +1113,6 @@ function formatAmount(transaction: ReconciledTransaction) {
   });
 }
 
-const vinPattern = /\b[A-HJ-NPR-Z0-9]{17}\b/;
-
-function computeDisplayVin6(transaction: ReconciledTransaction): string {
-  const vin = (transaction.vin ?? "").toUpperCase();
-  if (vin) {
-    const match = vin.match(vinPattern);
-    if (match) {
-      return match[0].slice(-6);
-    }
-    if (vin.length >= 6) {
-      return vin.slice(-6);
-    }
-  }
-  const description = (transaction.description ?? "").toUpperCase();
-  const descriptionMatch = description.match(vinPattern);
-  if (descriptionMatch) {
-    return descriptionMatch[0].slice(-6);
-  }
-  return "n/a";
-}
-
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString(undefined, {
     dateStyle: "short",
@@ -2033,41 +1136,6 @@ function formatFileSize(bytes: number) {
 
 function formatSignedDelta(value: number) {
   return value > 0 ? `+${value}` : `${value}`;
-}
-
-function exceptionRowClassName(status: string) {
-  if (status === "resolved") {
-    return "bg-emerald-50 text-emerald-950";
-  }
-  if (status === "ignored") {
-    return "bg-slate-50 text-slate-500";
-  }
-  return "";
-}
-
-function statusBadgeClassName(status: string) {
-  const base = "inline-flex rounded-md px-2 py-1 text-xs font-semibold";
-  if (status === "resolved") {
-    return `${base} bg-emerald-100 text-emerald-900`;
-  }
-  if (status === "ignored") {
-    return `${base} bg-slate-200 text-slate-600`;
-  }
-  return `${base} bg-amber-100 text-amber-900`;
-}
-
-function reviewStatusBadgeClassName(status: string) {
-  const base = "inline-flex rounded-md px-2 py-1 text-xs font-semibold";
-  if (status === "resolved") {
-    return `${base} bg-emerald-100 text-emerald-900`;
-  }
-  if (status === "ignored") {
-    return `${base} bg-slate-200 text-slate-700`;
-  }
-  if (status === "investigating") {
-    return `${base} bg-cyan-100 text-cyan-900`;
-  }
-  return `${base} bg-amber-100 text-amber-900`;
 }
 
 function getExceptionBreakdown(run: ReconciliationRunDetail) {
@@ -2100,57 +1168,4 @@ function getExceptionPlacement(
     return "statement";
   }
   return "schedule";
-}
-
-function formatExceptionPlacement(exception: ReconciliationRunDetail["exceptions"][number]) {
-  const placement = getExceptionPlacement(exception);
-  if (placement === "statement") {
-    return "On statement-not on GL";
-  }
-  if (placement === "schedule") {
-    return "On schedule-not on statement";
-  }
-  return "Needs manual review";
-}
-
-function neutralExceptionPrompt(exception: ReconciliationRunDetail["exceptions"][number]) {
-  const placement = getExceptionPlacement(exception);
-  if (placement === "statement") {
-    return "BOA statement row with no matching Dealertrack/GL row";
-  }
-  if (placement === "schedule") {
-    return "Dealertrack/GL row with no matching BOA statement row";
-  }
-  return "VIN appears on both sides but amount differs; review manually";
-}
-
-function formatCategoryLabel(category: string) {
-  if (category === "missing_in_dealertrack") {
-    return "On statement-not on GL";
-  }
-  if (category === "missing_in_boa") {
-    return "On schedule-not on statement";
-  }
-  return "Needs manual review";
-}
-
-function aggregateCategoryTrendRows(rows: ReconciliationRunComparison["category_summary"]) {
-  const counts = new Map<string, number>();
-  for (const row of rows) {
-    const label = formatCategoryLabel(row.exception_category);
-    counts.set(label, (counts.get(label) ?? 0) + row.current_count);
-  }
-  return [...counts.entries()]
-    .map(([label, currentCount]) => ({ label, currentCount }))
-    .sort((left, right) => right.currentCount - left.currentCount || left.label.localeCompare(right.label));
-}
-
-function getReviewStatusCounts(run: ReconciliationRunDetail) {
-  const counts = new Map<string, number>();
-  for (const exception of run.exceptions) {
-    counts.set(exception.review_status, (counts.get(exception.review_status) ?? 0) + 1);
-  }
-  return ["unreviewed", "investigating", "resolved", "ignored"]
-    .map((status) => [status, counts.get(status) ?? 0] as const)
-    .filter(([, count]) => count > 0);
 }
