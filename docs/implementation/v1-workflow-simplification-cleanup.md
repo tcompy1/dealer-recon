@@ -35,16 +35,31 @@ For v1, the selected task is Floorplan Reconciliation. The FP REC export remains
   - running status
   - merged export download
   - FP REC download
-- Moved recent upload history behind a collapsed secondary input-history disclosure.
-- Moved automation/operational status behind a collapsed secondary disclosure.
+- Removed the recent upload history disclosure from the v1 operator workflow.
+- Removed the automation/operational status disclosure from the v1 operator workflow.
 - Moved stored artifact history, run summary metrics, exception breakdown, replay, VIN diagnostics, and match group details behind a collapsed secondary export/audit disclosure.
-- Kept run history behind a collapsed advanced run-history disclosure.
+- Removed the advanced run-history panel and its non-visible View action from the primary workflow.
 - Removed the rendered in-app exception review controls from the workflow:
   - review status filters and controls
   - reviewer assignment controls
   - review note controls
   - resolve/ignore actions
 - Removed the rendered run trend analytics panel from the workflow.
+- Updated the Accounts page so account selection has a persistent selected state instead of a transient View action.
+- Converted the Accounts detail page to tabs for BOA, Dealertrack, and unresolved exceptions instead of stacking all detail tables in one scroll.
+- Removed Related runs from the Accounts detail page.
+- Hid the Month-end Generate report and CSV controls from users without platform admin access, and shows the blocked access state before any click.
+
+## PR #25 Smoke-Test Follow-Up
+
+Human smoke testing on Thursday, June 18, 2026 found additional v1 cleanup needed before PR #25 can merge:
+
+- Secondary automation/operational status and secondary input history still added noise to the workflow.
+- Advanced run history and Accounts View actions could load and then return to their default labels without a visible output.
+- Accounts detail content rendered BOA, Dealertrack, unresolved exceptions, and related runs as one long scroll.
+- Month-end report generation showed an authorization error only after a non-platform user clicked the primary action.
+
+Follow-up changes remove those noisy or broken surfaces, keep account detail focused to BOA/Dealertrack/unresolved exception tabs, and make the month-end blocked state explicit before click.
 
 ## Behavior Boundary
 
@@ -55,6 +70,12 @@ No reconciliation behavior changed. No export behavior changed. No parser, prepr
 ## Deferred
 
 - Backend endpoints and types for exception review remain in the codebase for compatibility and can be evaluated separately.
-- Secondary automation, artifact, replay, diagnostic, and run-history surfaces remain available behind collapsed disclosures.
+- Secondary artifact, replay, diagnostic, and match-detail surfaces remain available behind the collapsed export/audit disclosure.
 - Full removal of unused legacy UI components remains a separate cleanup decision.
 - Broader product decisions such as artifact retention, artifact integrity, deployment posture, and Batch 4 scope remain outside this cleanup.
+
+## Validation
+
+- `cd frontend && npm test -- --run`: passed, 6 tests passed. npm emitted the existing warning about forwarded `--run`.
+- `cd frontend && npm run build`: passed.
+- `git diff --check`: passed, with Windows LF-to-CRLF working-copy warnings only.

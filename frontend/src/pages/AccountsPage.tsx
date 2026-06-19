@@ -2,10 +2,14 @@ import { useEffect, useState } from "react";
 
 import { getAccountDetail, listAccountSummaries } from "../api/accounts";
 import type { AccountDetail, AccountSummary, AccountTransaction } from "../types/account";
-import type { SourceType } from "../types/sourceFile";
-import { formatRunId } from "../utils/formatRunId";
 
-const sourceTypes: SourceType[] = ["bank", "boa", "dealertrack", "dms", "gl", "oem"];
+type AccountDetailSection = "boa" | "dealertrack" | "exceptions";
+
+const accountDetailSections: Array<{ id: AccountDetailSection; label: string }> = [
+  { id: "boa", label: "BOA" },
+  { id: "dealertrack", label: "Dealertrack" },
+  { id: "exceptions", label: "Unresolved exceptions" },
+];
 
 export function AccountsPage() {
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
@@ -86,7 +90,7 @@ function AccountsSummaryTable({
             <th className="px-3 py-2 font-semibold">Source totals</th>
             <th className="px-3 py-2 font-semibold">Net difference</th>
             <th className="px-3 py-2 font-semibold">Unresolved</th>
-            <th className="px-3 py-2 font-semibold">Detail</th>
+            <th className="px-3 py-2 font-semibold">Selection</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-200 bg-white">
@@ -97,40 +101,46 @@ function AccountsSummaryTable({
               </td>
             </tr>
           ) : (
-            accounts.map((account) => (
-              <tr
-                className={
-                  selectedAccountIdentifier === account.account_identifier ? "bg-cyan-50" : ""
-                }
-                key={`${account.account_identifier}-${account.account_type}`}
-              >
-                <td className="px-3 py-2 font-medium text-slate-950">
-                  {account.account_identifier}
-                </td>
-                <td className="px-3 py-2 text-slate-700">{formatLabel(account.account_type)}</td>
-                <td className="px-3 py-2 text-slate-700">
-                  <SourceTotals totals={account.source_totals} />
-                </td>
-                <td className="px-3 py-2">
-                  <span className={differenceClassName(account.net_difference_amount_cents)}>
-                    {formatCurrency(account.net_difference_amount_cents)}
-                  </span>
-                </td>
-                <td className="px-3 py-2 text-slate-700">
-                  {account.unresolved_exception_count}
-                </td>
-                <td className="px-3 py-2">
-                  <button
-                    className="inline-flex h-9 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-                    disabled={loadingAccount === account.account_identifier}
-                    type="button"
-                    onClick={() => onSelect(account.account_identifier)}
-                  >
-                    {loadingAccount === account.account_identifier ? "Loading..." : "View"}
-                  </button>
-                </td>
-              </tr>
-            ))
+            accounts.map((account) => {
+              const isLoading = loadingAccount === account.account_identifier;
+              const isSelected = selectedAccountIdentifier === account.account_identifier;
+              return (
+                <tr
+                  className={isSelected ? "bg-cyan-50" : ""}
+                  key={`${account.account_identifier}-${account.account_type}`}
+                >
+                  <td className="px-3 py-2 font-medium text-slate-950">
+                    {account.account_identifier}
+                  </td>
+                  <td className="px-3 py-2 text-slate-700">{formatLabel(account.account_type)}</td>
+                  <td className="px-3 py-2 text-slate-700">
+                    <SourceTotals totals={account.source_totals} />
+                  </td>
+                  <td className="px-3 py-2">
+                    <span className={differenceClassName(account.net_difference_amount_cents)}>
+                      {formatCurrency(account.net_difference_amount_cents)}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-slate-700">
+                    {account.unresolved_exception_count}
+                  </td>
+                  <td className="px-3 py-2">
+                    <button
+                      className={
+                        isSelected
+                          ? "inline-flex h-9 items-center justify-center rounded-md border border-cyan-300 bg-cyan-50 px-3 text-sm font-semibold text-cyan-900"
+                          : "inline-flex h-9 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+                      }
+                      disabled={isLoading || isSelected}
+                      type="button"
+                      onClick={() => onSelect(account.account_identifier)}
+                    >
+                      {isLoading ? "Opening..." : isSelected ? "Selected" : "Open"}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })
           )}
         </tbody>
       </table>
@@ -139,13 +149,25 @@ function AccountsSummaryTable({
 }
 
 function AccountDetailPanel({ account }: { account: AccountDetail }) {
+  const [activeSection, setActiveSection] = useState<AccountDetailSection>("boa");
+  const boaTransactions = account.transactions_by_source_type.boa ?? [];
+  const dealertrackTransactions = account.transactions_by_source_type.dealertrack ?? [];
+
+  function sectionCount(section: AccountDetailSection) {
+    if (section === "boa") {
+      return boaTransactions.length;
+    }
+    if (section === "dealertrack") {
+      return dealertrackTransactions.length;
+    }
+    return account.unresolved_exceptions.length;
+  }
+
   return (
     <section className="grid gap-5 rounded-md border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-1">
         <h2 className="text-lg font-semibold text-slate-950">{account.account_identifier}</h2>
-        <p className="text-sm text-slate-600">
-          {formatLabel(account.account_type)} / {account.related_reconciliation_runs.length} related runs
-        </p>
+        <p className="text-sm text-slate-600">{formatLabel(account.account_type)}</p>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
@@ -154,33 +176,66 @@ function AccountDetailPanel({ account }: { account: AccountDetail }) {
         <Metric label="Sources" value={account.source_totals.length} />
       </div>
 
-      <TransactionsBySource transactionsBySource={account.transactions_by_source_type} />
-      <RelatedRuns runs={account.related_reconciliation_runs} />
-      <UnresolvedExceptions exceptions={account.unresolved_exceptions} />
+      <div className="flex flex-wrap gap-2" role="tablist" aria-label="Account detail sections">
+        {accountDetailSections.map((section) => {
+          const isActive = activeSection === section.id;
+          return (
+            <button
+              aria-selected={isActive}
+              className={
+                isActive
+                  ? "inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white"
+                  : "inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+              }
+              key={section.id}
+              role="tab"
+              type="button"
+              onClick={() => setActiveSection(section.id)}
+            >
+              {section.label} ({sectionCount(section.id)})
+            </button>
+          );
+        })}
+      </div>
+
+      {activeSection === "boa" ? (
+        <SourceTransactionsSection title="BOA" transactions={boaTransactions} />
+      ) : null}
+      {activeSection === "dealertrack" ? (
+        <SourceTransactionsSection title="Dealertrack" transactions={dealertrackTransactions} />
+      ) : null}
+      {activeSection === "exceptions" ? (
+        <UnresolvedExceptions exceptions={account.unresolved_exceptions} />
+      ) : null}
     </section>
   );
 }
 
-function TransactionsBySource({
-  transactionsBySource,
+function SourceTransactionsSection({
+  title,
+  transactions,
 }: {
-  transactionsBySource: AccountDetail["transactions_by_source_type"];
+  title: string;
+  transactions: AccountTransaction[];
 }) {
   return (
-    <div className="grid gap-4">
-      {sourceTypes
-        .filter((sourceType) => transactionsBySource[sourceType]?.length)
-        .map((sourceType) => (
-          <div className="grid gap-2" key={sourceType}>
-            <h3 className="text-base font-semibold text-slate-950">{sourceType.toUpperCase()}</h3>
-            <TransactionsTable transactions={transactionsBySource[sourceType] ?? []} />
-          </div>
-        ))}
+    <div className="grid gap-2" role="tabpanel">
+      <h3 className="text-base font-semibold text-slate-950">{title}</h3>
+      <TransactionsTable
+        transactions={transactions}
+        emptyMessage={`No ${title} transactions.`}
+      />
     </div>
   );
 }
 
-function TransactionsTable({ transactions }: { transactions: AccountTransaction[] }) {
+function TransactionsTable({
+  transactions,
+  emptyMessage,
+}: {
+  transactions: AccountTransaction[];
+  emptyMessage: string;
+}) {
   return (
     <div className="overflow-x-auto rounded-md border border-slate-200">
       <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
@@ -195,62 +250,30 @@ function TransactionsTable({ transactions }: { transactions: AccountTransaction[
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-200 bg-white">
-          {transactions.map((transaction) => (
-            <tr key={transaction.id}>
-              <td className="px-3 py-2 text-slate-700">
-                {transaction.transaction_date ?? transaction.post_date ?? "n/a"}
+          {transactions.length === 0 ? (
+            <tr>
+              <td className="px-3 py-3 text-slate-600" colSpan={6}>
+                {emptyMessage}
               </td>
-              <td className="px-3 py-2 text-slate-700">
-                {formatCurrency(transaction.amount_cents)}
-              </td>
-              <td className="px-3 py-2 text-slate-700">{transaction.reference_number ?? "n/a"}</td>
-              <td className="px-3 py-2 text-slate-700">{transaction.stock_number ?? "n/a"}</td>
-              <td className="px-3 py-2 text-slate-700">{transaction.vin ?? "n/a"}</td>
-              <td className="px-3 py-2 text-slate-700">{transaction.description ?? "n/a"}</td>
             </tr>
-          ))}
+          ) : (
+            transactions.map((transaction) => (
+              <tr key={transaction.id}>
+                <td className="px-3 py-2 text-slate-700">
+                  {transaction.transaction_date ?? transaction.post_date ?? "n/a"}
+                </td>
+                <td className="px-3 py-2 text-slate-700">
+                  {formatCurrency(transaction.amount_cents)}
+                </td>
+                <td className="px-3 py-2 text-slate-700">{transaction.reference_number ?? "n/a"}</td>
+                <td className="px-3 py-2 text-slate-700">{transaction.stock_number ?? "n/a"}</td>
+                <td className="px-3 py-2 text-slate-700">{transaction.vin ?? "n/a"}</td>
+                <td className="px-3 py-2 text-slate-700">{transaction.description ?? "n/a"}</td>
+              </tr>
+            ))
+          )}
         </tbody>
       </table>
-    </div>
-  );
-}
-
-function RelatedRuns({ runs }: { runs: AccountDetail["related_reconciliation_runs"] }) {
-  return (
-    <div className="grid gap-2">
-      <h3 className="text-base font-semibold text-slate-950">Related runs</h3>
-      <div className="overflow-x-auto rounded-md border border-slate-200">
-        <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-          <thead className="bg-slate-50 text-slate-600">
-            <tr>
-              <th className="px-3 py-2 font-semibold">Run</th>
-              <th className="px-3 py-2 font-semibold">Matched</th>
-              <th className="px-3 py-2 font-semibold">Exceptions</th>
-              <th className="px-3 py-2 font-semibold">Created</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200 bg-white">
-            {runs.length === 0 ? (
-              <tr>
-                <td className="px-3 py-3 text-slate-600" colSpan={4}>
-                  No related reconciliation runs.
-                </td>
-              </tr>
-            ) : (
-              runs.map((run) => (
-                <tr key={run.reconciliation_run_id}>
-                  <td className="px-3 py-2 font-medium text-slate-950">
-                    {formatRunId(run.created_at)}
-                  </td>
-                  <td className="px-3 py-2 text-slate-700">{run.matched_count}</td>
-                  <td className="px-3 py-2 text-slate-700">{run.exception_count}</td>
-                  <td className="px-3 py-2 text-slate-700">{formatDateTime(run.created_at)}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
     </div>
   );
 }
@@ -383,11 +406,4 @@ function formatCurrency(amountCents: number) {
 
 function formatLabel(value: string) {
   return value.replace(/_/g, " ");
-}
-
-function formatDateTime(value: string) {
-  return new Date(value).toLocaleString(undefined, {
-    dateStyle: "short",
-    timeStyle: "short",
-  });
 }
