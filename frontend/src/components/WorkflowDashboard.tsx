@@ -229,7 +229,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
   }
 
   return (
-    <div className="grid gap-6">
+    <div className="grid gap-4">
       <PilotWorkflowIntro
         hasStore={Boolean(selectedStoreId)}
         hasBoaUpload={Boolean(boaUpload.upload)}
@@ -248,16 +248,16 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
       <TaskSelectionPanel />
 
-      <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+      <section className="forge-panel forge-panel-pad grid gap-3">
         <div className="flex flex-col gap-1">
-          <p className="text-xs font-semibold uppercase text-cyan-700">Step 3</p>
-          <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Upload Inputs</h2>
-          <p className="text-sm text-slate-600">
+          <p className="forge-eyebrow">Step 3</p>
+          <h2 className="forge-section-title">Upload Inputs</h2>
+          <p className="forge-copy">
             Upload the BOA and Dealertrack source files for the selected store/month run.
           </p>
         </div>
 
-        <div className="grid gap-4 md:gap-6 lg:grid-cols-2">
+        <div className="grid gap-4 lg:grid-cols-2">
           <UploadPanel
             kind="boa"
             label="BOA input"
@@ -295,7 +295,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
         {isReconciliationStale && activeRun ? (
           <div
-            className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+            className="forge-notice forge-notice-warning"
             data-testid="reconciliation-stale-banner"
           >
             VIN repaired. Re-run reconciliation to apply the corrected VIN.
@@ -304,17 +304,17 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
       </section>
 
-      <section className="flex flex-col gap-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm md:flex-row md:items-center md:justify-between md:p-5">
+      <section className="forge-panel forge-panel-pad flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div className="flex-1">
-          <p className="text-xs font-semibold uppercase text-cyan-700">Step 4</p>
-          <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Run Workflow</h2>
-          <p className="mt-1 text-sm text-slate-600">
+          <p className="forge-eyebrow">Step 4</p>
+          <h2 className="forge-section-title">Run Workflow</h2>
+          <p className="forge-copy mt-1">
             Selected BOA #{boaUpload.upload?.source_file_id ?? "none"} and Dealertrack #
             {dealertrackUpload.upload?.source_file_id ?? "none"}
           </p>
         </div>
         <button
-          className="inline-flex h-11 w-full items-center justify-center rounded-md bg-slate-950 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300 md:w-auto md:flex-shrink-0"
+          className="forge-button-primary w-full md:w-auto md:flex-shrink-0"
           disabled={!canModify || !canReconcile || isReconciling}
           type="button"
           onClick={() => void handleReconcile()}
@@ -385,11 +385,11 @@ function PilotWorkflowIntro({
   ] as const;
 
   return (
-    <section className="grid gap-4 rounded-md border border-cyan-200 bg-cyan-50 p-4 shadow-sm md:p-5">
+    <section className="forge-workflow-intro grid gap-3">
       <div className="grid gap-1">
-        <p className="text-xs font-semibold uppercase text-cyan-800">v1 floorplan workflow</p>
-        <h2 className="text-xl font-semibold text-slate-950">Five steps to the FP REC workpaper</h2>
-        <p className="max-w-4xl text-sm text-slate-700">
+        <p className="forge-eyebrow">v1 floorplan workflow</p>
+        <h2 className="forge-section-title">Five steps to the FP REC workpaper</h2>
+        <p className="forge-copy max-w-4xl">
           Select the store, confirm Floorplan Reconciliation, upload the source files, run the workflow,
           then download the merged export and FP REC final workpaper.
         </p>
@@ -422,23 +422,23 @@ function PilotWorkflowStep({
 }) {
   const stateClasses =
     state === "complete"
-      ? "border-emerald-200 bg-white text-emerald-800"
+      ? "forge-step-card-complete"
       : state === "current"
-        ? "border-slate-950 bg-white text-slate-950"
-        : "border-cyan-100 bg-white/70 text-slate-500";
+        ? "forge-step-card-current"
+        : "forge-step-card-waiting";
   const statusLabel = state === "complete" ? "Done" : state === "current" ? "Next" : "Waiting";
 
   return (
-    <div className={`grid min-h-28 gap-2 rounded-md border p-3 ${stateClasses}`}>
+    <div className={`forge-step-card ${stateClasses}`}>
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs font-semibold uppercase">{label}</p>
-        <span className="rounded-md border border-current px-2 py-0.5 text-xs font-semibold">
+        <span className="forge-status-pill">
           {statusLabel}
         </span>
       </div>
       <div>
-        <h3 className="text-base font-semibold">{title}</h3>
-        <p className="mt-1 text-sm text-slate-600">{detail}</p>
+        <h3 className="text-sm font-semibold">{title}</h3>
+        <p className="mt-1 text-xs text-slate-600">{detail}</p>
       </div>
     </div>
   );
@@ -460,19 +460,19 @@ function StoreManagementPanel({
   onStoreChange: (storeId: number | null) => void;
 }) {
   return (
-    <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+    <section className="forge-panel forge-panel-pad grid gap-3">
       <div className="grid gap-1">
-        <p className="text-xs font-semibold uppercase text-cyan-700">Step 1</p>
-        <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Select Store</h2>
-        <p className="text-sm text-slate-600">
+        <p className="forge-eyebrow">Step 1</p>
+        <h2 className="forge-section-title">Select Store</h2>
+        <p className="forge-copy">
           Choose the store for this run before uploading BOA and Dealertrack files.
         </p>
       </div>
       <div className="flex flex-col gap-3 lg:max-w-md">
-        <label className="grid gap-1 text-sm font-medium text-slate-700">
+        <label className="forge-field">
           Store
           <select
-            className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+            className="forge-control"
             value={selectedStoreId ?? ""}
             onChange={(event) => onStoreChange(event.target.value ? Number(event.target.value) : null)}
           >
@@ -485,15 +485,15 @@ function StoreManagementPanel({
           </select>
         </label>
       </div>
-      <details className="border-t border-slate-200 pt-3" open={stores.length === 0}>
-        <summary className="cursor-pointer text-sm font-semibold text-slate-600">
+      <details className="forge-disclosure" open={stores.length === 0}>
+        <summary className="forge-summary">
           Secondary store setup
         </summary>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-          <label className="grid gap-1 text-sm font-medium text-slate-700">
+          <label className="forge-field">
             Add store
             <input
-              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+              className="forge-control"
               placeholder="Store name"
               type="text"
               value={newStoreName}
@@ -501,7 +501,7 @@ function StoreManagementPanel({
             />
           </label>
           <button
-            className="inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            className="forge-button-primary"
             disabled={!newStoreName.trim()}
             type="button"
             onClick={onCreateStore}
@@ -516,17 +516,17 @@ function StoreManagementPanel({
 
 function TaskSelectionPanel() {
   return (
-    <section className="grid gap-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+    <section className="forge-panel forge-panel-pad grid gap-3">
       <div className="grid gap-1">
-        <p className="text-xs font-semibold uppercase text-cyan-700">Step 2</p>
-        <h2 className="text-lg font-semibold text-slate-950 md:text-xl">Select Task</h2>
-        <p className="text-sm text-slate-600">
+        <p className="forge-eyebrow">Step 2</p>
+        <h2 className="forge-section-title">Select Task</h2>
+        <p className="forge-copy">
           The v1 task is fixed to Floorplan Reconciliation for the selected store/month.
         </p>
       </div>
-      <div className="rounded-md border border-cyan-200 bg-cyan-50 p-4">
-        <p className="text-sm font-semibold text-cyan-950">Floorplan Reconciliation</p>
-        <p className="mt-1 text-sm text-slate-700">
+      <div className="forge-task-band">
+        <p className="text-sm font-semibold text-slate-950">Floorplan Reconciliation</p>
+        <p className="forge-copy mt-1">
           Generates the merged export and FP REC final workpaper. Exception review happens outside
           the app through the FP REC export.
         </p>
@@ -557,17 +557,17 @@ function UploadPanel({
   }
 
   return (
-    <div className="grid gap-4 rounded-md border-2 border-slate-300 bg-white p-4 shadow-sm transition hover:border-cyan-300 hover:shadow-md md:p-5">
+    <div className="forge-upload-card grid gap-3">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-        <h3 className="text-base font-semibold text-slate-950 md:text-lg">{label}</h3>
-        <span className="w-fit rounded-md border border-cyan-200 bg-cyan-50 px-2.5 py-1 text-xs font-semibold text-cyan-700">
+        <h3 className="text-sm font-semibold text-slate-950">{label}</h3>
+        <span className="forge-status-pill text-slate-600">
           {kind.toUpperCase()}
         </span>
       </div>
 
       <input
         accept=".csv,.xls,.xml,.html,.htm,text/csv,application/vnd.ms-excel,text/xml,text/html"
-        className="block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 file:mr-3 file:rounded-md file:border-0 file:bg-slate-900 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-100 md:file:mr-4 md:file:px-4 md:file:py-2 md:file:text-sm"
+        className="forge-file-input"
         disabled={!canModify}
         type="file"
         onChange={handleFileChange}
@@ -575,7 +575,7 @@ function UploadPanel({
 
       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
         <button
-          className="inline-flex h-10 w-full items-center justify-center rounded-md bg-cyan-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
+          className="forge-button-accent w-full sm:w-auto"
           disabled={!canModify || !slot.file || slot.isUploading}
           type="button"
           onClick={onUpload}
@@ -617,7 +617,7 @@ function UploadReceipt({
 }) {
   return (
     <div className="grid gap-3">
-      <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
+      <div className="forge-receipt">
         <div className="grid gap-1 sm:grid-cols-2">
           <p>
             <span className="font-medium">source_file_id:</span> {upload.source_file_id}
@@ -656,33 +656,33 @@ function ValidationErrors({ errors }: { errors: UploadValidationError[] }) {
   const hiddenCount = Math.max(errors.length - visibleErrors.length, 0);
 
   return (
-    <details className="mt-3 rounded-md border border-amber-200 bg-white">
-      <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-amber-950">
+    <details className="forge-notice forge-notice-warning mt-3">
+      <summary className="forge-summary text-amber-950">
         {errors.length} validation error{errors.length === 1 ? "" : "s"} found. Showing first{" "}
         {visibleErrors.length} when expanded.
       </summary>
-      <div className="max-h-64 overflow-auto border-t border-amber-100">
-        <table className="min-w-full divide-y divide-amber-100 text-left text-sm">
-          <thead className="sticky top-0 bg-amber-50 text-amber-950">
+      <div className="forge-table-wrap mt-3 max-h-64 overflow-auto">
+        <table className="forge-table">
+          <thead className="sticky top-0">
             <tr>
-              <th className="px-3 py-2 font-semibold">Row</th>
-              <th className="px-3 py-2 font-semibold">Field</th>
-              <th className="px-3 py-2 font-semibold">Message</th>
+              <th>Row</th>
+              <th>Field</th>
+              <th>Message</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-amber-100">
+          <tbody>
             {visibleErrors.map((error, index) => (
               <tr key={`${error.row ?? "file"}-${error.field ?? "field"}-${index}`}>
-                <td className="px-3 py-2">{error.row ?? "file"}</td>
-                <td className="px-3 py-2">{error.field ?? "file"}</td>
-                <td className="px-3 py-2">{error.message}</td>
+                <td>{error.row ?? "file"}</td>
+                <td>{error.field ?? "file"}</td>
+                <td>{error.message}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
       {hiddenCount > 0 ? (
-        <p className="border-t border-amber-100 px-3 py-2 text-xs text-amber-900">
+        <p className="mt-2 text-xs text-amber-900">
           {hiddenCount} additional validation error{hiddenCount === 1 ? "" : "s"} hidden.
         </p>
       ) : null}
@@ -714,13 +714,13 @@ function ResultsSection({
   }
 
   return (
-    <section className="grid gap-5 rounded-md border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="forge-panel forge-panel-pad grid gap-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="flex flex-col gap-1">
-          <p className="text-xs font-semibold uppercase text-cyan-700">Step 5</p>
-          <h2 className="text-lg font-semibold text-slate-950">Download Outputs</h2>
+          <p className="forge-eyebrow">Step 5</p>
+          <h2 className="forge-section-title">Download Outputs</h2>
           {run ? (
-            <p className="text-sm text-slate-600">
+            <p className="forge-copy">
               Run {formatRunId(run.created_at)} for {run.store_name ?? "Unassigned store"} from{" "}
               {formatDateTime(run.created_at)} is ready for its merged export and FP REC final workpaper.
             </p>
@@ -729,14 +729,14 @@ function ResultsSection({
         {run ? (
           <div className="flex flex-wrap gap-2">
             <a
-              className="inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-700"
+              className="forge-button-primary"
               download
               href={getMergedFloorplanExportUrl(run.reconciliation_run_id)}
             >
               Download Merged Export
             </a>
             <a
-              className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+              className="forge-button-secondary"
               download
               href={getFpRecExportUrl(run.reconciliation_run_id)}
             >
@@ -747,25 +747,25 @@ function ResultsSection({
       </div>
 
       {isReconciling ? (
-        <div className="rounded-md border border-cyan-200 bg-cyan-50 p-4 text-sm font-medium text-cyan-950">
+        <div className="forge-notice forge-notice-info font-semibold">
           Running reconciliation...
         </div>
       ) : null}
 
       {run ? (
         <>
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950">
+          <div className="forge-notice forge-notice-success">
             <p className="font-semibold">FP REC is the final workpaper.</p>
             <p className="mt-1">
               Download FP REC for exception review and annotation outside the app.
             </p>
           </div>
 
-          <details className="border-t border-slate-200 pt-4">
-            <summary className="cursor-pointer text-sm font-semibold text-slate-600">
+          <details className="forge-disclosure">
+            <summary className="forge-summary">
               Secondary export and audit details
             </summary>
-            <div className="mt-4 grid gap-5 opacity-80">
+            <div className="mt-4 grid gap-4 opacity-90">
               <ArtifactsPanel artifacts={artifacts} error={artifactsError} />
               <RunSummaryMetrics run={run} />
               <ExceptionBreakdown run={run} />
@@ -809,44 +809,44 @@ function ArtifactsPanel({
   });
 
   return (
-    <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-4">
+    <div className="forge-panel forge-panel-muted forge-panel-pad grid gap-3">
       <div>
-        <h3 className="text-base font-semibold text-slate-950">Stored artifacts</h3>
-        <p className="mt-1 text-sm text-slate-600">
+        <h3 className="text-sm font-semibold text-slate-950">Stored artifacts</h3>
+        <p className="forge-copy mt-1">
           Historical files saved for this store/month run.
         </p>
       </div>
       {error ? <ErrorBanner message={error} /> : null}
-      <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">
-        <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-          <thead className="bg-slate-50 text-slate-600">
+      <div className="forge-table-wrap">
+        <table className="forge-table">
+          <thead>
             <tr>
-              <th className="px-3 py-2 font-semibold">Artifact</th>
-              <th className="px-3 py-2 font-semibold">Filename</th>
-              <th className="px-3 py-2 font-semibold">Size</th>
-              <th className="px-3 py-2 font-semibold">Created</th>
-              <th className="px-3 py-2 font-semibold">Download</th>
+              <th>Artifact</th>
+              <th>Filename</th>
+              <th>Size</th>
+              <th>Created</th>
+              <th>Download</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-200">
+          <tbody>
             {sortedArtifacts.length === 0 ? (
               <tr>
-                <td className="px-3 py-3 text-slate-600" colSpan={5}>
+                <td className="text-slate-600" colSpan={5}>
                   No stored artifacts for this run yet.
                 </td>
               </tr>
             ) : (
               sortedArtifacts.map((artifact) => (
                 <tr key={artifact.id}>
-                  <td className="px-3 py-2 font-medium text-slate-950">
+                  <td className="font-medium text-slate-950">
                     {ARTIFACT_LABELS[artifact.artifact_type]}
                   </td>
-                  <td className="max-w-xs break-all px-3 py-2 text-slate-700">{artifact.filename}</td>
-                  <td className="px-3 py-2 text-slate-700">{formatFileSize(artifact.file_size)}</td>
-                  <td className="px-3 py-2 text-slate-700">{formatDateTime(artifact.created_at)}</td>
-                  <td className="px-3 py-2">
+                  <td className="max-w-xs break-all text-slate-700">{artifact.filename}</td>
+                  <td className="text-slate-700">{formatFileSize(artifact.file_size)}</td>
+                  <td className="text-slate-700">{formatDateTime(artifact.created_at)}</td>
+                  <td>
                     <a
-                      className="inline-flex h-9 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+                      className="forge-button-secondary min-h-8 px-3"
                       download
                       href={getArtifactDownloadUrl(artifact.id)}
                     >
@@ -869,8 +869,8 @@ function ExceptionBreakdown({ run }: { run: ReconciliationRunDetail }) {
   return (
     <div className="grid gap-2">
       <div>
-        <h3 className="text-base font-semibold text-slate-950">Unmatched items breakdown</h3>
-        <p className="mt-1 text-sm text-slate-600">
+        <h3 className="text-sm font-semibold text-slate-950">Unmatched items breakdown</h3>
+        <p className="forge-copy mt-1">
           Rows are grouped by FP REC worksheet placement. Same-VIN rows that do not cleanly
           match stay in manual review.
         </p>
@@ -894,16 +894,16 @@ function HistoricalReplayPanel({
   onReplay: () => void;
 }) {
   return (
-    <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-4">
+    <div className="forge-panel forge-panel-muted forge-panel-pad grid gap-3">
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
-          <h3 className="text-base font-semibold text-slate-950">Historical Replay</h3>
-          <p className="mt-1 text-sm text-slate-600">
+          <h3 className="text-sm font-semibold text-slate-950">Historical Replay</h3>
+          <p className="forge-copy mt-1">
             Reruns this reconciliation from its saved normalized inputs for audit checks.
           </p>
         </div>
         <button
-          className="inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          className="forge-button-primary"
           disabled={isReplaying}
           type="button"
           onClick={onReplay}
@@ -915,10 +915,10 @@ function HistoricalReplayPanel({
       {replay ? (
         <>
           <div
-            className={`rounded-md border p-3 text-sm font-semibold ${
+            className={`forge-notice font-semibold ${
               replay.results_changed
-                ? "border-amber-200 bg-amber-50 text-amber-950"
-                : "border-emerald-200 bg-emerald-50 text-emerald-950"
+                ? "forge-notice-warning"
+                : "forge-notice-success"
             }`}
           >
             {replay.results_changed ? "Results changed" : "Results unchanged"}
@@ -935,7 +935,7 @@ function HistoricalReplayPanel({
           </div>
         </>
       ) : (
-        <p className="text-sm text-slate-600">No replay has been run for this result yet.</p>
+        <p className="forge-copy">No replay has been run for this result yet.</p>
       )}
     </div>
   );
@@ -943,7 +943,7 @@ function HistoricalReplayPanel({
 
 function ReplayVersionPanel({ replay }: { replay: ReconciliationReplayResponse }) {
   return (
-    <div className="rounded-md border border-slate-200 bg-white p-3 text-sm">
+    <div className="forge-panel forge-panel-pad text-sm">
       <h4 className="font-semibold text-slate-950">Version check</h4>
       <div className="mt-2 grid gap-2">
         <VersionRow
@@ -994,7 +994,7 @@ function VersionRow({
 
 function ReplayDiffList({ replay }: { replay: ReconciliationReplayResponse }) {
   return (
-    <div className="rounded-md border border-slate-200 bg-white p-3 text-sm">
+    <div className="forge-panel forge-panel-pad text-sm">
       <h4 className="font-semibold text-slate-950">Deterministic diff</h4>
       <div className="mt-2 grid gap-3">
         <ReplayKeyList label="Newly matched" rows={replay.newly_matched} />
@@ -1006,16 +1006,16 @@ function ReplayDiffList({ replay }: { replay: ReconciliationReplayResponse }) {
 
 function ReplayKeyList({ label, rows }: { label: string; rows: string[] }) {
   return (
-    <details className="rounded-md border border-slate-200 bg-slate-50 p-2">
-      <summary className="cursor-pointer text-sm font-semibold text-slate-800">
+    <details className="forge-panel forge-panel-muted p-2">
+      <summary className="forge-summary text-slate-800">
         {label} ({rows.length})
       </summary>
       {rows.length === 0 ? (
-        <p className="mt-2 text-slate-600">None</p>
+        <p className="forge-copy mt-2">None</p>
       ) : (
         <ul className="mt-2 grid gap-1 text-xs text-slate-700">
           {rows.map((row) => (
-            <li className="break-all rounded bg-white px-2 py-1" key={row}>
+            <li className="break-all rounded-sm bg-white px-2 py-1" key={row}>
               {row}
             </li>
           ))}
@@ -1028,25 +1028,25 @@ function ReplayKeyList({ label, rows }: { label: string; rows: string[] }) {
 function MatchGroupsTable({ run }: { run: ReconciliationRunDetail }) {
   return (
     <div className="grid gap-2">
-      <h3 className="text-base font-semibold text-slate-950">Match groups</h3>
-      <div className="overflow-x-auto rounded-md border border-slate-200">
-        <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-          <thead className="bg-slate-50 text-slate-600">
+      <h3 className="text-sm font-semibold text-slate-950">Match groups</h3>
+      <div className="forge-table-wrap">
+        <table className="forge-table">
+          <thead>
             <tr>
-              <th className="px-3 py-2 font-semibold">Group</th>
-              <th className="px-3 py-2 font-semibold">Reason</th>
-              <th className="px-3 py-2 font-semibold">Confidence</th>
-              <th className="px-3 py-2 font-semibold">Side</th>
-              <th className="px-3 py-2 font-semibold">Source</th>
-              <th className="px-3 py-2 font-semibold">Stock</th>
-              <th className="px-3 py-2 font-semibold">VIN</th>
-              <th className="px-3 py-2 font-semibold">Amount</th>
+              <th>Group</th>
+              <th>Reason</th>
+              <th>Confidence</th>
+              <th>Side</th>
+              <th>Source</th>
+              <th>Stock</th>
+              <th>VIN</th>
+              <th>Amount</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-200 bg-white">
+          <tbody>
             {run.match_groups.length === 0 ? (
               <tr>
-                <td className="px-3 py-3 text-slate-600" colSpan={8}>
+                <td className="text-slate-600" colSpan={8}>
                   No matches.
                 </td>
               </tr>
@@ -1054,24 +1054,24 @@ function MatchGroupsTable({ run }: { run: ReconciliationRunDetail }) {
               run.match_groups.flatMap((group) =>
                 group.transactions.map((linkedTransaction) => (
                   <tr key={`${group.match_group_id}-${linkedTransaction.side}`}>
-                    <td className="px-3 py-2 font-medium text-slate-950">
+                    <td className="font-medium text-slate-950">
                       {group.match_group_id}
                     </td>
-                    <td className="px-3 py-2 text-slate-700">{formatReason(group.reason)}</td>
-                    <td className="px-3 py-2 text-slate-700">
+                    <td className="text-slate-700">{formatReason(group.reason)}</td>
+                    <td className="text-slate-700">
                       {Math.round(group.confidence * 100)}%
                     </td>
-                    <td className="px-3 py-2 text-slate-700">{linkedTransaction.side}</td>
-                    <td className="px-3 py-2 text-slate-700">
+                    <td className="text-slate-700">{linkedTransaction.side}</td>
+                    <td className="text-slate-700">
                       {linkedTransaction.source_type.toUpperCase()}
                     </td>
-                    <td className="px-3 py-2 text-slate-700">
+                    <td className="text-slate-700">
                       {linkedTransaction.transaction.stock_number ?? "n/a"}
                     </td>
-                    <td className="px-3 py-2 text-slate-700">
+                    <td className="text-slate-700">
                       {linkedTransaction.transaction.vin ?? "n/a"}
                     </td>
-                    <td className="px-3 py-2 text-slate-700">
+                    <td className="text-slate-700">
                       {formatAmount(linkedTransaction.transaction)}
                     </td>
                   </tr>
@@ -1087,16 +1087,16 @@ function MatchGroupsTable({ run }: { run: ReconciliationRunDetail }) {
 
 function Metric({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
+    <div className="forge-metric">
       <p className="text-sm font-medium text-slate-600">{label}</p>
-      <p className="mt-1 text-2xl font-semibold text-slate-950">{value}</p>
+      <p className="forge-metric-value">{value}</p>
     </div>
   );
 }
 
 function ErrorBanner({ message }: { message: string }) {
   return (
-    <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-950">
+    <div className="forge-notice forge-notice-danger font-medium">
       {message}
     </div>
   );

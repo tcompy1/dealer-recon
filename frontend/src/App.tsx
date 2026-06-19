@@ -47,7 +47,7 @@ export default function App() {
     return (
       <Layout>
         <section className="grid flex-1 place-items-center py-8">
-          <p className="text-sm font-semibold text-slate-600">Checking session...</p>
+          <p className="forge-copy font-semibold">Checking session...</p>
         </section>
       </Layout>
     );
@@ -59,11 +59,11 @@ export default function App() {
 
   return (
     <Layout>
-      <section className="grid flex-1 content-start gap-8 py-8">
-        <div className="flex flex-col gap-5">
-          <div className="flex flex-col gap-2">
-            <p className="text-sm font-semibold text-cyan-700">Dealer Recon</p>
-            <h1 className="text-3xl font-semibold text-slate-950">
+      <section className="forge-page-stack">
+        <div className="grid gap-3">
+          <div className="forge-page-header">
+            <p className="forge-eyebrow">Dealer Recon</p>
+            <h1 className="forge-page-title">
               {section === "reconciliation"
                 ? "Store/month floorplan workflow"
                 : section === "accounts"
@@ -71,14 +71,14 @@ export default function App() {
                   : "Month-end reports"}
             </h1>
           </div>
-          <nav className="flex flex-wrap gap-2">
+          <nav className="flex flex-wrap gap-2" aria-label="Application sections">
             <NavButton
               active={section === "reconciliation"}
               label="Reconciliation"
               onClick={() => setSection("reconciliation")}
             />
             <details className="relative" open={section !== "reconciliation"}>
-              <summary className="inline-flex h-10 cursor-pointer items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-600 transition hover:bg-slate-50">
+              <summary className="forge-button-secondary cursor-pointer">
                 Advanced tools
               </summary>
               <div className="mt-2 flex flex-wrap gap-2">
@@ -96,14 +96,14 @@ export default function App() {
             </details>
           </nav>
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-white px-4 py-3">
+        <div className="forge-context-strip flex flex-wrap items-center justify-between gap-3">
           <div className="grid gap-1">
-            <span className="text-xs font-semibold uppercase text-slate-500">Signed in</span>
+            <span className="forge-eyebrow text-slate-500">Signed in</span>
             <span className="text-sm font-semibold text-slate-900">{currentUser.email}</span>
             <span className="text-xs text-slate-600">{formatRole(currentUser.role)}</span>
           </div>
           <button
-            className="inline-flex h-9 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+            className="forge-button-secondary"
             type="button"
             onClick={handleLogout}
           >
@@ -134,11 +134,7 @@ function NavButton({
 }) {
   return (
     <button
-      className={
-        active
-          ? "inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white"
-          : "inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
-      }
+      className={active ? "forge-button-primary" : "forge-button-secondary"}
       type="button"
       onClick={onClick}
     >

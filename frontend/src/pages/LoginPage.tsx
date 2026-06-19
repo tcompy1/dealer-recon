@@ -28,37 +28,37 @@ export function LoginPage({ onLogin }: LoginPageProps) {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-950">
+    <main className="forge-shell">
       <div className="mx-auto grid min-h-screen w-full max-w-md content-center px-6 py-10">
         <form
-          className="grid gap-5 rounded-lg border border-slate-200 bg-white p-6 shadow-sm"
+          className="forge-panel forge-panel-pad grid gap-4"
           onSubmit={handleSubmit}
         >
-          <div className="grid gap-2">
-            <p className="text-sm font-semibold text-cyan-700">Dealer Recon</p>
-            <h1 className="text-2xl font-semibold text-slate-950">Sign in</h1>
+          <div className="grid gap-1">
+            <p className="forge-eyebrow">Dealer Recon</p>
+            <h1 className="forge-page-title">Sign in</h1>
           </div>
 
           {error ? (
-            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            <div className="forge-notice forge-notice-danger">
               {error}
             </div>
           ) : null}
 
-          <label className="grid gap-2 text-sm font-medium text-slate-700">
+          <label className="forge-field">
             Email
             <input
-              className="h-10 rounded-md border border-slate-300 px-3 text-sm font-normal text-slate-950 outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"
+              className="forge-control"
               type="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
             />
           </label>
 
-          <label className="grid gap-2 text-sm font-medium text-slate-700">
+          <label className="forge-field">
             Password
             <input
-              className="h-10 rounded-md border border-slate-300 px-3 text-sm font-normal text-slate-950 outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"
+              className="forge-control"
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
@@ -66,7 +66,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
           </label>
 
           <button
-            className="inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+            className="forge-button-primary"
             type="submit"
             disabled={isSubmitting}
           >
