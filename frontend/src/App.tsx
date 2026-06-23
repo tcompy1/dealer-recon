@@ -96,32 +96,15 @@ export default function App() {
               onClick={() => setSection("workspace")}
             />
             <NavButton
-              active={section === "reports"}
-              label="Artifacts"
-              onClick={() => setSection("reports")}
-            />
-            <NavButton
               active={section === "accounts"}
-              label="Tools"
+              label="Accounts"
               onClick={() => setSection("accounts")}
             />
-            <details className="relative" open={section !== "workspace"}>
-              <summary className="forge-nav-button cursor-pointer">
-                Diagnostics
-              </summary>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <NavButton
-                  active={section === "accounts"}
-                  label="Accounts"
-                  onClick={() => setSection("accounts")}
-                />
-                <NavButton
-                  active={section === "reports"}
-                  label="Month-end"
-                  onClick={() => setSection("reports")}
-                />
-              </div>
-            </details>
+            <NavButton
+              active={section === "reports"}
+              label="Reports"
+              onClick={() => setSection("reports")}
+            />
           </nav>
         </header>
         <div className="forge-context-strip flex flex-wrap items-center justify-between gap-3">

@@ -231,179 +231,112 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
   }
 
   return (
-    <div className="forge-workbench">
-      <WorkbenchContextPanel
+    <div className="grid gap-4">
+      <WorkbenchOverview
         activeRun={activeRun}
-        boaUpload={boaUpload}
-        dealertrackUpload={dealertrackUpload}
-        hasArtifacts={activeRunArtifacts.length > 0}
+        hasBoaUpload={Boolean(boaUpload.upload)}
+        hasDealertrackUpload={Boolean(dealertrackUpload.upload)}
+        hasRun={Boolean(activeRun)}
+        hasStore={Boolean(selectedStoreId)}
         selectedStoreName={selectedStoreName}
       />
 
-      <div className="forge-workbench-main">
-        <WorkbenchOverview
-          activeRun={activeRun}
-          hasBoaUpload={Boolean(boaUpload.upload)}
-          hasDealertrackUpload={Boolean(dealertrackUpload.upload)}
-          hasRun={Boolean(activeRun)}
-          hasStore={Boolean(selectedStoreId)}
-          selectedStoreName={selectedStoreName}
+      <div className="forge-station-grid">
+        <StoreManagementPanel
+          newStoreName={newStoreName}
+          selectedStoreId={selectedStoreId}
+          stores={stores}
+          onCreateStore={() => void handleCreateStore()}
+          onNewStoreNameChange={setNewStoreName}
+          onStoreChange={(storeId) => void handleStoreChange(storeId)}
         />
 
-        <div className="forge-station-grid">
-          <StoreManagementPanel
-            newStoreName={newStoreName}
-            selectedStoreId={selectedStoreId}
-            stores={stores}
-            onCreateStore={() => void handleCreateStore()}
-            onNewStoreNameChange={setNewStoreName}
-            onStoreChange={(storeId) => void handleStoreChange(storeId)}
-          />
+        <TaskSelectionPanel />
+      </div>
 
-          <TaskSelectionPanel />
+      <section className="forge-panel forge-panel-pad forge-primary-station grid gap-3">
+        <StationHeading
+          station="Inputs"
+          title="Source File Station"
+          description="Load the BOA and Dealertrack source files for the selected store/month run."
+        />
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <UploadPanel
+            kind="boa"
+            label="BOA input"
+            slot={boaUpload}
+            onFileChange={(file) =>
+              setBoaUpload((current) => ({
+                ...current,
+                file,
+                upload: null,
+                error: null,
+                errorPreprocessing: null,
+              }))
+            }
+            onUpload={() => void handleUpload("boa")}
+            canModify={canModify}
+          />
+          <UploadPanel
+            kind="dealertrack"
+            label="Dealertrack input"
+            slot={dealertrackUpload}
+            onFileChange={(file) =>
+              setDealertrackUpload((current) => ({
+                ...current,
+                file,
+                upload: null,
+                error: null,
+                errorPreprocessing: null,
+              }))
+            }
+            onUpload={() => void handleUpload("dealertrack")}
+            canModify={canModify}
+            onVinEnriched={() => setIsReconciliationStale(true)}
+          />
         </div>
 
-        <section className="forge-panel forge-panel-pad forge-primary-station grid gap-3">
-          <StationHeading
-            station="Inputs"
-            title="Source File Station"
-            description="Load the BOA and Dealertrack source files for the selected store/month run."
-          />
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <UploadPanel
-              kind="boa"
-              label="BOA input"
-              slot={boaUpload}
-              onFileChange={(file) =>
-                setBoaUpload((current) => ({
-                  ...current,
-                  file,
-                  upload: null,
-                  error: null,
-                  errorPreprocessing: null,
-                }))
-              }
-              onUpload={() => void handleUpload("boa")}
-              canModify={canModify}
-            />
-            <UploadPanel
-              kind="dealertrack"
-              label="Dealertrack input"
-              slot={dealertrackUpload}
-              onFileChange={(file) =>
-                setDealertrackUpload((current) => ({
-                  ...current,
-                  file,
-                  upload: null,
-                  error: null,
-                  errorPreprocessing: null,
-                }))
-              }
-              onUpload={() => void handleUpload("dealertrack")}
-              canModify={canModify}
-              onVinEnriched={() => setIsReconciliationStale(true)}
-            />
+        {isReconciliationStale && activeRun ? (
+          <div
+            className="forge-notice forge-notice-warning"
+            data-testid="reconciliation-stale-banner"
+          >
+            VIN repaired. Re-run reconciliation to apply the corrected VIN.
           </div>
+        ) : null}
+      </section>
 
-          {isReconciliationStale && activeRun ? (
-            <div
-              className="forge-notice forge-notice-warning"
-              data-testid="reconciliation-stale-banner"
-            >
-              VIN repaired. Re-run reconciliation to apply the corrected VIN.
-            </div>
-          ) : null}
-        </section>
-
-        <section className="forge-panel forge-panel-pad forge-action-station flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <StationHeading
-            station="Processing"
-            title="Reconciliation Engine"
-            description={`BOA #${boaUpload.upload?.source_file_id ?? "not loaded"} / Dealertrack #${
-              dealertrackUpload.upload?.source_file_id ?? "not loaded"
-            }`}
-          />
-          <button
-            className="forge-button-primary w-full md:w-auto md:flex-shrink-0"
-            disabled={!canModify || !canReconcile || isReconciling}
-            type="button"
-            onClick={() => void handleReconcile()}
-          >
-            {isReconciling ? "Running workflow..." : "Run Workflow"}
-          </button>
-        </section>
-
-        {workflowError ? <ErrorBanner message={workflowError} /> : null}
-
-        <ResultsSection
-          artifacts={activeRunArtifacts}
-          artifactsError={activeRunArtifactsError}
-          diagnostics={activeRunDiagnostics}
-          replay={activeRunReplay}
-          run={activeRun}
-          isReconciling={isReconciling}
-          isReplaying={isReplaying}
-          onReplay={() => void handleReplayRun()}
-        />
-      </div>
-    </div>
-  );
-}
-
-function WorkbenchContextPanel({
-  activeRun,
-  boaUpload,
-  dealertrackUpload,
-  hasArtifacts,
-  selectedStoreName,
-}: {
-  activeRun: ReconciliationRunDetail | null;
-  boaUpload: UploadSlot;
-  dealertrackUpload: UploadSlot;
-  hasArtifacts: boolean;
-  selectedStoreName: string | null;
-}) {
-  return (
-    <aside className="forge-workbench-rail" aria-label="Workbench context">
-      <div className="grid gap-1">
-        <p className="forge-brand-kicker">ForgeOS v1</p>
-        <h2 className="text-base font-semibold text-slate-950">Workbench</h2>
-      </div>
-      <nav className="grid gap-1" aria-label="Workbench stations">
-        {["Workspace", "Runs", "Artifacts", "Diagnostics", "Tools"].map((item) => (
-          <span
-            className={item === "Workspace" ? "forge-rail-item forge-rail-item-active" : "forge-rail-item"}
-            key={item}
-          >
-            {item}
-          </span>
-        ))}
-      </nav>
-      <div className="forge-rail-facts">
-        <ContextFact label="Store" value={selectedStoreName ?? "No store selected"} />
-        <ContextFact label="Task" value="Floorplan Reconciliation" />
-        <ContextFact
-          label="Inputs"
-          value={`${boaUpload.upload ? "BOA loaded" : "BOA pending"} / ${
-            dealertrackUpload.upload ? "Dealertrack loaded" : "Dealertrack pending"
+      <section className="forge-panel forge-panel-pad forge-action-station flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <StationHeading
+          station="Processing"
+          title="Reconciliation Engine"
+          description={`BOA #${boaUpload.upload?.source_file_id ?? "not loaded"} / Dealertrack #${
+            dealertrackUpload.upload?.source_file_id ?? "not loaded"
           }`}
         />
-        <ContextFact
-          label="Last run"
-          value={activeRun ? `${formatRunId(activeRun.created_at)} ${activeRun.status}` : "No run yet"}
-        />
-        <ContextFact label="Outputs" value={hasArtifacts ? "Stored artifacts ready" : "Awaiting run"} />
-      </div>
-    </aside>
-  );
-}
+        <button
+          className="forge-button-primary w-full md:w-auto md:flex-shrink-0"
+          disabled={!canModify || !canReconcile || isReconciling}
+          type="button"
+          onClick={() => void handleReconcile()}
+        >
+          {isReconciling ? "Running workflow..." : "Run Workflow"}
+        </button>
+      </section>
 
-function ContextFact({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="forge-context-fact">
-      <span>{label}</span>
-      <strong>{value}</strong>
+      {workflowError ? <ErrorBanner message={workflowError} /> : null}
+
+      <ResultsSection
+        artifacts={activeRunArtifacts}
+        artifactsError={activeRunArtifactsError}
+        diagnostics={activeRunDiagnostics}
+        replay={activeRunReplay}
+        run={activeRun}
+        isReconciling={isReconciling}
+        isReplaying={isReplaying}
+        onReplay={() => void handleReplayRun()}
+      />
     </div>
   );
 }
@@ -434,7 +367,7 @@ function WorkbenchOverview({
     {
       label: "Task",
       title: "Floorplan Reconciliation",
-      detail: "Floorplan Reconciliation",
+      detail: "Fixed v1 task",
       state: hasStore ? "complete" : "waiting",
     },
     {
