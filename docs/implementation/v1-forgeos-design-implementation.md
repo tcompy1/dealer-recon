@@ -45,3 +45,15 @@ Completed on 2026-06-19:
 - `cd frontend && npm test -- --run`: passed, 6 tests passed. npm emitted the existing warning about forwarded `--run`.
 - `cd frontend && npm run build`: passed.
 - `git diff --check`: passed, with Windows LF-to-CRLF working-copy warnings only.
+
+## 2026-06-23 Workbench Refinement
+
+Issue #30 builds on the hierarchy pass documented in `docs/implementation/v1-forgeos-visual-refinement.md`. It keeps that product header, nav frame, typography hierarchy, and compact section treatment, then shifts the first post-login reconciliation screen away from a numbered wizard toward a permanent workbench.
+
+The five v1 actions remain unchanged, but their presentation is now station-based: Store, Task, Inputs, Processing, and Outputs. A contextual ForgeOS-style rail adds compact operational state for selected store, fixed task, loaded inputs, last run, and output readiness.
+
+Tradeoffs:
+
+- The rail is contextual rather than a new routing system, so no backend scope or workflow branching was introduced.
+- Accounting month remains represented by the selected uploads/run timestamp because v1 does not expose a separate month selector.
+- Store selection, task selection, upload, run, replay/detail, artifact listing, and downloads continue to use the existing handlers.

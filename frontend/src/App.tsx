@@ -8,10 +8,10 @@ import { LoginPage } from "./pages/LoginPage";
 import { ReportsPage } from "./pages/ReportsPage";
 import type { CurrentUser } from "./types/auth";
 
-type AppSection = "reconciliation" | "accounts" | "reports";
+type AppSection = "workspace" | "accounts" | "reports";
 
 export default function App() {
-  const [section, setSection] = useState<AppSection>("reconciliation");
+  const [section, setSection] = useState<AppSection>("workspace");
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
 
@@ -58,14 +58,14 @@ export default function App() {
   }
 
   const sectionTitle =
-    section === "reconciliation"
-      ? "Store/month floorplan workflow"
+    section === "workspace"
+      ? "Floorplan reconciliation workbench"
       : section === "accounts"
         ? "Account close support"
         : "Month-end reports";
   const sectionContext =
-    section === "reconciliation"
-      ? "Five-step FP REC production for store/month floorplan reconciliation."
+    section === "workspace"
+      ? "Station-based FP REC production for store/month floorplan reconciliation."
       : section === "accounts"
         ? "Operational account context for month-end close support."
         : "Month-end reporting output for reconciliation review.";
@@ -86,18 +86,28 @@ export default function App() {
             <div className="forge-product-header-meta" aria-label="Workflow context">
               <span>Dealer-Recon v1</span>
               <span>Floorplan workstation</span>
-              <span>Five-step flow</span>
+              <span>Store/month stations</span>
             </div>
           </div>
           <nav className="forge-nav-bar" aria-label="Application sections">
             <NavButton
-              active={section === "reconciliation"}
-              label="Reconciliation"
-              onClick={() => setSection("reconciliation")}
+              active={section === "workspace"}
+              label="Workspace"
+              onClick={() => setSection("workspace")}
             />
-            <details className="relative" open={section !== "reconciliation"}>
+            <NavButton
+              active={section === "reports"}
+              label="Artifacts"
+              onClick={() => setSection("reports")}
+            />
+            <NavButton
+              active={section === "accounts"}
+              label="Tools"
+              onClick={() => setSection("accounts")}
+            />
+            <details className="relative" open={section !== "workspace"}>
               <summary className="forge-nav-button cursor-pointer">
-                Advanced tools
+                Diagnostics
               </summary>
               <div className="mt-2 flex flex-wrap gap-2">
                 <NavButton
@@ -129,7 +139,7 @@ export default function App() {
           </button>
         </div>
 
-        {section === "reconciliation" ? <DashboardPage currentUser={currentUser} embedded /> : null}
+        {section === "workspace" ? <DashboardPage currentUser={currentUser} embedded /> : null}
         {section === "accounts" ? <AccountsPage /> : null}
         {section === "reports" ? <ReportsPage currentUser={currentUser} /> : null}
       </section>
