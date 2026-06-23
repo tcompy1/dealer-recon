@@ -31,12 +31,16 @@ export function LoginPage({ onLogin }: LoginPageProps) {
     <main className="forge-shell">
       <div className="mx-auto grid min-h-screen w-full max-w-md content-center px-6 py-10">
         <form
-          className="forge-panel forge-panel-pad grid gap-4"
+          className="forge-panel forge-panel-pad forge-login-card grid gap-4"
           onSubmit={handleSubmit}
         >
-          <div className="grid gap-1">
-            <p className="forge-eyebrow">Dealer Recon</p>
-            <h1 className="forge-page-title">Sign in</h1>
+          <div className="forge-brand-lockup">
+            <span className="forge-brand-mark" aria-hidden="true">DR</span>
+            <div className="grid gap-1">
+              <p className="forge-brand-kicker">Forge Operations</p>
+              <h1 className="forge-page-title">Dealer Recon sign in</h1>
+              <p className="forge-copy">Access the v1 floorplan workflow workstation.</p>
+            </div>
           </div>
 
           {error ? (

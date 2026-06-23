@@ -57,28 +57,46 @@ export default function App() {
     return <LoginPage onLogin={setCurrentUser} />;
   }
 
+  const sectionTitle =
+    section === "reconciliation"
+      ? "Store/month floorplan workflow"
+      : section === "accounts"
+        ? "Account close support"
+        : "Month-end reports";
+  const sectionContext =
+    section === "reconciliation"
+      ? "Five-step FP REC production for store/month floorplan reconciliation."
+      : section === "accounts"
+        ? "Operational account context for month-end close support."
+        : "Month-end reporting output for reconciliation review.";
+
   return (
     <Layout>
       <section className="forge-page-stack">
-        <div className="grid gap-3">
-          <div className="forge-page-header">
-            <p className="forge-eyebrow">Dealer Recon</p>
-            <h1 className="forge-page-title">
-              {section === "reconciliation"
-                ? "Store/month floorplan workflow"
-                : section === "accounts"
-                  ? "Account close support"
-                  : "Month-end reports"}
-            </h1>
+        <header className="forge-product-header">
+          <div className="forge-product-header-main">
+            <div className="forge-brand-lockup">
+              <span className="forge-brand-mark" aria-hidden="true">DR</span>
+              <div className="forge-page-header">
+                <p className="forge-brand-kicker">Forge Operations</p>
+                <h1 className="forge-page-title">{sectionTitle}</h1>
+                <p className="forge-copy max-w-3xl">{sectionContext}</p>
+              </div>
+            </div>
+            <div className="forge-product-header-meta" aria-label="Workflow context">
+              <span>Dealer-Recon v1</span>
+              <span>Floorplan workstation</span>
+              <span>Five-step flow</span>
+            </div>
           </div>
-          <nav className="flex flex-wrap gap-2" aria-label="Application sections">
+          <nav className="forge-nav-bar" aria-label="Application sections">
             <NavButton
               active={section === "reconciliation"}
               label="Reconciliation"
               onClick={() => setSection("reconciliation")}
             />
             <details className="relative" open={section !== "reconciliation"}>
-              <summary className="forge-button-secondary cursor-pointer">
+              <summary className="forge-nav-button cursor-pointer">
                 Advanced tools
               </summary>
               <div className="mt-2 flex flex-wrap gap-2">
@@ -95,10 +113,10 @@ export default function App() {
               </div>
             </details>
           </nav>
-        </div>
+        </header>
         <div className="forge-context-strip flex flex-wrap items-center justify-between gap-3">
           <div className="grid gap-1">
-            <span className="forge-eyebrow text-slate-500">Signed in</span>
+            <span className="forge-session-label">Operator session</span>
             <span className="text-sm font-semibold text-slate-900">{currentUser.email}</span>
             <span className="text-xs text-slate-600">{formatRole(currentUser.role)}</span>
           </div>
@@ -134,7 +152,8 @@ function NavButton({
 }) {
   return (
     <button
-      className={active ? "forge-button-primary" : "forge-button-secondary"}
+      className={active ? "forge-nav-button forge-nav-button-active" : "forge-nav-button"}
+      aria-current={active ? "page" : undefined}
       type="button"
       onClick={onClick}
     >
