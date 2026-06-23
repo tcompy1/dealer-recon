@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+set -u
+
+dry_run=0
+case "${1:-}" in
+  --dry-run)
+    dry_run=1
+    ;;
+  -h|--help)
+    echo "Usage: dealer-end-day [--dry-run]"
+    exit 0
+    ;;
+  "")
+    ;;
+  *)
+    echo "Unknown option: $1" >&2
+    echo "Usage: dealer-end-day [--dry-run]" >&2
+    exit 2
+    ;;
+esac
+
+run() {
+  "$@" 2>&1 || true
+}
+
+bullet() {
+  sed '/^[[:space:]]*$/d; s/^/- /'
+}
+
+git_value() {
+  git "$@" 2>/dev/null || true
+}
+
+today="$(date +%F)"
+session_file="sessions/${today}.md"
+branch="$(git_value branch --show-current)"
+[ -n "$branch" ] || branch="$(git_value rev-parse --short HEAD)"
+[ -n "$branch" ] || branch="unknown"
+
+status="$(git_value status --porcelain)"
+if [ -n "$status" ]; then
+  tree_state="dirty"
+else
+  tree_state="clean"
+fi
+
+latest_commits="$(git_value log --oneline -5 | bullet)"
+[ -n "$latest_commits" ] || latest_commits="- unavailable"
+
+today_commits="$(git_value log --since="${today} 00:00" --oneline | bullet)"
+[ -n "$today_commits" ] || today_commits="- none found"
+
+changed_files="$(
+  {
+    git_value status --short | awk '{print $2}'
+    git_value log --name-only --pretty=format: -5
+  } | sed '/^[[:space:]]*$/d' | sort -u | head -25 | bullet
+)"
+[ -n "$changed_files" ] || changed_files="- none found"
+
+if command -v gh >/dev/null 2>&1; then
+  open_issues="$(run gh issue list --state open --limit 10 | bullet)"
+  closed_issues="$(run gh issue list --state closed --limit 10 | bullet)"
+  [ -n "$open_issues" ] || open_issues="- gh returned no open issues or failed"
+  [ -n "$closed_issues" ] || closed_issues="- gh returned no recently closed issues or failed"
+else
+  open_issues="- gh unavailable"
+  closed_issues="- gh unavailable"
+fi
+
+if [ -f docs/reviews/v1-risk-register.md ]; then
+  risks="$(awk -F'|' '/^\| R[0-9]+ / { gsub(/^[ \t]+|[ \t]+$/, "", $2); gsub(/^[ \t]+|[ \t]+$/, "", $3); gsub(/^[ \t]+|[ \t]+$/, "", $4); print "- " $2 " [" $4 "]: " $3 }' docs/reviews/v1-risk-register.md)"
+  [ -n "$risks" ] || risks="- risk register present, no summary rows parsed"
+else
+  risks="- docs/reviews/v1-risk-register.md unavailable"
+fi
+
+summary="$(
+cat <<EOF
+# Dealer-Recon Session Summary
+
+Date: ${today}
+
+## Repository State
+
+- Branch: ${branch}
+- Working tree: ${tree_state}
+
+### Latest Commits
+${latest_commits}
+
+### Commits Made Today
+${today_commits}
+
+### Recently Changed Files
+${changed_files}
+
+## GitHub State
+
+### Open Issues
+${open_issues}
+
+### Recently Closed Issues
+${closed_issues}
+
+## Completed
+
+- Review repository and GitHub state above, then replace this line with completed work.
+
+## Files Changed
+
+${changed_files}
+
+## Tests Run
+
+- Not recorded automatically; add commands run before saving.
+
+## Validation Results
+
+- Git state harvested automatically.
+- GitHub issue state harvested when gh is available.
+- Risk register harvested when present.
+
+## Open Risks
+
+${risks}
+
+## Blockers
+
+- None recorded automatically; add blockers before saving.
+
+## Next Task
+
+- Choose the next highest-priority open issue or launch-readiness task.
+
+## Tomorrow Startup Prompt
+
+START-DAY
+
+Reconstruct current Dealer-Recon state from this session summary.
+
+Provide:
+1. Current objective
+2. Current branch
+3. Completed work
+4. Files changed
+5. Tests run
+6. Validation results
+7. Open risks
+8. Blockers
+9. Exact next actions
+EOF
+)"
+
+if [ "$dry_run" -eq 1 ]; then
+  printf '%s\n' "$summary"
+  exit 0
+fi
+
+mkdir -p sessions
+printf '%s\n' "$summary" > "$session_file"
+
+editor="${VISUAL:-${EDITOR:-nano}}"
+read -r -a editor_cmd <<< "$editor"
+if ! command -v "${editor_cmd[0]}" >/dev/null 2>&1; then
+  echo "Wrote $session_file; editor '$editor' unavailable." >&2
+  exit 0
+fi
+
+"${editor_cmd[@]}" "$session_file"
