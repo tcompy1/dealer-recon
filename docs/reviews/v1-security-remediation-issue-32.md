@@ -74,4 +74,3 @@ Scope: minimal remediations from issue #31 for a controlled single-store pilot. 
 Ready for a controlled single-store pilot once encrypted storage/backups, restricted DB access, and private/allowlisted deployment are confirmed.
 
 Not ready for broad public production until the deferred toolchain upgrade and operational storage controls are closed.
-

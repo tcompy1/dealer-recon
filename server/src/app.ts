@@ -100,8 +100,10 @@ import {
 } from "./errors/HttpError.js";
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+// ponytail: in-process pilot throttle; use shared rate limiting before multi-instance deploys.
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_FAILURE_MAX_ENTRIES = 10_000;
 const allowedUploadMimeTypes = new Set([
   "text/csv",
   "application/csv",
@@ -1239,6 +1241,15 @@ export function createApp(
       return;
     }
 
+    await auditGeneratedArtifactDownload(response, {
+      reconciliationRunId,
+      artifactType: "MERGED_FLOORPLAN",
+      storeId: detail.dealership_store_id,
+      accountingMonth: null,
+      filename: artifact.filename,
+      contentType: artifact.contentType,
+      fileSize: Buffer.byteLength(artifact.html, "utf8"),
+    });
     response
       .status(200)
       .type(artifact.contentType)
@@ -1313,15 +1324,26 @@ export function createApp(
       response.json(workbook);
       return;
     }
+    const fpRecHtml = toHurstFpRecXlsHtml(workbook);
+    const fpRecFilename = toHurstFpRecFilename(workbook);
 
+    await auditGeneratedArtifactDownload(response, {
+      reconciliationRunId,
+      artifactType: "FP_REC",
+      storeId: detail.dealership_store_id,
+      accountingMonth: null,
+      filename: fpRecFilename,
+      contentType: "application/vnd.ms-excel",
+      fileSize: Buffer.byteLength(fpRecHtml, "utf8"),
+    });
     response
       .status(200)
       .type("application/vnd.ms-excel")
       .setHeader(
         "Content-Disposition",
-        `attachment; filename="${toHurstFpRecFilename(workbook)}"`,
+        `attachment; filename="${fpRecFilename}"`,
       )
-      .send(toHurstFpRecXlsHtml(workbook));
+      .send(fpRecHtml);
   });
 
   app.get("/reconciliation-runs/:id/fp-rec", fpRecExportHandler);
@@ -1541,7 +1563,7 @@ function requestLogger(
     logInfo("request_completed", {
       request_id: requestId,
       method: request.method,
-      path: request.path,
+      path: getLogPath(request),
       query_keys: Object.keys(request.query).sort(),
       status_code: response.statusCode,
       duration_ms: Math.round(durationMs * 100) / 100,
@@ -1593,6 +1615,29 @@ function getBearerToken(value: unknown): string | null {
   return scheme?.toLowerCase() === "bearer" && token ? token : null;
 }
 
+function getLogPath(request: express.Request): string {
+  if (typeof request.route?.path === "string") {
+    return request.route.path;
+  }
+  return sanitizeLogPath(request.path);
+}
+
+function sanitizeLogPath(path: string): string {
+  return path
+    .replace(/^\/accounts\/[^/]+$/, "/accounts/:account_identifier")
+    .replace(/^\/artifacts\/[^/]+\/download$/, "/artifacts/:artifactId/download")
+    .replace(
+      /^\/reconciliation-runs\/[^/]+(\/(?:analytics|snapshot|replay|artifacts|exceptions\.csv|merged-floorplan|fp-rec|hurst-fp-rec))?$/,
+      "/reconciliation-runs/:id$1",
+    )
+    .replace(
+      /^\/reconciliation-runs\/[^/]+\/exceptions\/[^/]+$/,
+      "/reconciliation-runs/:id/exceptions/:exception_id",
+    )
+    .replace(/^\/source-files\/[^/]+\/transactions$/, "/source-files/:sourceFileId/transactions")
+    .replace(/^\/transactions\/[^/]+\/vin-enrichment$/, "/transactions/:transactionId/vin-enrichment");
+}
+
 type LoginFailure = {
   count: number;
   firstFailedAt: number;
@@ -1623,16 +1668,37 @@ function recordFailedLogin(
   key: string,
   now = Date.now(),
 ): void {
+  pruneExpiredLoginFailures(failures, now);
   const failure = failures.get(key);
   if (!failure || now - failure.firstFailedAt >= LOGIN_FAILURE_WINDOW_MS) {
     failures.set(key, { count: 1, firstFailedAt: now });
+    pruneOldestLoginFailures(failures);
     return;
   }
   failure.count += 1;
+  pruneOldestLoginFailures(failures);
 }
 
 function clearFailedLogin(failures: Map<string, LoginFailure>, key: string): void {
   failures.delete(key);
+}
+
+function pruneExpiredLoginFailures(failures: Map<string, LoginFailure>, now: number): void {
+  for (const [key, failure] of failures) {
+    if (now - failure.firstFailedAt >= LOGIN_FAILURE_WINDOW_MS) {
+      failures.delete(key);
+    }
+  }
+}
+
+function pruneOldestLoginFailures(failures: Map<string, LoginFailure>): void {
+  while (failures.size > LOGIN_FAILURE_MAX_ENTRIES) {
+    const oldestKey = failures.keys().next().value as string | undefined;
+    if (!oldestKey) {
+      return;
+    }
+    failures.delete(oldestKey);
+  }
 }
 
 function getAuthenticatedUser(response: express.Response): AuthUser {
@@ -1715,6 +1781,30 @@ async function auditArtifactDownload(
     filename: artifact.filename,
     content_type: artifact.content_type,
     file_size: artifact.file_size,
+  });
+}
+
+async function auditGeneratedArtifactDownload(
+  response: express.Response,
+  artifact: {
+    reconciliationRunId: number;
+    artifactType: ReconciliationArtifact["artifact_type"];
+    storeId: number | null;
+    accountingMonth: string | null;
+    filename: string;
+    contentType: string;
+    fileSize: number;
+  },
+): Promise<void> {
+  await audit(response, "artifact_downloaded", "reconciliation_artifact", null, null, {
+    reconciliation_run_id: artifact.reconciliationRunId,
+    artifact_type: artifact.artifactType,
+    dealership_store_id: artifact.storeId,
+    accounting_month: artifact.accountingMonth,
+    filename: artifact.filename,
+    content_type: artifact.contentType,
+    file_size: artifact.fileSize,
+    generated: true,
   });
 }
 

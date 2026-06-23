@@ -196,6 +196,38 @@ describe("app", () => {
     expect(rateLimited.body.error.code).toBe("LOGIN_RATE_LIMITED");
   });
 
+  test("POST /login clears failed attempts after successful login", async () => {
+    const authRepository = new MemoryAuthRepository();
+    await authRepository.addUser({
+      email: "controller@example.com",
+      password: "correct-password",
+      dealership_id: 1,
+    });
+    const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const response = await request(app)
+        .post("/login")
+        .send({ email: "controller@example.com", password: "wrong-password" });
+      expect(response.status).toBe(401);
+    }
+    const successfulLogin = await request(app)
+      .post("/login")
+      .send({ email: "controller@example.com", password: "correct-password" });
+    expect(successfulLogin.status).toBe(200);
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const response = await request(app)
+        .post("/login")
+        .send({ email: "controller@example.com", password: "wrong-password" });
+      expect(response.status).toBe(401);
+    }
+  });
+
   test("protected routes require authentication when auth is configured", async () => {
     const authRepository = new MemoryAuthRepository();
     const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined, {
@@ -2010,6 +2042,30 @@ describe("app", () => {
     expect(storedFpRec.status).toBe(200);
     expect(regeneratedFpRec.status).toBe(200);
     expect(regeneratedFpRec.text).toBe(storedFpRec.text);
+
+    const auditResponse = await request(app).get("/audit-events");
+    expect(auditResponse.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action_type: "artifact_downloaded",
+          entity_type: "reconciliation_artifact",
+          entity_id: null,
+          new_state: expect.objectContaining({
+            artifact_type: "MERGED_FLOORPLAN",
+            generated: true,
+          }),
+        }),
+        expect.objectContaining({
+          action_type: "artifact_downloaded",
+          entity_type: "reconciliation_artifact",
+          entity_id: null,
+          new_state: expect.objectContaining({
+            artifact_type: "FP_REC",
+            generated: true,
+          }),
+        }),
+      ]),
+    );
   });
 
   test("reconciliation artifacts persist raw, cleaned, merged, and FP REC downloads", async () => {
