@@ -169,6 +169,33 @@ describe("app", () => {
     expect(response.status).toBe(401);
   });
 
+  test("POST /login rate limits repeated invalid credentials", async () => {
+    const authRepository = new MemoryAuthRepository();
+    await authRepository.addUser({
+      email: "controller@example.com",
+      password: "correct-password",
+      dealership_id: 1,
+    });
+    const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const response = await request(app)
+        .post("/login")
+        .send({ email: "controller@example.com", password: "wrong-password" });
+      expect(response.status).toBe(401);
+    }
+    const rateLimited = await request(app)
+      .post("/login")
+      .send({ email: "controller@example.com", password: "wrong-password" });
+
+    expect(rateLimited.status).toBe(429);
+    expect(rateLimited.body.error.code).toBe("LOGIN_RATE_LIMITED");
+  });
+
   test("protected routes require authentication when auth is configured", async () => {
     const authRepository = new MemoryAuthRepository();
     const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined, {
@@ -1992,7 +2019,7 @@ describe("app", () => {
       email: "artifact-user@example.com",
       password: "correct-password",
       dealership_id: 1,
-      role: "accounting_user",
+      role: "platform_admin",
       store_ids: [1],
     });
     const app = createApp(new MemoryTransactionRepository(), [], 1, async () => undefined, {
@@ -2067,6 +2094,26 @@ describe("app", () => {
     expect(fpRecArtifact.text).toContain("Floorplan Reconciliation - Hiley Mazda of Hurst");
     expect(mergedRoute.status).toBe(200);
     expect(mergedRoute.text).toBe(mergedArtifact.text);
+
+    const auditResponse = await agent.get("/audit-events");
+    expect(auditResponse.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action_type: "artifact_downloaded",
+          entity_type: "reconciliation_artifact",
+          entity_id: String(byType.get("RAW_BOA")!.id),
+          new_state: expect.objectContaining({
+            artifact_type: "RAW_BOA",
+            filename: "boa-run.csv",
+          }),
+        }),
+        expect.objectContaining({
+          action_type: "artifact_downloaded",
+          entity_type: "reconciliation_artifact",
+          entity_id: String(byType.get("MERGED_FLOORPLAN")!.id),
+        }),
+      ]),
+    );
   });
 
   test("formula-leading source text is inert in exception and cleaned CSV artifact downloads", async () => {

@@ -10,9 +10,9 @@ Scope: audit-first review for the v1 Hiley Mazda of Hurst single-store floorplan
 
 Dealer-Recon v1 has a usable security baseline for an internal, single-store pilot if deployment is tightly controlled. The strongest existing controls are authenticated routes, scoped store authorization checks, explicit production config guards, upload size/type limits, parameterized database access, persisted artifacts behind authorization, spreadsheet formula neutralization for CSV exports, and immutable audit events.
 
-The pilot is not ready for broad internet exposure. The main gaps are missing brute-force protection on login, no audit trail for artifact downloads, dependency audit findings, and unclear infrastructure controls for encrypted storage/backups around persisted raw uploads and artifacts.
+Issue #32 remediated the highest-value code gaps: login brute-force protection, artifact download audit logging, query-string log cleanup, and non-breaking server dependency fixes. Remaining pilot concerns are operational storage/backup controls and a deferred frontend Vite/esbuild advisory that requires a breaking toolchain upgrade.
 
-Final verdict: conditionally ready for a limited pilot after the must-fix items below are handled or explicitly mitigated by deployment controls. Not ready for general production.
+Final verdict: ready for a controlled single-store pilot once deployment confirms encrypted storage/backups, restricted DB access, and private/allowlisted access. Not ready for broad public production.
 
 ## Reviewed Areas
 
@@ -42,16 +42,16 @@ None found.
 - Evidence: `server/src/app.ts:195-207` accepts email/password and returns `401` for invalid credentials; no rate limit, lockout, CAPTCHA, IP/user throttling, or edge protection is enforced in this code path.
 - Relevant behavior: bcrypt verification is present, but repeated attempts are only bounded by external infrastructure.
 - Why it matters: accounting-user credentials protect financial uploads, persisted raw files, artifacts, and review workflow state. An exposed pilot login without throttling is a practical password-guessing target.
-- Recommended remediation: add one minimal control before internet exposure: edge/WAF rate limiting on `/login`, or a small server-side per-IP/per-email throttle. Document the deployed policy.
-- Pilot blocker status: blocker for internet-accessible pilot. Acceptable only if the pilot is behind VPN/IP allowlist/private network plus strong unique passwords.
+- Recommended remediation: completed in issue #32 with an in-process failed-login throttle.
+- Pilot blocker status: fixed for controlled pilot. Private/allowlisted access is still recommended.
 
 #### H-2: Artifact downloads are not audit-logged
 
 - Evidence: `server/src/app.ts:1105-1122` authorizes and sends `/artifacts/:artifactId/download`, but does not call `audit`; `server/src/app.ts:1627-1644` has a reusable audit helper; `server/src/db/migrations/1778065200000_initial_schema.cjs:234-244` defines audit events.
 - Relevant behavior: login, reconciliation creation, replay, exception review, and VIN enrichment are audited, but downloading raw BOA, raw Dealertrack, cleaned files, merged floorplan, and FP REC artifacts is not.
 - Why it matters: v1 persists and serves accounting artifacts. For a security review and accounting audit trail, artifact access should answer who downloaded what and when.
-- Recommended remediation: add a small audit event in `sendArtifactDownload` callers, at least for `/artifacts/:artifactId/download`, with artifact id/type, run id, store id, and filename metadata.
-- Pilot blocker status: blocker unless pilot procedure compensates with access logs retained and reviewed for artifact downloads.
+- Recommended remediation: completed in issue #32 with `artifact_downloaded` audit events for persisted artifact downloads and stored artifact fallback routes.
+- Pilot blocker status: fixed for controlled pilot.
 
 #### H-3: Persisted raw uploads and artifacts rely on infrastructure encryption, but that requirement is not documented here
 
@@ -66,10 +66,10 @@ None found.
 #### M-1: Dependency audit has unresolved advisories
 
 - Evidence: `server/package.json:22-30` includes runtime dependencies `express`, `multer`, `pg`, etc.; `frontend/package.json:18-33` includes Vite/build tooling. `npm audit --omit=dev --audit-level=low` reported server advisories for `brace-expansion`, `qs`, and `express` dependency chain; frontend advisories for `@babel/core`, `esbuild`, and `vite`.
-- Relevant behavior: server audit reported 3 moderate vulnerabilities. Frontend audit reported 1 low, 1 moderate, and 1 high, mainly in build/dev tooling.
+- Relevant behavior: issue #32 applied non-breaking audit fixes. Server production audit now reports 0 vulnerabilities with `--omit=dev`. Frontend still reports Vite/esbuild advisories that require a breaking `npm audit fix --force` toolchain upgrade.
 - Why it matters: even pilot deployments should start from a known dependency baseline, especially before formal security review.
-- Recommended remediation: run `npm audit fix` where non-breaking, then retest. For frontend Vite/esbuild advisories, decide whether controlled build environment is an acceptable pilot mitigation or upgrade the toolchain.
-- Pilot blocker status: not a blocker for a private pilot if build machines are trusted and server fixes are applied soon; blocker for formal production signoff.
+- Recommended remediation: defer the frontend breaking Vite upgrade until a focused toolchain PR; keep dev server unexposed and build on trusted machines for pilot.
+- Pilot blocker status: not a blocker for controlled pilot; blocker for formal production signoff.
 
 #### M-2: Bearer-token fallback expands session token exposure
 
@@ -84,8 +84,8 @@ None found.
 - Evidence: `server/src/app.ts:1519-1527` logs `path: request.originalUrl`.
 - Relevant behavior: filters and identifiers in query strings are written to logs.
 - Why it matters: URLs can include account identifiers, run ids, report date ranges, and workflow context. Logs usually have a wider audience and longer retention than app data.
-- Recommended remediation: log `request.path` plus a scrubbed allowlist of non-sensitive query keys, or omit query strings.
-- Pilot blocker status: acceptable for pilot only if logs are access-controlled and retained briefly.
+- Recommended remediation: completed in issue #32; request logs now record `request.path` and sorted query key names, not raw query values.
+- Pilot blocker status: fixed for controlled pilot.
 
 #### M-4: Upload controls are size/type checks, not content scanning
 
@@ -141,15 +141,13 @@ None found.
 
 ## Must Fix Before Pilot
 
-1. Add or deploy brute-force protection for `/login`.
-2. Add artifact download audit logging, or explicitly retain equivalent reverse-proxy access logs for artifact downloads.
-3. Confirm encrypted database storage, encrypted backups, backup retention, and restricted DB access for persisted uploads/artifacts.
-4. Resolve or formally accept `npm audit` findings, with server runtime advisories prioritized.
-5. Confirm production deployment uses `docker-compose.prod.yml`-style required secrets, not dev defaults from `docker-compose.yml`.
+1. Confirm encrypted database storage, encrypted backups, backup retention, and restricted DB access for persisted uploads/artifacts.
+2. Confirm production deployment uses `docker-compose.prod.yml`-style required secrets, not dev defaults from `docker-compose.yml`.
+3. Keep pilot deployment private/allowlisted and do not expose the frontend dev server.
+4. Formally accept the deferred frontend Vite/esbuild advisory for pilot, or schedule the breaking toolchain upgrade before broader production.
 
 ## Final Readiness Verdict
 
-Conditionally ready for a limited single-store pilot after the must-fix items are closed or signed off with compensating controls.
+Ready for a controlled single-store pilot after the remaining operational storage/deployment confirmations are signed off.
 
-Not ready for broad production or internet-exposed deployment without login throttling, artifact access auditing, dependency cleanup, and documented storage/backup controls.
-
+Not ready for broad production or internet-exposed deployment until the deferred toolchain advisory and operational storage controls are fully closed.

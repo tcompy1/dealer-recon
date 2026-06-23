@@ -96,9 +96,12 @@ import {
   ConflictError,
   ServiceUnavailableError,
   BadRequestError,
+  TooManyRequestsError,
 } from "./errors/HttpError.js";
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const LOGIN_FAILURE_LIMIT = 5;
+const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
 const allowedUploadMimeTypes = new Set([
   "text/csv",
   "application/csv",
@@ -153,6 +156,7 @@ export function createApp(
   const isProduction = nodeEnv === "production";
   const isLocalEnv = nodeEnv === "development" || nodeEnv === "test";
   const allowDevDealershipFallback = authOptions.allowDevDealershipFallback ?? false;
+  const loginFailures = new Map<string, LoginFailure>();
   if (allowDevDealershipFallback && !isLocalEnv) {
     throw new Error(`Development auth fallback is not allowed when NODE_ENV=${nodeEnv}.`);
   }
@@ -201,11 +205,20 @@ export function createApp(
     if (!credentials) {
       throw new ValidationError("Email and password are required.", "INVALID_CREDENTIALS");
     }
+    const loginThrottleKey = getLoginThrottleKey(request, credentials.email);
+    if (isLoginRateLimited(loginFailures, loginThrottleKey)) {
+      throw new TooManyRequestsError(
+        "Too many failed login attempts. Try again later.",
+        "LOGIN_RATE_LIMITED",
+      );
+    }
 
     const user = await authRepository.findUserByEmail(credentials.email);
     if (!user || !(await verifyPassword(credentials.password, user.password_hash))) {
+      recordFailedLogin(loginFailures, loginThrottleKey);
       throw new UnauthorizedError("Invalid email or password.", "INVALID_CREDENTIALS");
     }
+    clearFailedLogin(loginFailures, loginThrottleKey);
 
     const publicUser = toPublicUser(user);
     await repository.createAuditEvent(user.dealership_id, {
@@ -1119,6 +1132,7 @@ export function createApp(
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
 
+    await auditArtifactDownload(response, artifact);
     sendArtifactDownload(response, artifact);
   }));
 
@@ -1213,6 +1227,7 @@ export function createApp(
         "MERGED_FLOORPLAN",
       );
       if (storedArtifact) {
+        await auditArtifactDownload(response, storedArtifact);
         sendArtifactDownload(response, storedArtifact);
         return;
       }
@@ -1287,6 +1302,7 @@ export function createApp(
         "FP_REC",
       );
       if (storedArtifact) {
+        await auditArtifactDownload(response, storedArtifact);
         sendArtifactDownload(response, storedArtifact);
         return;
       }
@@ -1525,7 +1541,8 @@ function requestLogger(
     logInfo("request_completed", {
       request_id: requestId,
       method: request.method,
-      path: request.originalUrl,
+      path: request.path,
+      query_keys: Object.keys(request.query).sort(),
       status_code: response.statusCode,
       duration_ms: Math.round(durationMs * 100) / 100,
     });
@@ -1574,6 +1591,48 @@ function getBearerToken(value: unknown): string | null {
   }
   const [scheme, token] = value.split(" ");
   return scheme?.toLowerCase() === "bearer" && token ? token : null;
+}
+
+type LoginFailure = {
+  count: number;
+  firstFailedAt: number;
+};
+
+function getLoginThrottleKey(request: express.Request, email: string): string {
+  return `${request.ip ?? request.socket.remoteAddress ?? "unknown"}:${email.toLowerCase()}`;
+}
+
+function isLoginRateLimited(
+  failures: Map<string, LoginFailure>,
+  key: string,
+  now = Date.now(),
+): boolean {
+  const failure = failures.get(key);
+  if (!failure) {
+    return false;
+  }
+  if (now - failure.firstFailedAt >= LOGIN_FAILURE_WINDOW_MS) {
+    failures.delete(key);
+    return false;
+  }
+  return failure.count >= LOGIN_FAILURE_LIMIT;
+}
+
+function recordFailedLogin(
+  failures: Map<string, LoginFailure>,
+  key: string,
+  now = Date.now(),
+): void {
+  const failure = failures.get(key);
+  if (!failure || now - failure.firstFailedAt >= LOGIN_FAILURE_WINDOW_MS) {
+    failures.set(key, { count: 1, firstFailedAt: now });
+    return;
+  }
+  failure.count += 1;
+}
+
+function clearFailedLogin(failures: Map<string, LoginFailure>, key: string): void {
+  failures.delete(key);
 }
 
 function getAuthenticatedUser(response: express.Response): AuthUser {
@@ -1641,6 +1700,21 @@ async function audit(
     entity_id: entityId === null ? null : String(entityId),
     previous_state: toAuditState(previousState),
     new_state: toAuditState(newState),
+  });
+}
+
+async function auditArtifactDownload(
+  response: express.Response,
+  artifact: ReconciliationArtifact,
+): Promise<void> {
+  await audit(response, "artifact_downloaded", "reconciliation_artifact", artifact.id, null, {
+    reconciliation_run_id: artifact.reconciliation_run_id,
+    artifact_type: artifact.artifact_type,
+    dealership_store_id: artifact.store_id,
+    accounting_month: artifact.accounting_month,
+    filename: artifact.filename,
+    content_type: artifact.content_type,
+    file_size: artifact.file_size,
   });
 }
 

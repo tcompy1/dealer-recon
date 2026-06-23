@@ -85,6 +85,16 @@ export class PayloadTooLargeError extends HttpError {
 }
 
 /**
+ * 429 Too Many Requests - Client is temporarily rate limited
+ */
+export class TooManyRequestsError extends HttpError {
+  constructor(message = "Too many requests.", code?: string) {
+    super(message, 429, code);
+    this.name = "TooManyRequestsError";
+  }
+}
+
+/**
  * 422 Unprocessable Entity - Validation failed
  */
 export class ValidationError extends HttpError {
