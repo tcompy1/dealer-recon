@@ -1,7 +1,7 @@
 # V1 Launch Gate Checklist
 
 Status: launch gate checklist for Dealer-Recon v1 pilot decision.
-Date: 2026-06-17.
+Date: 2026-06-23.
 Issue: #17.
 
 ## Purpose
@@ -41,7 +41,7 @@ These items can be accepted for the private single-store pilot only if the owner
 - No application-enforced accounting month boundary.
 - No app-level malware scanning for trusted BOA and Dealertrack source files.
 - No explicit CSRF token when deployed same-site with restricted CORS and HTTPS.
-- No app-level rate limiting when pilot access is controlled by network or infrastructure.
+- No app-level upload/reconcile/download rate limiting when pilot access is controlled by network or infrastructure.
 - Duplicate upload reuse without parser/preprocessor version identity.
 - Frontend workflow cleanup deferred while the dashboard still guides the four-step workflow.
 - Native XLSX upload remains unsupported for v1.
@@ -57,7 +57,7 @@ These should not be implemented under Issue #17 unless the owner changes launch 
 - Parser/preprocessor versioning for duplicate upload reuse.
 - Broader frontend workflow cleanup.
 - Explicit CSRF tokens if not required for the private pilot.
-- Application-level rate limiting if controlled environment is accepted for pilot.
+- Broader application-level rate limiting if controlled environment is accepted for pilot.
 - Multi-store production readiness.
 - Direct BOA, Dealertrack, GL, OEM, or accounting-platform integrations.
 - Analytics, dashboard metrics, trend deltas, or reviewer workload reporting.

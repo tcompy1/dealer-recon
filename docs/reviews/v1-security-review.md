@@ -1,7 +1,7 @@
 # V1 Security Review Packet
 
 Status: security review packet for Dealer-Recon v1.
-Date: 2026-06-17.
+Date: 2026-06-23.
 
 ## Product Boundary
 
@@ -78,6 +78,7 @@ Authentication is local username/password backed by the users table.
 - Session token: HMAC-signed token containing user ID, dealership ID, and expiration.
 - GET /me returns the current authenticated user.
 - POST /logout clears the session cookie.
+- Failed login attempts are throttled in process: 5 failures per client/email key in 15 minutes, with successful login clearing that key.
 
 Production protections now present:
 
@@ -202,6 +203,7 @@ Current controls:
 - Store-scoped users cannot access other-store or null-store artifacts.
 - Download routes require authentication and store authorization.
 - Filenames are sanitized for header safety.
+- Stored and generated fallback artifact downloads emit `artifact_downloaded` audit events.
 
 Known limitations:
 
@@ -231,7 +233,7 @@ Current posture:
 - Backend routes generally return controlled detail or error.message responses.
 - Frontend API client surfaces both response shapes.
 - Workflow errors now show concrete backend messages rather than only API request failed.
-- Request logging includes method, path, status, and duration.
+- Request logging includes method, route pattern or sanitized known path, query key names, status, and duration. It does not log raw query values or known dynamic route IDs.
 
 Review risks:
 
@@ -268,10 +270,12 @@ Security-relevant tests are summarized in [v1-validation-evidence-2026-06-17.md]
 Key covered areas:
 
 - Auth fallback fail-closed behavior.
+- Login throttling and successful-login failure reset.
 - Demo auth not seeded by production migration behavior.
 - SpreadsheetML ss:Index cap.
 - Spreadsheet formula neutralization.
 - Store and null-store authorization boundaries.
+- Artifact download audit events.
 - Frontend/backend error message handling.
 
 ## Residual Security Risks
@@ -284,5 +288,5 @@ Most important remaining owner decisions:
 - Accounting month boundary enforcement.
 - Malware scanning for uploaded files.
 - Explicit CSRF tokens.
-- Application-level rate limiting.
+- Upload/reconcile/download rate limiting beyond the current login throttle.
 - Production hosting, secret management, logging, backup, and restore controls.

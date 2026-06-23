@@ -1,7 +1,7 @@
 # Dealer-Recon V1 Security And Code Review Packet
 
 Status: review-ready packet for the single-store Hurst Mazda FP REC pilot.
-Date: 2026-06-17.
+Date: 2026-06-23.
 
 ## Purpose
 
@@ -30,6 +30,27 @@ The canonical workflow is documented in [../product/fp-rec-four-step-workflow.md
 | [Launch Decision Matrix](v1-launch-decision-matrix.md) | Owner decisions required before the single-store pilot can proceed. |
 | [Launch Gate Checklist](v1-launch-gate-checklist.md) | Must-complete gates, accepted pilot risks, post-pilot deferrals, and no-go conditions. |
 | [Pilot Recommendation Summary](v1-pilot-recommendation-summary.md) | Conditional go/no-go recommendation for the private Hurst pilot and broader-rollout guidance. |
+| [Issue #32 Remediation](v1-security-remediation-issue-32.md) | Minimal security fixes completed after the audit: login throttling, artifact download audit logging, query logging cleanup, and dependency-audit status. |
+
+## Issue #15 Closeout Coverage
+
+| Issue #15 requirement | Current packet location |
+| --- | --- |
+| System architecture overview | [Security Review Packet](v1-security-review.md#architecture-summary) and [Code Review Packet](v1-code-review.md#repository-map). |
+| Upload-to-artifact data flow | [Security Review Packet](v1-security-review.md#data-flow-from-upload-to-artifact-generation). |
+| Authentication model | [Security Review Packet](v1-security-review.md#authentication-model). |
+| Authorization/store-access model | [Security Review Packet](v1-security-review.md#authorization-and-store-access-model). |
+| Artifact storage model | [Security Review Packet](v1-security-review.md#artifact-storage-and-downloads) and [Reconciliation Artifacts](../implementation/reconciliation-artifacts.md). |
+| Sensitive data handling | [Security Review Packet](v1-security-review.md#sensitive-data-inventory). |
+| Security assumptions and limitations | [Security Review Packet](v1-security-review.md#residual-security-risks), [Risk Register](v1-risk-register.md), and [Issue #32 Remediation](v1-security-remediation-issue-32.md). |
+| Repository structure and services | [Code Review Packet](v1-code-review.md#repository-map). |
+| Reconciliation workflow | [Code Review Packet](v1-code-review.md#reconciliation-invariants) and [Exception Taxonomy](../implementation/exception-taxonomy.md). |
+| Export generation workflow | [Code Review Packet](v1-code-review.md#artifact-persistence-and-export-behavior). |
+| Historical artifact workflow | [Reconciliation Artifacts](../implementation/reconciliation-artifacts.md) and [Code Review Packet](v1-code-review.md#artifact-persistence-and-export-behavior). |
+| Test strategy | [Code Review Packet](v1-code-review.md#tests-clean-enough-for-v1) and [Validation Evidence](v1-validation-evidence-2026-06-17.md). |
+| Deployment prerequisites, environment, migrations, backups, checklist, rollback | [Deployment Readiness Checklist](../operator/v1-deployment-readiness.md). |
+| Known technical debt and deferred work | [Risk Register](v1-risk-register.md), [Launch Gate Checklist](v1-launch-gate-checklist.md), and [Code Review Packet](v1-code-review.md#areas-needing-more-tests-before-broader-launch). |
+| Validation evidence | [Validation Evidence](v1-validation-evidence-2026-06-17.md). |
 
 ## Source-Of-Truth Map
 
@@ -56,6 +77,7 @@ Completed before this packet:
 - Store-scoped users are blocked from other-store and null-store sensitive records.
 - Frontend API error handling surfaces backend { detail } and { error: { message } } messages.
 - The unused legacy transaction-based merged export helper was removed.
+- Issue #32 added in-process login throttling, route-pattern request logging, artifact download audit events for stored and generated downloads, and non-breaking dependency remediation.
 
 Remaining limitations are documented in the [Risk Register](v1-risk-register.md). The most important deferred items are explicit accounting-month enforcement, parser/preprocessor versioning for duplicate reuse, artifact hash/version/retention policy, and broader v1 UI workflow cleanup.
 

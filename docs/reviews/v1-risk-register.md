@@ -1,7 +1,7 @@
 # V1 Risk Register And Known Limitations
 
 Status: review packet risk register for Dealer-Recon v1.
-Date: 2026-06-17.
+Date: 2026-06-23.
 
 ## Scope
 
@@ -18,7 +18,7 @@ It does not authorize new v1 scope. Multi-store expansion, direct integrations, 
 | R3 | Duplicate upload reuse does not include parser or preprocessor version identity | Deferred Batch 3 | Medium | Yes |
 | R4 | No malware or antivirus scanning for uploaded files | Accepted for private pilot only | Medium | Yes |
 | R5 | No explicit CSRF token beyond same-site session-cookie posture | Accepted for private pilot review | Medium | Yes |
-| R6 | No application-level upload or login rate limiting | Accepted for controlled environment only | Medium | Yes |
+| R6 | Login has in-process throttling; upload/reconcile/download throttling is still controlled by deployment posture | Accepted for controlled environment only | Medium | Yes |
 | R7 | Review packet assumes secure infrastructure for TLS, logging, backups, and secret management | Deployment dependency | Medium | Yes |
 | R8 | Some non-v1 routes and data models exist for future reporting or store concepts | Scope guard required | Low | No new v1 behavior |
 | R9 | Frontend workflow cleanup remains deferred | Deferred Batch 3 | Low | No |
@@ -152,20 +152,23 @@ Affected areas: login, upload, reconcile, export routes.
 
 Current state:
 
-- Application-level rate limiting is not documented as implemented.
-- Deployment infrastructure may provide request controls, but that is outside the repository.
+- Login has an in-process failed-attempt throttle: 5 failures per client/email key in 15 minutes.
+- Successful login clears that client/email failure key.
+- The throttle is intentionally local to one backend process and resets on restart.
+- Upload, reconcile, export, and download routes do not have separate application-level throttles.
+- Deployment infrastructure may provide broader request controls, but that is outside the repository.
 
 Why it matters:
 
-Without rate limiting, login attempts and upload/parser work can be abused if the app is exposed to untrusted networks.
+The highest-value brute-force login control exists for the single-store pilot, but upload/parser/reconciliation work can still be abused if the app is exposed to untrusted networks.
 
 Required owner decision:
 
-Confirm whether ingress controls or application middleware must be added before production access.
+Confirm controlled network access or infrastructure throttling for upload/reconcile/download routes before production access.
 
 Deferred implementation:
 
-Do not implement as part of Issue #15.
+Do not add a broader rate-limit layer as part of Issue #15.
 
 ### R7. Infrastructure Security Dependencies
 
