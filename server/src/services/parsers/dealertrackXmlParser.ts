@@ -30,9 +30,11 @@ const XML_ENTITIES: Record<string, string> = {
 };
 
 const HEADER_HEURISTIC_MIN_TEXT_CELLS = 2;
+export const MAX_SPREADSHEETML_COLUMNS = 256;
 
 export type DealertrackParseOptions = {
   maxRows?: number;
+  maxColumns?: number;
 };
 
 export function parseDealertrackXml(
@@ -42,6 +44,7 @@ export function parseDealertrackXml(
   const text = Buffer.isBuffer(input) ? input.toString("utf8") : input;
   const warnings: ParserWarning[] = [];
   const maxRows = options.maxRows ?? MAX_PARSED_ROWS;
+  const maxColumns = options.maxColumns ?? MAX_SPREADSHEETML_COLUMNS;
 
   if (!text.trim()) {
     return {
@@ -70,7 +73,11 @@ export function parseDealertrackXml(
       rowLimitTriggered = true;
       break;
     }
-    parsedRows.push(extractRowCells(span));
+    const cells = extractRowCells(span, warnings, maxColumns);
+    if (cells === null) {
+      break;
+    }
+    parsedRows.push(cells);
   }
   if (rowLimitTriggered) {
     warnings.push({
@@ -136,7 +143,11 @@ function sliceFromIndex(text: string, index: number): string {
   return index === 0 ? text : text.slice(index);
 }
 
-function extractRowCells(rowSpan: string): string[] {
+function extractRowCells(
+  rowSpan: string,
+  warnings: ParserWarning[],
+  maxColumns: number,
+): string[] | null {
   const cells: string[] = [];
   CELL_OPEN_RE.lastIndex = 0;
   let nextIndex = 1;
@@ -148,11 +159,29 @@ function extractRowCells(rowSpan: string): string[] {
     if (indexAttr) {
       const target = Number.parseInt(indexAttr[1], 10);
       if (Number.isFinite(target) && target > 0) {
+        if (target > maxColumns) {
+          warnings.push({
+            kind: "column_limit_exceeded",
+            message: `SpreadsheetML cell index exceeds the maximum supported column count of ${maxColumns}.`,
+            count: target,
+            fatal: true,
+          });
+          return null;
+        }
         while (cells.length < target - 1) {
           cells.push("");
         }
         nextIndex = target;
       }
+    }
+    if (nextIndex > maxColumns) {
+      warnings.push({
+        kind: "column_limit_exceeded",
+        message: `SpreadsheetML row exceeds the maximum supported column count of ${maxColumns}.`,
+        count: nextIndex,
+        fatal: true,
+      });
+      return null;
     }
     let value = "";
     if (!CELL_SELF_CLOSE_RE.test(tagFull.trim())) {

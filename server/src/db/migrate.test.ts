@@ -4,6 +4,8 @@ import { createPool } from "../repositories/postgresTransactionRepository.js";
 import { withDatabaseTestLock } from "../testUtils/databaseTestLock.js";
 import { migrate } from "./migrate.js";
 
+const DEMO_EMAIL = "demo@dealer-recon.local";
+
 const databaseUrl = process.env.DATABASE_URL;
 const describeIfDatabase = databaseUrl ? describe : describe.skip;
 
@@ -14,6 +16,7 @@ describeIfDatabase("migrate", () => {
     }
 
     await withDatabaseTestLock(databaseUrl, async () => {
+      await deleteDemoUserIfPresent(databaseUrl);
       await migrate(databaseUrl);
       await migrate(databaseUrl);
 
@@ -26,6 +29,8 @@ describeIfDatabase("migrate", () => {
           reconciliation_match_groups: string;
         reconciliation_match_group_transactions: string;
         reconciliation_exceptions: string;
+        source_file_upload_contents: string;
+        reconciliation_artifacts: string;
         dealerships: string;
         users: string;
         }>(
@@ -36,6 +41,8 @@ describeIfDatabase("migrate", () => {
             to_regclass('public.reconciliation_match_groups')::text AS reconciliation_match_groups,
             to_regclass('public.reconciliation_match_group_transactions')::text AS reconciliation_match_group_transactions,
             to_regclass('public.reconciliation_exceptions')::text AS reconciliation_exceptions,
+            to_regclass('public.source_file_upload_contents')::text AS source_file_upload_contents,
+            to_regclass('public.reconciliation_artifacts')::text AS reconciliation_artifacts,
             to_regclass('public.dealerships')::text AS dealerships,
             to_regclass('public.users')::text AS users`,
         );
@@ -46,6 +53,8 @@ describeIfDatabase("migrate", () => {
           reconciliation_match_groups: "reconciliation_match_groups",
           reconciliation_match_group_transactions: "reconciliation_match_group_transactions",
           reconciliation_exceptions: "reconciliation_exceptions",
+          source_file_upload_contents: "source_file_upload_contents",
+          reconciliation_artifacts: "reconciliation_artifacts",
           dealerships: "dealerships",
           users: "users",
         });
@@ -67,15 +76,13 @@ describeIfDatabase("migrate", () => {
              AND is_nullable = 'NO'`,
         );
         expect(userPasswordColumnResult.rows).toHaveLength(1);
-        const demoUserResult = await pool.query<{ email: string; dealership_id: number }>(
-          `SELECT email, dealership_id
+        const demoUserResult = await pool.query<{ email: string }>(
+          `SELECT email
            FROM users
-           WHERE lower(email) = lower('demo@dealer-recon.local')`,
+           WHERE lower(email) = lower($1)`,
+          [DEMO_EMAIL],
         );
-        expect(demoUserResult.rows[0]).toMatchObject({
-          email: "demo@dealer-recon.local",
-          dealership_id: 1,
-        });
+        expect(demoUserResult.rows).toHaveLength(0);
         const amountColumnResult = await pool.query<{ data_type: string }>(
           `SELECT data_type
            FROM information_schema.columns
@@ -227,3 +234,25 @@ describeIfDatabase("migrate", () => {
     });
   });
 });
+
+async function deleteDemoUserIfPresent(databaseUrl: string): Promise<void> {
+  const pool = createPool(databaseUrl);
+  try {
+    await pool.query(
+      `DO $$
+       BEGIN
+         IF to_regclass('public.users') IS NOT NULL THEN
+           IF to_regclass('public.user_store_assignments') IS NOT NULL THEN
+             DELETE FROM user_store_assignments
+             WHERE user_id IN (
+               SELECT id FROM users WHERE lower(email) = lower('${DEMO_EMAIL}')
+             );
+           END IF;
+           DELETE FROM users WHERE lower(email) = lower('${DEMO_EMAIL}');
+         END IF;
+       END $$;`,
+    );
+  } finally {
+    await pool.end();
+  }
+}

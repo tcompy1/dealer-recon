@@ -1,192 +1,165 @@
 # Hiley Demo Validation Guide
 
-**Purpose:** Step-by-step validation walkthrough for the Hiley demo. Follow this in sequence during the meeting to confirm the system is behaving correctly and to surface any gaps in real-world workflow coverage.
+Status note: stale for v1 product scope. This guide describes a broader Hiley/multi-store demo path; Dealer-Recon v1 is the single-store Hurst Mazda FP REC pilot documented in `docs/product/fp-rec-four-step-workflow.md`.
 
-**Product:** Dealer Recon — Monthly Floorplan Reconciliation Workpaper Generator  
-**Audience:** Hiley accounting staff (office manager / flooring clerk)
+## Purpose
 
----
+Use this guide to validate the current Hiley store/month floorplan pilot. The demo should stay centered on the four-step artifact workflow, not dashboards, productivity metrics, review queues, or consolidated reporting.
 
-## 1. Upload Validation
+## Product Boundary
 
-### What to do
-1. Navigate to the store's upload screen
-2. Upload the BOA file (HTML `.xls` export)
-3. Upload the Dealertrack file (XML `.xls` export)
+Dealer-Recon currently produces one reconciliation run per store/month.
 
-### What should happen immediately after each upload
+For each completed run, the user should be able to download:
+
+- Merged Floorplan
+- FP REC
+- Raw BOA
+- Raw Dealertrack
+- Cleaned BOA
+- Cleaned Dealertrack
+
+Supported stores for this demo scope:
+
+- Hurst
+- Acura
+- FW
+
+Remaining stores should not be demoed as supported until their workflow evidence and config are complete.
+
+## 1. Store And Source File Selection
+
+### What To Do
+
+1. Choose the store for the month being reconciled.
+2. Confirm the run is for one store and one accounting month.
+
+### What To Verify
+
+- The selected store is Hurst, Acura, or FW.
+- The BOA and Dealertrack files belong to the same store/month.
+- No combined multi-store export is expected.
+
+## 2. Upload BOA
+
+### What To Do
+
+Upload the BOA file for the selected store/month.
+
+### Expected Behavior
 
 | Signal | Expected behavior |
-|---|---|
-| Upload banner / toast | Success confirmation with filename displayed |
-| Detected format | Should read `html_table_xls` (BOA) and `xml_spreadsheet` (Dealertrack) |
-| Transaction count | Should appear and be plausible (e.g. "238 transactions ingested") |
-| Validation errors | None expected for a valid export; if shown, note the message verbatim |
-| Removed Rows Audit panel | Should appear below the upload area, listing each removed row with its reason and source row number |
+| --- | --- |
+| Upload result | Success confirmation with filename and transaction count. |
+| Supported formats | CSV, BOA HTML-as-XLS, HTML/table-style exports, and plain text MIME variants. |
+| Unsupported format | Native `.xlsx` upload should fail with guidance to resubmit as CSV or HTML-as-XLS. |
+| Cleaning diagnostics | Removed title/header, zero-balance, and straightline rows should be visible in preprocessing diagnostics. |
 
-### Questions to ask
-- Is this the same file you would normally export from BOA?
-- Is this the same file you would normally export from Dealertrack?
-- Do the transaction counts look right to you for this month?
+### Questions To Ask
 
----
+- Is this the BOA export you would normally use for this store/month?
+- Do the removed rows make sense?
+- Are any legitimate floorplan vehicles missing from the cleaned dataset?
 
-## 2. Removed Rows Validation
+## 3. Upload Dealertrack
 
-### What rows should appear
+### What To Do
 
-The Removed Rows Audit panel shows every row the system excluded before reconciliation. These are presented as a table with columns: Source, Row #, Reason, and key values (Stock #, note).
+Upload the Dealertrack file for the selected store/month.
 
-### Expected removal reasons
+### Expected Behavior
 
-**BOA side:**
-| Reason label | What it means |
-|---|---|
-| Header row detected | The column header row — always present, always removed |
-| Zero balance — excluded from reconciliation | A line item with a $0.00 ending balance — no open floor position |
-| Straightline row — excluded from reconciliation | A depreciation/straight-line amortization entry — not a floor payable |
-| Banner/header/subtotal row | A subtotal or section separator row — not a transaction |
-| No valid amount found | A row with text but no parseable dollar amount |
-| Unrecognized row structure | A row that doesn't match any expected BOA structure |
+| Store | Expected Dealertrack behavior |
+| --- | --- |
+| Hurst | Uses `2100`; excludes `2110` where applicable. |
+| Acura | Uses `324`. |
+| FW | Aggregates `2100 + 2101 + 2101S`; excludes `2110`; displays `2100`. |
 
-**Dealertrack side:**
-| Reason label | What it means |
-|---|---|
-| Header row detected | The column header row — always present |
-| Zero-amount Dealertrack row excluded | A GL line for a stock number with no balance in the 2100 account this period |
-| Unrecognized row structure | A row that doesn't match the expected Dealertrack layout |
+Supported input families include CSV and SpreadsheetML/XML-style exports. Native `.xlsx` remains unsupported.
 
-### What to verify
-- [ ] At least one "Header row detected" entry appears for each source
-- [ ] Zero-balance rows are listed (not silently dropped)
-- [ ] Row numbers in the panel correspond to the actual source file (row 1 = first row of the file)
-- [ ] No legitimate floor vehicles appear in the removed rows list
+### Questions To Ask
 
-### Questions to ask
-- Do you recognize these removed rows?
-- Are there any vehicles here that you would expect to see in the reconciliation?
-- Is there anything in this list that surprises you?
-- In your current process, do you manually remove these rows before reconciling, or does the export already exclude them?
+- Is this the Dealertrack export you would normally use?
+- Does the selected account behavior match your store's process?
+- For FW, does excluding `2110` and aggregating `2100 + 2101 + 2101S` match the office workflow?
 
----
+## 4. Process Reconciliation
 
-## 3. Reconciliation Validation
+### What To Do
 
-### What constitutes a successful run
+Click `Run/process reconciliation`.
 
-1. Reconciliation completes without error
-2. Match count is shown and appears plausible (>90% of vehicles should match on a clean month)
-3. The Reconciliation Summary table shows:
-   - **Outstanding per stmt** — total BOA floorplan balance
-   - **2100** — total GL account 2100 balance (shown negative)
-   - **Difference** — the gap between the two sides; ideally `$0.00`
-4. The workpaper sections are populated:
-   - "On schedule-not on statement" — vehicles the GL has that BOA does not (positive to dealer)
-   - "On statement-not on GL" — vehicles BOA has that the GL does not (BOA balance not posted yet)
-   - "Needs Review" — items where VIN, amount, or stock number conflict
+### What To Verify
 
-### Signals that indicate a problem
+- The run completes without error.
+- Match counts and exception counts are plausible for the selected month.
+- VIN6 plus exact absolute amount is the match rule.
+- VIN6 amount mismatches remain split into BOA-side and Dealertrack-side rows.
+- Logical account grouping remains `floorplan`; physical export labels such as `2100` or `324` are output labels, not logical account identifiers.
 
-| Signal | Likely cause |
-|---|---|
-| Difference ≠ $0.00 | There are unresolved exceptions changing the totals |
-| Match count much lower than expected | File format detection failed, or VINs are missing from one side |
-| Empty sections where exceptions are expected | BOA and Dealertrack files may be from different months |
-| Needs Review count > 0 | Amount discrepancies exist that the engine cannot auto-resolve |
+## 5. Download Primary Artifacts
 
-### Questions to ask
-- Does this match count look right to you?
-- What would you normally do with a non-zero Difference?
-- Do you recognize the vehicles in the "On schedule-not on statement" section?
-- In your current manual process, how long does it typically take to arrive at the same result?
+### Merged Floorplan
 
----
+Download `Merged Floorplan` and verify:
 
-## 4. Exception Validation
+- File opens in Excel or LibreOffice.
+- Columns follow the store matrix:
+  - Store label
+  - `Serial No/VIN`
+  - `VIN6`
+  - `Ending Balance`
+  - Dealertrack account label, such as `2100` or `324`
+  - `VIN6`
+  - `Description`
+  - `Control`
+- Matched rows populate both sides.
+- BOA-only rows populate only the BOA side.
+- Dealertrack-only rows populate only the Dealertrack side.
+- VIN6 amount mismatches remain split.
+- Totals row uses the store-configured Dealertrack account label.
 
-### What exception types should appear
+### FP REC
 
-Exceptions fall into three workpaper sections:
+Download `FP REC` and verify:
 
-**On schedule-not on statement** (category: `missing_in_boa`)
-- Dealertrack/GL has a vehicle; BOA statement does not reflect it
-- Common cause: vehicle purchased late in the month, BOA hasn't posted the floor yet
-- The clerk typically notes: "floored [date], not yet on statement"
+- The UI uses the generic FP REC route.
+- Hurst legacy FP REC route still works if tested directly.
+- The workbook uses store-configured labels and totals.
+- FP REC agrees with the Merged Floorplan on row classifications and totals.
+- FW reflects aggregated Dealertrack amount semantics while displaying `2100`.
 
-**On statement-not on GL** (category: `missing_in_dealertrack`)
-- BOA statement has a vehicle; Dealertrack/GL does not
-- Common cause: vehicle sold/paid off, GL already cleared it, BOA still shows balance
-- The clerk typically notes: "paid off [date]" or "sold"
+## 6. Historical Artifact List
 
-**Needs Review** (multiple categories)
-- `vin6_match_amount_mismatch` — VIN6 agrees but dollar amounts differ; a partial curtailment may have been posted to one side only
-- `amount_only_review` — same dollar amount on both sides but no VIN agreement; clerk must identify the vehicle manually
-- `duplicate_or_one_to_many` — same vehicle appears multiple times on one side
-- `amount_mismatch` — VIN agrees, amounts differ, and no timing signal explains it
-- `possible_timing_issue` — amounts differ, but transaction dates are within 45 days (possible cut-off item)
+After a run completes, verify the stored artifact table shows:
 
-### What to verify
-- [ ] Exception categories match what the clerk would expect from the period
-- [ ] Each exception row shows: Descriptor, Stock #, VIN6, VIN, Amount, GL Floored date, BOA Floored date
-- [ ] BOA Notes and GL Notes fields are editable inline (BOA-side exceptions write BOA Notes; GL-side exceptions write GL Notes)
-- [ ] Review Status is editable per row
-- [ ] The total exception count in the UI matches the section row counts in the workbook export
+- Raw BOA
+- Raw Dealertrack
+- Cleaned BOA
+- Cleaned Dealertrack
+- Merged Floorplan
+- FP REC
 
-### Questions to ask
-- What would you do next with this exception?
-- Is the information shown on each row enough for you to make a decision?
-- Is this how you would expect to see this information laid out?
-- For a "Needs Review" item — what additional information would help you resolve it?
-- How do you currently record your notes for exceptions like this?
+For each artifact, verify:
 
----
+- artifact type
+- filename
+- file size
+- created timestamp
+- download button
 
-## 5. Workbook Validation
+Download at least one raw, one cleaned, and one generated artifact to confirm historical retrieval.
 
-### What the generated workbook should contain
+## Deferred Surfaces
 
-Open the downloaded `.xls` file in Excel and verify each section:
+Do not make these the focus of the demo:
 
-| Section | Present? | Notes |
-|---|---|---|
-| Reconciliation Summary table | Yes | Period, BOA file, Dealertrack file, Outstanding per stmt, 2100, Total GL, Difference (yellow) |
-| On schedule-not on statement | Yes | All `missing_in_boa` exceptions; amounts shown negative |
-| On statement-not on GL | Yes | All `missing_in_dealertrack` exceptions; amounts shown positive |
-| Net Adjustments / Final Variance row | Yes | Between the two exception sections |
-| Needs Review | Yes | All categorized exception types requiring clerk judgment |
-| Prepared by / Reviewed by sign-off | Yes | Blank signature lines at the bottom |
+- dashboard analytics
+- account summaries
+- month-end reports
+- scheduled jobs
+- productivity metrics
+- review assignment or triage workflow
+- consolidated multi-store reporting
 
-### Column-level verification (all three exception sections)
-
-| Column | What to verify |
-|---|---|
-| Descriptor | Vehicle description from the source file |
-| Stock # | `M`-prefixed number from Dealertrack, or blank if BOA-only |
-| VIN6 | First 6 characters of the 17-digit VIN (or derived from description) |
-| VIN | Full 17-digit VIN if present |
-| Amount | Dollar amount in accounting format; negatives shown in parentheses |
-| GL Floored | Date the vehicle was floored per Dealertrack |
-| BOA Floored | Date the vehicle appears on the BOA statement |
-| GL Notes | Notes entered by the clerk for this GL-side row |
-| BOA Notes | Notes entered by the clerk for this BOA-side row |
-| Review Status | Clerk-entered status (e.g. "confirmed", "paid off", "pending") |
-
-### Questions to ask
-- Is this the format you would expect to see for your monthly reconciliation workpaper?
-- Is this something you could hand to your auditor?
-- What still requires manual work after you receive this workbook?
-- What part of your monthly process happens after this?
-- What would you change about this output?
-
----
-
-## Closing Questions
-
-These are open-ended and intended to surface workflow gaps that the demo cannot predict:
-
-- Walk me through what you do the first time you see an exception you don't recognize.
-- How do you communicate open items to the flooring rep or manufacturer?
-- Who reviews the completed workpaper — is it just you, or does it go to a controller?
-- How long does the current manual process take start to finish?
-- What is the biggest source of errors in your current process?
-- If this tool handled 80% of the reconciliation automatically, what would you do with the remaining 20%?
+These can be mentioned as future or advanced scope only after the four-step artifact path is accepted.

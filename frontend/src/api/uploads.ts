@@ -60,11 +60,30 @@ async function readUploadErrorBody(
     const body = (await response.json()) as {
       detail?: unknown;
       preprocessing?: UploadPreprocessingMetadata | null;
+      error?: {
+        message?: unknown;
+        details?: {
+          preprocessing?: UploadPreprocessingMetadata | null;
+        } | null;
+      };
     };
-    const detail =
-      typeof body.detail === "string" ? body.detail : `Upload failed: ${response.status}`;
-    const preprocessing =
-      body.preprocessing && typeof body.preprocessing === "object" ? body.preprocessing : null;
+    let detail = `Upload failed: ${response.status}`;
+    if (typeof body.detail === "string") {
+      detail = body.detail;
+    } else if (typeof body.error?.message === "string") {
+      detail = body.error.message;
+    }
+
+    let preprocessing: UploadPreprocessingMetadata | null = null;
+    if (body.preprocessing && typeof body.preprocessing === "object") {
+      preprocessing = body.preprocessing;
+    } else if (
+      body.error?.details?.preprocessing &&
+      typeof body.error.details.preprocessing === "object"
+    ) {
+      preprocessing = body.error.details.preprocessing;
+    }
+
     return { detail, preprocessing };
   } catch {
     return { detail: `Upload failed: ${response.status}`, preprocessing: null };

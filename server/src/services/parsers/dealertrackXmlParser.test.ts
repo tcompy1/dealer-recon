@@ -38,6 +38,27 @@ describe("parseDealertrackXml", () => {
     expect(indexedRow?.[2]).toBe("9876.50");
   });
 
+  test("fails safely when ss:Index exceeds the column guard", () => {
+    const xml = `<?xml version="1.0"?>
+<Workbook xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+<Worksheet><Table>
+<Row><Cell><Data ss:Type="String">Control</Data></Cell><Cell><Data ss:Type="String">Description</Data></Cell></Row>
+<Row><Cell ss:Index="1000000000"><Data ss:Type="String">boom</Data></Cell></Row>
+</Table></Worksheet></Workbook>`;
+
+    const result = parseDealertrackXml(xml);
+
+    expect(result.rows).toEqual([]);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "column_limit_exceeded",
+          fatal: true,
+        }),
+      ]),
+    );
+  });
+
   test("flags trailing <Row> with no close as row_truncated", () => {
     const xml = `<?xml version="1.0"?>
 <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet">

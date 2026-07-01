@@ -27,9 +27,9 @@ export async function runLocalFloorplanRecon(args: CliArgs): Promise<Reconciliat
 }
 
 export function formatReconciliationResult(result: ReconciliationResponse): string {
-  const boaOnly = exceptionsByType(result, "missing_in_dealertrack");
-  const dealertrackOnly = exceptionsByType(result, "missing_in_boa");
-  const duplicateDealertrack = exceptionsByType(result, "duplicate_transaction");
+  const statementNotOnGl = exceptionsByPlacement(result, "statement");
+  const scheduleNotOnStatement = exceptionsByPlacement(result, "schedule");
+  const manualReview = exceptionsByPlacement(result, "manual_review");
   const lines: string[] = [];
 
   lines.push(`matched count: ${result.matched_count}`);
@@ -52,15 +52,10 @@ export function formatReconciliationResult(result: ReconciliationResponse): stri
     }
   }
 
-  const needsReviewVin6 = exceptionsByType(result, "needs_review_vin6_only");
-  const needsReviewAmount = exceptionsByType(result, "needs_review_amount_only");
-
   lines.push("");
-  appendExceptionSection(lines, "BOA-only rows", boaOnly);
-  appendExceptionSection(lines, "Dealertrack-only rows", dealertrackOnly);
-  appendExceptionSection(lines, "duplicate Dealertrack rows", duplicateDealertrack);
-  appendExceptionSection(lines, "Needs review (VIN6 match, amount differs)", needsReviewVin6);
-  appendExceptionSection(lines, "Needs review (amount match, no VIN6 agreement)", needsReviewAmount);
+  appendExceptionSection(lines, "On statement-not on GL", statementNotOnGl);
+  appendExceptionSection(lines, "On schedule-not on statement", scheduleNotOnStatement);
+  appendExceptionSection(lines, "Needs manual review", manualReview);
   appendVinPresenceDiagnosticSection(lines, result);
 
   return lines.join("\n");
@@ -98,11 +93,24 @@ function validateCsvPath(filePath: string, label: string): void {
   }
 }
 
-function exceptionsByType(
+function exceptionsByPlacement(
   result: ReconciliationResponse,
-  exceptionType: string,
+  placement: "statement" | "schedule" | "manual_review",
 ): ReconciliationException[] {
-  return result.exceptions.filter((exception) => exception.exception_type === exceptionType);
+  return result.exceptions.filter((exception) => exceptionPlacement(exception) === placement);
+}
+
+function exceptionPlacement(exception: ReconciliationException): "statement" | "schedule" | "manual_review" {
+  if (
+    exception.exception_type === "needs_review_vin6_only" ||
+    exception.exception_category === "vin6_match_amount_mismatch"
+  ) {
+    return "manual_review";
+  }
+  if (exception.exception_type === "missing_in_dealertrack" || exception.source_type === "boa") {
+    return "statement";
+  }
+  return "schedule";
 }
 
 function appendExceptionSection(
@@ -118,9 +126,20 @@ function appendExceptionSection(
   }
 
   for (const exception of exceptions) {
-    lines.push(`  ${rowLabel(exception.transaction)} | ${exception.description}`);
+    lines.push(`  ${rowLabel(exception.transaction)} | ${neutralExceptionPrompt(exception)}`);
   }
   lines.push("");
+}
+
+function neutralExceptionPrompt(exception: ReconciliationException): string {
+  const placement = exceptionPlacement(exception);
+  if (placement === "statement") {
+    return "BOA statement row with no matching Dealertrack/GL row";
+  }
+  if (placement === "schedule") {
+    return "Dealertrack/GL row with no matching BOA statement row";
+  }
+  return "VIN appears on both sides but amount differs; review manually";
 }
 
 function appendVinPresenceDiagnosticSection(

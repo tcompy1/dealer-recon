@@ -11,6 +11,7 @@ coverage/
 # Local storage
 storage/uploads/*
 !storage/uploads/.gitkeep
+server/tmp/
 
 # OS/editor
 .DS_Store
@@ -31,4 +32,12 @@ analysis/*
 *.diagnostics.csv
 
 # Windows alternate data stream metadata from downloaded files
+*:Zone.Identifier
+
+# Discovery recordings are retained locally, not committed.
+docs/discovery/floorplan/**/recordings/*.mp4
+docs/discovery/floorplan/**/recordings/*.mov
+docs/discovery/floorplan/**/recordings/*.webm
+
+# Windows/WSL downloaded-file metadata
 *:Zone.Identifier

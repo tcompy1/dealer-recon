@@ -10,16 +10,28 @@ export function DashboardPage({
   embedded?: boolean;
 }) {
   const content = (
-    <section className={embedded ? "grid gap-8" : "grid flex-1 content-start gap-8 py-8"}>
+    <section className={embedded ? "grid gap-5" : "forge-page-stack"}>
       {!embedded ? (
-        <div className="flex flex-col gap-2">
-          <p className="text-sm font-semibold text-cyan-700">Dealer Recon</p>
-          <h1 className="text-3xl font-semibold text-slate-950">Monthly reconciliation workpaper</h1>
-          <p className="text-sm text-slate-600">
-            Upload your BOA statement and Dealertrack schedule, review what was removed and why,
-            then generate the Hurst FP Rec workbook. Every excluded row is fully auditable.
-          </p>
-        </div>
+        <header className="forge-product-header">
+          <div className="forge-product-header-main">
+            <div className="forge-brand-lockup">
+              <span className="forge-brand-mark" aria-hidden="true">DR</span>
+              <div className="forge-page-header">
+                <p className="forge-brand-kicker">Forge Operations</p>
+                <h1 className="forge-page-title">Store/month floorplan workflow</h1>
+                <p className="forge-copy max-w-3xl">
+                  Upload raw BOA and Dealertrack files, process the selected store's workflow,
+                  then download that run's merged spreadsheet and FP REC.
+                </p>
+              </div>
+            </div>
+            <div className="forge-product-header-meta" aria-label="Workflow context">
+              <span>Dealer-Recon v1</span>
+              <span>Floorplan workstation</span>
+              <span>Five-step flow</span>
+            </div>
+          </div>
+        </header>
       ) : null}
 
       <WorkflowDashboard currentUser={currentUser} />

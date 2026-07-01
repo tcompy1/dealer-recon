@@ -46,11 +46,37 @@ async function main() {
   });
 }
 
-async function assertDatabaseReady(pool: ReturnType<typeof createPool>): Promise<void> {
+const requiredReadyTables = [
+  "pgmigrations",
+  "dealerships",
+  "dealership_stores",
+  "users",
+  "source_files",
+  "source_file_upload_contents",
+  "transactions",
+  "reconciliation_runs",
+  "reconciliation_artifacts",
+] as const;
+
+export async function assertDatabaseReady(pool: ReturnType<typeof createPool>): Promise<void> {
   await pool.query("SELECT 1");
+  const result = await pool.query<{ table_name: string }>(
+    `SELECT table_name
+     FROM information_schema.tables
+     WHERE table_schema = 'public'
+       AND table_name = ANY($1::text[])`,
+    [requiredReadyTables],
+  );
+  const present = new Set(result.rows.map((row) => row.table_name));
+  const missing = requiredReadyTables.filter((table) => !present.has(table));
+  if (missing.length > 0) {
+    throw new Error(`Database migrations are not ready; missing tables: ${missing.join(", ")}`);
+  }
 }
 
-main().catch((error) => {
-  logError("server_start_failed", serializeError(error));
-  process.exitCode = 1;
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    logError("server_start_failed", serializeError(error));
+    process.exitCode = 1;
+  });
+}

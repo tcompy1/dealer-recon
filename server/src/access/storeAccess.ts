@@ -18,7 +18,7 @@ export async function canAccessStore(
     return true;
   }
   if (storeId === null) {
-    return true;
+    return false;
   }
   if (user.role === "dealer_group_admin") {
     const store = (await repository.listDealershipStores(user.dealership_id)).find(

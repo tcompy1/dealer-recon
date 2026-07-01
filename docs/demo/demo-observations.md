@@ -1,5 +1,7 @@
 # Demo Observation Template
 
+Status note: archive candidate. This template can capture user research, but it is not product source of truth for v1. Use `docs/product/fp-rec-four-step-workflow.md` for current scope.
+
 **Date:** _______________  
 **Attendees:** _______________  
 **Demo environment:** _______________  

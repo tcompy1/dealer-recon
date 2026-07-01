@@ -8,10 +8,10 @@ import { LoginPage } from "./pages/LoginPage";
 import { ReportsPage } from "./pages/ReportsPage";
 import type { CurrentUser } from "./types/auth";
 
-type AppSection = "reconciliation" | "accounts" | "reports";
+type AppSection = "workspace" | "accounts" | "reports";
 
 export default function App() {
-  const [section, setSection] = useState<AppSection>("reconciliation");
+  const [section, setSection] = useState<AppSection>("workspace");
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
 
@@ -47,7 +47,7 @@ export default function App() {
     return (
       <Layout>
         <section className="grid flex-1 place-items-center py-8">
-          <p className="text-sm font-semibold text-slate-600">Checking session...</p>
+          <p className="forge-copy font-semibold">Checking session...</p>
         </section>
       </Layout>
     );
@@ -57,25 +57,43 @@ export default function App() {
     return <LoginPage onLogin={setCurrentUser} />;
   }
 
+  const sectionTitle =
+    section === "workspace"
+      ? "Floorplan reconciliation workbench"
+      : section === "accounts"
+        ? "Account close support"
+        : "Month-end reports";
+  const sectionContext =
+    section === "workspace"
+      ? "Station-based FP REC production for store/month floorplan reconciliation."
+      : section === "accounts"
+        ? "Operational account context for month-end close support."
+        : "Month-end reporting output for reconciliation review.";
+
   return (
     <Layout>
-      <section className="grid flex-1 content-start gap-8 py-8">
-        <div className="flex flex-col gap-5">
-          <div className="flex flex-col gap-2">
-            <p className="text-sm font-semibold text-cyan-700">Dealer Recon</p>
-            <h1 className="text-3xl font-semibold text-slate-950">
-              {section === "reconciliation"
-                ? "Monthly reconciliation workpaper"
-                : section === "accounts"
-                  ? "Account close support"
-                  : "Month-end reports"}
-            </h1>
+      <section className="forge-page-stack">
+        <header className="forge-product-header">
+          <div className="forge-product-header-main">
+            <div className="forge-brand-lockup">
+              <span className="forge-brand-mark" aria-hidden="true">DR</span>
+              <div className="forge-page-header">
+                <p className="forge-brand-kicker">Forge Operations</p>
+                <h1 className="forge-page-title">{sectionTitle}</h1>
+                <p className="forge-copy max-w-3xl">{sectionContext}</p>
+              </div>
+            </div>
+            <div className="forge-product-header-meta" aria-label="Workflow context">
+              <span>Dealer-Recon v1</span>
+              <span>Floorplan workstation</span>
+              <span>Store/month stations</span>
+            </div>
           </div>
-          <nav className="flex flex-wrap gap-2">
+          <nav className="forge-nav-bar" aria-label="Application sections">
             <NavButton
-              active={section === "reconciliation"}
-              label="Reconciliation"
-              onClick={() => setSection("reconciliation")}
+              active={section === "workspace"}
+              label="Workspace"
+              onClick={() => setSection("workspace")}
             />
             <NavButton
               active={section === "accounts"}
@@ -84,19 +102,19 @@ export default function App() {
             />
             <NavButton
               active={section === "reports"}
-              label="Month-end"
+              label="Reports"
               onClick={() => setSection("reports")}
             />
           </nav>
-        </div>
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-white px-4 py-3">
+        </header>
+        <div className="forge-context-strip flex flex-wrap items-center justify-between gap-3">
           <div className="grid gap-1">
-            <span className="text-xs font-semibold uppercase text-slate-500">Signed in</span>
+            <span className="forge-session-label">Operator session</span>
             <span className="text-sm font-semibold text-slate-900">{currentUser.email}</span>
             <span className="text-xs text-slate-600">{formatRole(currentUser.role)}</span>
           </div>
           <button
-            className="inline-flex h-9 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+            className="forge-button-secondary"
             type="button"
             onClick={handleLogout}
           >
@@ -104,9 +122,9 @@ export default function App() {
           </button>
         </div>
 
-        {section === "reconciliation" ? <DashboardPage currentUser={currentUser} embedded /> : null}
+        {section === "workspace" ? <DashboardPage currentUser={currentUser} embedded /> : null}
         {section === "accounts" ? <AccountsPage /> : null}
-        {section === "reports" ? <ReportsPage /> : null}
+        {section === "reports" ? <ReportsPage currentUser={currentUser} /> : null}
       </section>
     </Layout>
   );
@@ -127,11 +145,8 @@ function NavButton({
 }) {
   return (
     <button
-      className={
-        active
-          ? "inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white"
-          : "inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
-      }
+      className={active ? "forge-nav-button forge-nav-button-active" : "forge-nav-button"}
+      aria-current={active ? "page" : undefined}
       type="button"
       onClick={onClick}
     >

@@ -4,6 +4,7 @@ export type ParserWarningKind =
   | "row_truncated"
   | "row_skipped"
   | "row_limit_exceeded"
+  | "column_limit_exceeded"
   | "empty_document"
   | "unrecognized_construct"
   | "malformed_xml_recovered";
@@ -12,6 +13,7 @@ export type ParserWarning = {
   kind: ParserWarningKind;
   message: string;
   count?: number;
+  fatal?: boolean;
 };
 
 export type ParsedTable = {

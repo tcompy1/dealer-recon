@@ -10,7 +10,9 @@ import type {
   NewAuditEvent,
   NewIngestionEvent,
   NewOperationalEvent,
+  NewReconciliationArtifact,
   NewSourceFile,
+  NewSourceFileUploadContent,
   NewTransaction,
   NewScheduledReconciliationJob,
   IngestionEvent,
@@ -18,6 +20,8 @@ import type {
   ReconciliationExceptionReviewUpdate,
   ReconciliationExceptionReviewStatus,
   ReconciliationExceptionStatus,
+  ReconciliationArtifact,
+  ReconciliationArtifactMetadata,
   PersistReconciliationRunInput,
   ReconciliationRunInputSnapshot,
   ReconciliationExceptionType,
@@ -29,6 +33,7 @@ import type {
   ScheduledReconciliationJob,
   ScheduledReconciliationJobUpdate,
   SourceFile,
+  SourceFileUploadContent,
   SourceFileSummary,
   SourceType,
   Transaction,
@@ -54,7 +59,15 @@ export interface TransactionRepository {
     dealershipId: number,
     sourceFile: NewSourceFile,
     transactions: NewTransaction[],
+    uploadContent?: NewSourceFileUploadContent,
   ): Promise<SourceFileImport>;
+  replaceSourceFileWithTransactions(
+    dealershipId: number,
+    sourceFileId: number,
+    sourceFile: NewSourceFile,
+    transactions: NewTransaction[],
+    uploadContent?: NewSourceFileUploadContent,
+  ): Promise<SourceFileImport | null>;
   insertMany(transactions: NewTransaction[]): Promise<Transaction[]>;
   getSourceFile(sourceFileId: number): Promise<SourceFile | null>;
   getSourceFileByHash(
@@ -126,6 +139,32 @@ export interface TransactionRepository {
     endDate: string,
   ): Promise<MonthEndReport>;
   createReconciliationRun(input: PersistReconciliationRunInput): Promise<ReconciliationRun>;
+  updateReconciliationRunStatus(
+    dealershipId: number,
+    reconciliationRunId: number,
+    status: string,
+  ): Promise<ReconciliationRun | null>;
+  getSourceFileUploadContent(
+    dealershipId: number,
+    sourceFileId: number,
+  ): Promise<SourceFileUploadContent | null>;
+  createReconciliationArtifact(
+    dealershipId: number,
+    artifact: NewReconciliationArtifact,
+  ): Promise<ReconciliationArtifactMetadata>;
+  listReconciliationArtifacts(
+    dealershipId: number,
+    reconciliationRunId: number,
+  ): Promise<ReconciliationArtifactMetadata[]>;
+  getReconciliationArtifact(
+    dealershipId: number,
+    artifactId: number,
+  ): Promise<ReconciliationArtifact | null>;
+  findReconciliationArtifact(
+    dealershipId: number,
+    reconciliationRunId: number,
+    artifactType: NewReconciliationArtifact["artifact_type"],
+  ): Promise<ReconciliationArtifact | null>;
   getReconciliationRunSnapshot(
     dealershipId: number,
     reconciliationRunId: number,
@@ -187,8 +226,10 @@ export class MemoryTransactionRepository implements TransactionRepository {
     },
   ];
   private sourceFiles: SourceFile[] = [];
+  private sourceFileUploadContents: SourceFileUploadContent[] = [];
   private transactions: Transaction[] = [];
   private reconciliationRuns: ReconciliationRun[] = [];
+  private reconciliationArtifacts: ReconciliationArtifact[] = [];
   private reconciliationMatchGroups: Array<{
     id: number;
     reconciliation_run_id: number;
@@ -236,11 +277,13 @@ export class MemoryTransactionRepository implements TransactionRepository {
   private nextIngestionEventId = 1;
   private nextOperationalEventId = 1;
   private nextAuditEventId = 1;
+  private nextReconciliationArtifactId = 1;
 
   async createSourceFileWithTransactions(
     dealershipId: number,
     sourceFileInput: NewSourceFile,
     transactions: NewTransaction[],
+    uploadContent?: NewSourceFileUploadContent,
   ): Promise<SourceFileImport> {
     const sourceFile: SourceFile = {
       ...sourceFileInput,
@@ -250,7 +293,51 @@ export class MemoryTransactionRepository implements TransactionRepository {
       created_at: new Date().toISOString(),
     };
     this.sourceFiles.push(sourceFile);
+    if (uploadContent) {
+      this.upsertSourceFileUploadContent(sourceFile, uploadContent);
+    }
 
+    const scopedTransactions = transactions.map((transaction) => ({
+      ...transaction,
+      dealership_id: dealershipId,
+      source_file_id: sourceFile.id,
+    }));
+    const inserted = await this.insertMany(scopedTransactions);
+
+    return { sourceFile, transactions: inserted };
+  }
+
+  async replaceSourceFileWithTransactions(
+    dealershipId: number,
+    sourceFileId: number,
+    sourceFileInput: NewSourceFile,
+    transactions: NewTransaction[],
+    uploadContent?: NewSourceFileUploadContent,
+  ): Promise<SourceFileImport | null> {
+    const sourceFile = this.sourceFiles.find(
+      (candidate) => candidate.id === sourceFileId && candidate.dealership_id === dealershipId,
+    );
+    if (!sourceFile) {
+      return null;
+    }
+
+    Object.assign(sourceFile, {
+      dealership_store_id: sourceFileInput.dealership_store_id ?? sourceFile.dealership_store_id,
+      source_type: sourceFileInput.source_type,
+      original_filename: sourceFileInput.original_filename,
+      stored_filename: sourceFileInput.stored_filename,
+      file_hash: sourceFileInput.file_hash,
+      row_count: sourceFileInput.row_count,
+      validation_error_count: sourceFileInput.validation_error_count,
+    });
+    if (uploadContent) {
+      this.upsertSourceFileUploadContent(sourceFile, uploadContent);
+    }
+
+    this.transactions = this.transactions.filter(
+      (transaction) =>
+        transaction.dealership_id !== dealershipId || transaction.source_file_id !== sourceFileId,
+    );
     const scopedTransactions = transactions.map((transaction) => ({
       ...transaction,
       dealership_id: dealershipId,
@@ -704,6 +791,93 @@ export class MemoryTransactionRepository implements TransactionRepository {
     return run;
   }
 
+  async updateReconciliationRunStatus(
+    dealershipId: number,
+    reconciliationRunId: number,
+    status: string,
+  ): Promise<ReconciliationRun | null> {
+    const run = this.reconciliationRuns.find(
+      (candidate) => candidate.dealership_id === dealershipId && candidate.id === reconciliationRunId,
+    );
+    if (!run) {
+      return null;
+    }
+    run.status = status;
+    return { ...run };
+  }
+
+  async getSourceFileUploadContent(
+    dealershipId: number,
+    sourceFileId: number,
+  ): Promise<SourceFileUploadContent | null> {
+    const content = this.sourceFileUploadContents.find(
+      (candidate) =>
+        candidate.dealership_id === dealershipId &&
+        candidate.source_file_id === sourceFileId,
+    );
+    return content ? cloneSourceFileUploadContent(content) : null;
+  }
+
+  async createReconciliationArtifact(
+    dealershipId: number,
+    artifactInput: NewReconciliationArtifact,
+  ): Promise<ReconciliationArtifactMetadata> {
+    const artifact: ReconciliationArtifact = {
+      ...artifactInput,
+      id: this.nextReconciliationArtifactId++,
+      dealership_id: dealershipId,
+      file_size: artifactInput.file_size ?? artifactInput.content.byteLength,
+      content: Buffer.from(artifactInput.content),
+      created_at: new Date().toISOString(),
+    };
+    this.reconciliationArtifacts = this.reconciliationArtifacts.filter(
+      (candidate) =>
+        candidate.reconciliation_run_id !== artifact.reconciliation_run_id ||
+        candidate.artifact_type !== artifact.artifact_type,
+    );
+    this.reconciliationArtifacts.push(artifact);
+    return toArtifactMetadata(artifact);
+  }
+
+  async listReconciliationArtifacts(
+    dealershipId: number,
+    reconciliationRunId: number,
+  ): Promise<ReconciliationArtifactMetadata[]> {
+    return this.reconciliationArtifacts
+      .filter(
+        (artifact) =>
+          artifact.dealership_id === dealershipId &&
+          artifact.reconciliation_run_id === reconciliationRunId,
+      )
+      .slice()
+      .sort((left, right) => left.id - right.id)
+      .map(toArtifactMetadata);
+  }
+
+  async getReconciliationArtifact(
+    dealershipId: number,
+    artifactId: number,
+  ): Promise<ReconciliationArtifact | null> {
+    const artifact = this.reconciliationArtifacts.find(
+      (candidate) => candidate.dealership_id === dealershipId && candidate.id === artifactId,
+    );
+    return artifact ? cloneArtifact(artifact) : null;
+  }
+
+  async findReconciliationArtifact(
+    dealershipId: number,
+    reconciliationRunId: number,
+    artifactType: NewReconciliationArtifact["artifact_type"],
+  ): Promise<ReconciliationArtifact | null> {
+    const artifact = this.reconciliationArtifacts.find(
+      (candidate) =>
+        candidate.dealership_id === dealershipId &&
+        candidate.reconciliation_run_id === reconciliationRunId &&
+        candidate.artifact_type === artifactType,
+    );
+    return artifact ? cloneArtifact(artifact) : null;
+  }
+
   async getReconciliationRunSnapshot(
     dealershipId: number,
     reconciliationRunId: number,
@@ -954,8 +1128,10 @@ export class MemoryTransactionRepository implements TransactionRepository {
 
   async clear(): Promise<void> {
     this.sourceFiles = [];
+    this.sourceFileUploadContents = [];
     this.transactions = [];
     this.reconciliationRuns = [];
+    this.reconciliationArtifacts = [];
     this.reconciliationMatchGroups = [];
     this.reconciliationMatchGroupTransactions = [];
     this.reconciliationExceptions = [];
@@ -974,6 +1150,26 @@ export class MemoryTransactionRepository implements TransactionRepository {
     this.nextIngestionEventId = 1;
     this.nextOperationalEventId = 1;
     this.nextAuditEventId = 1;
+    this.nextReconciliationArtifactId = 1;
+  }
+
+  private upsertSourceFileUploadContent(
+    sourceFile: SourceFile,
+    contentInput: NewSourceFileUploadContent,
+  ): void {
+    const content: SourceFileUploadContent = {
+      ...contentInput,
+      source_file_id: sourceFile.id,
+      dealership_id: sourceFile.dealership_id,
+      dealership_store_id: sourceFile.dealership_store_id,
+      file_size: contentInput.file_size ?? contentInput.content.byteLength,
+      content: Buffer.from(contentInput.content),
+      created_at: new Date().toISOString(),
+    };
+    this.sourceFileUploadContents = this.sourceFileUploadContents.filter(
+      (candidate) => candidate.source_file_id !== sourceFile.id,
+    );
+    this.sourceFileUploadContents.push(content);
   }
 
   private toReconciliationRunListItem(run: ReconciliationRun): ReconciliationRunListItem | null {
@@ -1431,6 +1627,29 @@ function cloneTransaction(transaction: Transaction): Transaction {
   return {
     ...transaction,
     raw_data: cloneJson(transaction.raw_data),
+  };
+}
+
+function toArtifactMetadata(
+  artifact: ReconciliationArtifact,
+): ReconciliationArtifactMetadata {
+  const { content: _content, ...metadata } = artifact;
+  return metadata;
+}
+
+function cloneArtifact(artifact: ReconciliationArtifact): ReconciliationArtifact {
+  return {
+    ...artifact,
+    content: Buffer.from(artifact.content),
+  };
+}
+
+function cloneSourceFileUploadContent(
+  content: SourceFileUploadContent,
+): SourceFileUploadContent {
+  return {
+    ...content,
+    content: Buffer.from(content.content),
   };
 }
 

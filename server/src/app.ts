@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import cors from "cors";
 import express from "express";
-import multer, { MulterError } from "multer";
+import multer from "multer";
 
 import {
   type AuthRepository,
@@ -16,12 +16,11 @@ import {
 } from "./auth.js";
 import {
   isSourceType,
+  type ReconciliationArtifact,
   type ReconciliationRequest,
+  type SourceFile,
 } from "./domain/types.js";
-import {
-  DuplicateSourceFileError,
-  type TransactionRepository,
-} from "./repositories/transactionRepository.js";
+import { type TransactionRepository } from "./repositories/transactionRepository.js";
 import {
   createReconciliationRunFromSourceFiles,
   evaluateAutoRunAfterUpload,
@@ -35,10 +34,7 @@ import {
   buildDealerGroupAnalytics,
   buildReconciliationRunComparison,
 } from "./services/runComparisonAnalytics.js";
-import {
-  CsvNormalizationError,
-  normalizeTransactionsFromCsv,
-} from "./services/transactionNormalizer.js";
+import { normalizeTransactionsFromCsv } from "./services/transactionNormalizer.js";
 import { preprocessUpload } from "./services/preprocessing/index.js";
 import type {
   PreprocessingDiagnostic,
@@ -46,7 +42,19 @@ import type {
   PreprocessingSummary,
 } from "./services/preprocessing/types.js";
 import { toExceptionsCsv, toMonthEndReportCsv } from "./presenters/csv.js";
-import { buildHurstFpRecWorkbook, toHurstFpRecXlsHtml } from "./presenters/hurstFpRec.js";
+import {
+  buildHurstFpRecWorkbook,
+  toHurstFpRecFilename,
+  toHurstFpRecXlsHtml,
+} from "./presenters/hurstFpRec.js";
+import {
+  getStoreWorkflowConfig,
+  parseStoreKey,
+  resolveStoreWorkflowConfigFromStoreName,
+  STORE_KEYS,
+  type StoreWorkflowConfig,
+} from "./config/storeWorkflowConfig.js";
+import { buildMergedFloorplanArtifact } from "./services/mergedFloorplanExport.js";
 import { applyCarryForwardToDetail } from "./services/exceptionCarryForward.js";
 import {
   parseExceptionReviewUpdate,
@@ -78,8 +86,24 @@ import {
   hasAnyRole,
 } from "./access/storeAccess.js";
 import { logError, logInfo, serializeError } from "./logger.js";
+import { errorHandler } from "./middleware/errorHandler.js";
+import { asyncHandler } from "./middleware/asyncHandler.js";
+import {
+  UnauthorizedError,
+  ForbiddenError,
+  NotFoundError,
+  ValidationError,
+  ConflictError,
+  ServiceUnavailableError,
+  BadRequestError,
+  TooManyRequestsError,
+} from "./errors/HttpError.js";
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+// ponytail: in-process pilot throttle; use shared rate limiting before multi-instance deploys.
+const LOGIN_FAILURE_LIMIT = 5;
+const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_FAILURE_MAX_ENTRIES = 10_000;
 const allowedUploadMimeTypes = new Set([
   "text/csv",
   "application/csv",
@@ -103,9 +127,9 @@ const upload = multer({
     const hasAllowedMimeType = allowedUploadMimeTypes.has(file.mimetype);
     if (!hasAllowedExtension || !hasAllowedMimeType) {
       callback(
-        new AppHttpError(
+        new ValidationError(
           "Upload must be a CSV, BOA .xls billing statement, or Dealertrack SpreadsheetML .xml/.xls export.",
-          422,
+          "INVALID_FILE_TYPE",
         ),
       );
       return;
@@ -133,8 +157,14 @@ export function createApp(
   const nodeEnv = authOptions.nodeEnv ?? "development";
   const isProduction = nodeEnv === "production";
   const isLocalEnv = nodeEnv === "development" || nodeEnv === "test";
-  const allowDevDealershipFallback =
-    authOptions.allowDevDealershipFallback ?? authRepository === undefined;
+  const allowDevDealershipFallback = authOptions.allowDevDealershipFallback ?? false;
+  const loginFailures = new Map<string, LoginFailure>();
+  if (allowDevDealershipFallback && !isLocalEnv) {
+    throw new Error(`Development auth fallback is not allowed when NODE_ENV=${nodeEnv}.`);
+  }
+  if (!authRepository && !allowDevDealershipFallback && !isLocalEnv) {
+    throw new Error(`Authentication repository is required when NODE_ENV=${nodeEnv}.`);
+  }
 
   app.use(requestLogger);
   app.use((_request, response, next) => {
@@ -158,82 +188,80 @@ export function createApp(
     response.json({ status: "ok" });
   });
 
-  app.get("/ready", async (_request, response) => {
+  app.get("/ready", asyncHandler(async (_request, response) => {
     try {
       await readinessCheck();
       response.json({ status: "ready" });
     } catch (error) {
       logError("readiness_check_failed", serializeError(error));
-      response.status(503).json({ status: "not_ready" });
+      throw new ServiceUnavailableError("Service not ready.");
     }
-  });
+  }));
 
-  app.post("/login", async (request, response, next) => {
-    try {
-      if (!authRepository) {
-        response.status(503).json({ detail: "Authentication is not configured." });
-        return;
-      }
-
-      const credentials = parseLoginRequest(request.body);
-      if (!credentials) {
-        response.status(422).json({ detail: "Email and password are required." });
-        return;
-      }
-
-      const user = await authRepository.findUserByEmail(credentials.email);
-      if (!user || !(await verifyPassword(credentials.password, user.password_hash))) {
-        response.status(401).json({ detail: "Invalid email or password." });
-        return;
-      }
-
-      const publicUser = toPublicUser(user);
-      await repository.createAuditEvent(user.dealership_id, {
-        actor_user_id: user.id,
-        action_type: "login",
-        entity_type: "user",
-        entity_id: String(user.id),
-        previous_state: null,
-        new_state: { email: user.email, role: user.role },
-      });
-      response.cookie(sessionCookieName, createSessionToken(publicUser, sessionSecret), {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: isProduction,
-        maxAge: 8 * 60 * 60 * 1000,
-        path: "/",
-      });
-      response.json({ user: publicUser });
-    } catch (error) {
-      next(error);
+  app.post("/login", asyncHandler(async (request, response) => {
+    if (!authRepository) {
+      throw new ServiceUnavailableError("Authentication is not configured.");
     }
-  });
 
-  app.use(async (request, response, next) => {
-    try {
-      const user = await resolveRequestUser(request, authRepository, sessionSecret);
-      if (user) {
-        response.locals.user = user;
-        next();
-        return;
-      }
-      if (allowDevDealershipFallback) {
-        response.locals.user = {
-          id: 0,
-          email: "local-dev-fallback@dealer-recon.local",
-          dealership_id: dealershipId,
-          role: "platform_admin",
-          dealer_group_id: null,
-          store_ids: [],
-        } satisfies AuthUser;
-        next();
-        return;
-      }
-      response.status(401).json({ detail: "Authentication required." });
-    } catch (error) {
-      next(error);
+    const credentials = parseLoginRequest(request.body);
+    if (!credentials) {
+      throw new ValidationError("Email and password are required.", "INVALID_CREDENTIALS");
     }
-  });
+    const loginThrottleKey = getLoginThrottleKey(request, credentials.email);
+    if (isLoginRateLimited(loginFailures, loginThrottleKey)) {
+      throw new TooManyRequestsError(
+        "Too many failed login attempts. Try again later.",
+        "LOGIN_RATE_LIMITED",
+      );
+    }
+
+    const user = await authRepository.findUserByEmail(credentials.email);
+    if (!user || !(await verifyPassword(credentials.password, user.password_hash))) {
+      recordFailedLogin(loginFailures, loginThrottleKey);
+      throw new UnauthorizedError("Invalid email or password.", "INVALID_CREDENTIALS");
+    }
+    clearFailedLogin(loginFailures, loginThrottleKey);
+
+    const publicUser = toPublicUser(user);
+    await repository.createAuditEvent(user.dealership_id, {
+      actor_user_id: user.id,
+      action_type: "login",
+      entity_type: "user",
+      entity_id: String(user.id),
+      previous_state: null,
+      new_state: { email: user.email, role: user.role },
+    });
+    response.cookie(sessionCookieName, createSessionToken(publicUser, sessionSecret), {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: isProduction,
+      maxAge: 8 * 60 * 60 * 1000,
+      path: "/",
+    });
+    response.json({ user: publicUser });
+  }));
+
+  app.use(asyncHandler(async (request, response, next) => {
+    const user = await resolveRequestUser(request, authRepository, sessionSecret);
+    if (user) {
+      response.locals.user = user;
+      next();
+      return;
+    }
+    if (allowDevDealershipFallback) {
+      response.locals.user = {
+        id: 0,
+        email: "local-dev-fallback@dealer-recon.local",
+        dealership_id: dealershipId,
+        role: "platform_admin",
+        dealer_group_id: null,
+        store_ids: [],
+      } satisfies AuthUser;
+      next();
+      return;
+    }
+    throw new UnauthorizedError("Authentication required.", "AUTH_REQUIRED");
+  }));
 
   app.post("/logout", (_request, response) => {
     response.clearCookie(sessionCookieName, {
@@ -249,229 +277,171 @@ export function createApp(
     response.json({ user: getAuthenticatedUser(response) });
   });
 
-  app.get("/audit-events", async (request, response, next) => {
-    try {
-      if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin", "read_only_auditor"])) {
-        response.status(403).json({ detail: "Not authorized." });
-        return;
-      }
-      const limit = parseOptionalPositiveInteger(request.query.limit);
-      if (limit === false) {
-        response.status(422).json({ detail: "Invalid audit query." });
-        return;
-      }
-      response.json(await repository.listAuditEvents(getRequestDealershipId(response), limit));
-    } catch (error) {
-      next(error);
+  app.get("/audit-events", asyncHandler(async (request, response) => {
+    if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin", "read_only_auditor"])) {
+      throw new ForbiddenError();
     }
-  });
-
-  app.get("/dealer-groups", async (_request, response, next) => {
-    try {
-      response.json(await repository.listDealerGroups(getRequestDealershipId(response)));
-    } catch (error) {
-      next(error);
+    const limit = parseOptionalPositiveInteger(request.query.limit);
+    if (limit === false) {
+      throw new ValidationError("Invalid audit query.", "INVALID_QUERY");
     }
-  });
+    response.json(await repository.listAuditEvents(getRequestDealershipId(response), limit));
+  }));
 
-  app.get("/stores", async (_request, response, next) => {
-    try {
-      response.json(
-        filterStoresForUser(
-          getAuthenticatedUser(response),
-          await repository.listDealershipStores(getRequestDealershipId(response)),
+  app.get("/dealer-groups", asyncHandler(async (_request, response) => {
+    response.json(await repository.listDealerGroups(getRequestDealershipId(response)));
+  }));
+
+  app.get("/stores", asyncHandler(async (_request, response) => {
+    response.json(
+      filterStoresForUser(
+        getAuthenticatedUser(response),
+        await repository.listDealershipStores(getRequestDealershipId(response)),
+      ),
+    );
+  }));
+
+  app.post("/stores", asyncHandler(async (request, response) => {
+    if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin"])) {
+      throw new ForbiddenError();
+    }
+    const store = parseStoreCreateRequest(request.body);
+    if (store === false) {
+      throw new ValidationError("Invalid store request.", "INVALID_STORE_DATA");
+    }
+    const createdStore = await repository.createDealershipStore(getRequestDealershipId(response), store);
+    await audit(response, "store_created", "dealership_store", createdStore.id, null, createdStore);
+    response.status(201).json(createdStore);
+  }));
+
+  app.get("/dealer-groups/analytics", asyncHandler(async (_request, response) => {
+    response.json(await buildDealerGroupAnalytics(repository, getRequestDealershipId(response)));
+  }));
+
+  app.get("/automation/scheduled-jobs", asyncHandler(async (request, response) => {
+    const storeId = parseOptionalPositiveInteger(request.query.store_id);
+    if (storeId === false) {
+      throw new ValidationError("Invalid store_id.", "INVALID_STORE_ID");
+    }
+    await requireRequestedStoreAccess(repository, getAuthenticatedUser(response), storeId);
+    response.json(
+      await filterByStoreAccess(
+        repository,
+        getAuthenticatedUser(response),
+        await repository.listScheduledReconciliationJobs(
+          getRequestDealershipId(response),
+          storeId,
         ),
-      );
-    } catch (error) {
-      next(error);
-    }
-  });
+        (job) => job.dealership_store_id,
+      ),
+    );
+  }));
 
-  app.post("/stores", async (request, response, next) => {
-    try {
-      if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin"])) {
-        response.status(403).json({ detail: "Not authorized." });
-        return;
-      }
-      const store = parseStoreCreateRequest(request.body);
-      if (store === false) {
-        response.status(422).json({ detail: "Invalid store request." });
-        return;
-      }
-      const createdStore = await repository.createDealershipStore(getRequestDealershipId(response), store);
-      await audit(response, "store_created", "dealership_store", createdStore.id, null, createdStore);
-      response.status(201).json(createdStore);
-    } catch (error) {
-      next(error);
+  app.post("/automation/scheduled-jobs", asyncHandler(async (request, response) => {
+    if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin", "store_manager"])) {
+      throw new ForbiddenError();
     }
-  });
-
-  app.get("/dealer-groups/analytics", async (_request, response, next) => {
-    try {
-      response.json(await buildDealerGroupAnalytics(repository, getRequestDealershipId(response)));
-    } catch (error) {
-      next(error);
+    const job = parseScheduledReconciliationJobRequest(request.body);
+    if (job === false) {
+      throw new ValidationError("Invalid scheduled job request.", "INVALID_JOB_DATA");
     }
-  });
-
-  app.get("/automation/scheduled-jobs", async (request, response, next) => {
-    try {
-      const storeId = parseOptionalPositiveInteger(request.query.store_id);
-      if (storeId === false) {
-        response.status(422).json({ detail: "Invalid store_id." });
-        return;
-      }
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), storeId ?? null))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
-      response.json(
-        await filterByStoreAccess(
-          repository,
-          getAuthenticatedUser(response),
-          await repository.listScheduledReconciliationJobs(
-            getRequestDealershipId(response),
-            storeId,
-          ),
-          (job) => job.dealership_store_id,
-        ),
-      );
-    } catch (error) {
-      next(error);
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), job.dealership_store_id ?? null))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
-  });
+    const createdJob = await repository.createScheduledReconciliationJob(getRequestDealershipId(response), job);
+    await audit(response, "scheduled_job_created", "scheduled_reconciliation_job", createdJob.id, null, createdJob);
+    response.status(201).json(createdJob);
+  }));
 
-  app.post("/automation/scheduled-jobs", async (request, response, next) => {
-    try {
-      if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin", "store_manager"])) {
-        response.status(403).json({ detail: "Not authorized." });
-        return;
-      }
-      const job = parseScheduledReconciliationJobRequest(request.body);
-      if (job === false) {
-        response.status(422).json({ detail: "Invalid scheduled job request." });
-        return;
-      }
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), job.dealership_store_id ?? null))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
-      const createdJob = await repository.createScheduledReconciliationJob(getRequestDealershipId(response), job);
-      await audit(response, "scheduled_job_created", "scheduled_reconciliation_job", createdJob.id, null, createdJob);
-      response.status(201).json(createdJob);
-    } catch (error) {
-      next(error);
+  app.patch("/automation/scheduled-jobs/:id", asyncHandler(async (request, response) => {
+    if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin", "store_manager"])) {
+      throw new ForbiddenError();
     }
-  });
+    const jobId = parsePositiveInteger(request.params.id);
+    const update = parseScheduledReconciliationJobUpdate(request.body);
+    if (jobId === null) {
+      throw new NotFoundError("Scheduled job");
+    }
+    if (update === false) {
+      throw new ValidationError("Invalid scheduled job update.", "INVALID_JOB_UPDATE");
+    }
+    const previousJob = (await repository.listScheduledReconciliationJobs(getRequestDealershipId(response))).find(
+      (candidate) => candidate.id === jobId,
+    );
+    if (!previousJob) {
+      throw new NotFoundError("Scheduled job");
+    }
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), previousJob.dealership_store_id))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+    }
+    const job = await repository.updateScheduledReconciliationJob(
+      getRequestDealershipId(response),
+      jobId,
+      update,
+    );
+    if (!job) {
+      throw new NotFoundError("Scheduled job");
+    }
+    await audit(response, "scheduled_job_updated", "scheduled_reconciliation_job", job.id, previousJob, job);
+    response.json(job);
+  }));
 
-  app.patch("/automation/scheduled-jobs/:id", async (request, response, next) => {
-    try {
-      if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin", "store_manager"])) {
-        response.status(403).json({ detail: "Not authorized." });
-        return;
-      }
-      const jobId = parsePositiveInteger(request.params.id);
-      const update = parseScheduledReconciliationJobUpdate(request.body);
-      if (jobId === null) {
-        response.status(404).json({ detail: "Scheduled job was not found." });
-        return;
-      }
-      if (update === false) {
-        response.status(422).json({ detail: "Invalid scheduled job update." });
-        return;
-      }
-      const previousJob = (await repository.listScheduledReconciliationJobs(getRequestDealershipId(response))).find(
-        (candidate) => candidate.id === jobId,
-      );
-      if (!previousJob) {
-        response.status(404).json({ detail: "Scheduled job was not found." });
-        return;
-      }
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), previousJob.dealership_store_id))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
-      const job = await repository.updateScheduledReconciliationJob(
+  app.post("/automation/run-due-jobs", asyncHandler(async (request, response) => {
+    if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin", "store_manager"])) {
+      throw new ForbiddenError();
+    }
+    response.json({
+      runs: await runDueScheduledJobs(
+        repository,
         getRequestDealershipId(response),
-        jobId,
-        update,
-      );
-      if (!job) {
-        response.status(404).json({ detail: "Scheduled job was not found." });
-        return;
-      }
-      await audit(response, "scheduled_job_updated", "scheduled_reconciliation_job", job.id, previousJob, job);
-      response.json(job);
-    } catch (error) {
-      next(error);
-    }
-  });
+        typeof request.body?.now === "string" ? request.body.now : undefined,
+      ),
+    });
+  }));
 
-  app.post("/automation/run-due-jobs", async (request, response, next) => {
-    try {
-      if (!hasAnyRole(getAuthenticatedUser(response), ["platform_admin", "dealer_group_admin", "store_manager"])) {
-        response.status(403).json({ detail: "Not authorized." });
-        return;
-      }
-      response.json({
-        runs: await runDueScheduledJobs(
-          repository,
-          getRequestDealershipId(response),
-          typeof request.body?.now === "string" ? request.body.now : undefined,
-        ),
-      });
-    } catch (error) {
-      next(error);
+  app.get("/automation/ingestion-events", asyncHandler(async (request, response) => {
+    const storeId = parseOptionalPositiveInteger(request.query.store_id);
+    const limit = parseOptionalPositiveInteger(request.query.limit);
+    if (storeId === false || limit === false) {
+      throw new ValidationError("Invalid ingestion event query.", "INVALID_QUERY");
     }
-  });
+    await requireRequestedStoreAccess(repository, getAuthenticatedUser(response), storeId);
+    const events = await repository.listIngestionEvents(
+      getRequestDealershipId(response),
+      storeId,
+      limit,
+    );
+    response.json(
+      await filterByStoreAccess(
+        repository,
+        getAuthenticatedUser(response),
+        events,
+        (event) => event.dealership_store_id,
+      ),
+    );
+  }));
 
-  app.get("/automation/ingestion-events", async (request, response, next) => {
-    try {
-      const storeId = parseOptionalPositiveInteger(request.query.store_id);
-      const limit = parseOptionalPositiveInteger(request.query.limit);
-      if (storeId === false || limit === false) {
-        response.status(422).json({ detail: "Invalid ingestion event query." });
-        return;
-      }
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), storeId ?? null))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
-      response.json(
-        await repository.listIngestionEvents(
-          getRequestDealershipId(response),
-          storeId,
-          limit,
-        ),
-      );
-    } catch (error) {
-      next(error);
+  app.get("/automation/events", asyncHandler(async (request, response) => {
+    const storeId = parseOptionalPositiveInteger(request.query.store_id);
+    const limit = parseOptionalPositiveInteger(request.query.limit);
+    if (storeId === false || limit === false) {
+      throw new ValidationError("Invalid operational event query.", "INVALID_QUERY");
     }
-  });
-
-  app.get("/automation/events", async (request, response, next) => {
-    try {
-      const storeId = parseOptionalPositiveInteger(request.query.store_id);
-      const limit = parseOptionalPositiveInteger(request.query.limit);
-      if (storeId === false || limit === false) {
-        response.status(422).json({ detail: "Invalid operational event query." });
-        return;
-      }
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), storeId ?? null))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
-      response.json(
-        await repository.listOperationalEvents(
-          getRequestDealershipId(response),
-          storeId,
-          limit,
-        ),
-      );
-    } catch (error) {
-      next(error);
-    }
-  });
+    await requireRequestedStoreAccess(repository, getAuthenticatedUser(response), storeId);
+    const events = await repository.listOperationalEvents(
+      getRequestDealershipId(response),
+      storeId,
+      limit,
+    );
+    response.json(
+      await filterByStoreAccess(
+        repository,
+        getAuthenticatedUser(response),
+        events,
+        (event) => event.dealership_store_id,
+      ),
+    );
+  }));
 
   app.get("/automation/status", async (_request, response, next) => {
     try {
@@ -498,37 +468,28 @@ export function createApp(
     }
   });
 
-  app.get("/source-files", async (request, response, next) => {
-    try {
-      const requestDealershipId = getRequestDealershipId(response);
-      const sourceType = parseSourceTypeQuery(request.query.source_type);
-      if (sourceType === false) {
-        response.status(422).json({ detail: "Invalid source_type." });
-        return;
-      }
-      const dealershipStoreId = parseOptionalPositiveInteger(request.query.store_id);
-      if (dealershipStoreId === false) {
-        response.status(422).json({ detail: "Invalid store_id." });
-        return;
-      }
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), dealershipStoreId ?? null))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
-
-      const files = await repository.listSourceFiles(requestDealershipId, sourceType, dealershipStoreId);
-      response.json(
-        await filterByStoreAccess(
-          repository,
-          getAuthenticatedUser(response),
-          files,
-          (file) => file.dealership_store_id,
-        ),
-      );
-    } catch (error) {
-      next(error);
+  app.get("/source-files", asyncHandler(async (request, response) => {
+    const requestDealershipId = getRequestDealershipId(response);
+    const sourceType = parseSourceTypeQuery(request.query.source_type);
+    if (sourceType === false) {
+      throw new ValidationError("Invalid source_type.", "INVALID_SOURCE_TYPE");
     }
-  });
+    const dealershipStoreId = parseOptionalPositiveInteger(request.query.store_id);
+    if (dealershipStoreId === false) {
+      throw new ValidationError("Invalid store_id.", "INVALID_STORE_ID");
+    }
+    await requireRequestedStoreAccess(repository, getAuthenticatedUser(response), dealershipStoreId);
+
+    const files = await repository.listSourceFiles(requestDealershipId, sourceType, dealershipStoreId);
+    response.json(
+      await filterByStoreAccess(
+        repository,
+        getAuthenticatedUser(response),
+        files,
+        (file) => file.dealership_store_id,
+      ),
+    );
+  }));
 
   app.get("/accounts/summary", async (_request, response, next) => {
     try {
@@ -560,83 +521,110 @@ export function createApp(
     }
   });
 
-  app.get("/reports/month-end", async (request, response, next) => {
-    try {
-      const reportQuery = parseMonthEndReportQuery(request.query);
-      if (reportQuery === false) {
-        response.status(422).json({ detail: "Invalid month-end report query." });
-        return;
-      }
-
-      const report = await repository.getMonthEndReport(
-        getRequestDealershipId(response),
-        reportQuery.startDate,
-        reportQuery.endDate,
-      );
-      if (reportQuery.format === "csv") {
-        response
-          .status(200)
-          .type("text/csv")
-          .setHeader(
-            "Content-Disposition",
-            `attachment; filename="month-end-${reportQuery.startDate}-to-${reportQuery.endDate}.csv"`,
-          )
-          .send(toMonthEndReportCsv(report));
-        return;
-      }
-
-      response.json(report);
-    } catch (error) {
-      next(error);
+  app.get("/reports/month-end", asyncHandler(async (request, response) => {
+    const reportQuery = parseMonthEndReportQuery(request.query);
+    if (reportQuery === false) {
+      throw new ValidationError("Invalid month-end report query.", "INVALID_QUERY");
     }
-  });
-
-  app.post("/upload", upload.single("file"), async (request, response, next) => {
-    try {
-      const sourceType = request.body.source_type;
-      if (!isSourceType(sourceType)) {
-        response.status(422).json({ detail: "Invalid source_type." });
-        return;
-      }
-      if (!request.file) {
-        response.status(422).json({ detail: "File is required." });
-        return;
-      }
-
-      const fileHash = createFileHash(request.file.buffer);
-      const requestDealershipId = getRequestDealershipId(response);
-      const dealershipStoreId = await resolveStoreIdForRequest(
-        repository,
-        requestDealershipId,
-        request.body.store_id,
+    if (getAuthenticatedUser(response).role !== "platform_admin") {
+      throw new ForbiddenError(
+        "Month-end report access requires platform-level authorization.",
+        "REPORT_ACCESS_DENIED",
       );
-      if (dealershipStoreId === false) {
-        response.status(422).json({ detail: "Invalid store_id." });
-        return;
-      }
-      if (!canWrite(getAuthenticatedUser(response))) {
-        response.status(403).json({ detail: "Read-only users cannot upload files." });
-        return;
-      }
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), dealershipStoreId))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
-      const duplicateSourceFile = await repository.getSourceFileByHash(
+    }
+
+    const report = await repository.getMonthEndReport(
+      getRequestDealershipId(response),
+      reportQuery.startDate,
+      reportQuery.endDate,
+    );
+    if (reportQuery.format === "csv") {
+      response
+        .status(200)
+        .type("text/csv")
+        .setHeader(
+          "Content-Disposition",
+          `attachment; filename="month-end-${reportQuery.startDate}-to-${reportQuery.endDate}.csv"`,
+        )
+        .send(toMonthEndReportCsv(report));
+      return;
+    }
+
+    response.json(report);
+  }));
+
+  app.post("/upload", upload.single("file"), asyncHandler(async (request, response) => {
+    const sourceType = request.body.source_type;
+    if (!isSourceType(sourceType)) {
+      throw new ValidationError("Invalid source_type.", "INVALID_SOURCE_TYPE");
+    }
+    if (!request.file) {
+      throw new ValidationError("File is required.", "FILE_REQUIRED");
+    }
+
+    const fileHash = createFileHash(request.file.buffer);
+    const requestDealershipId = getRequestDealershipId(response);
+    const uploadedByUserId = getAuthenticatedUser(response).id === 0
+      ? null
+      : getAuthenticatedUser(response).id;
+    const dealershipStoreId = await resolveStoreIdForRequest(
+      repository,
+      requestDealershipId,
+      request.body.store_id,
+    );
+    if (dealershipStoreId === false) {
+      throw new ValidationError("Invalid store_id.", "INVALID_STORE_ID");
+    }
+    if (!canWrite(getAuthenticatedUser(response))) {
+      throw new ForbiddenError("Read-only users cannot upload files.", "READ_ONLY_USER");
+    }
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), dealershipStoreId))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+    }
+    const dealershipStores = await repository.listDealershipStores(requestDealershipId);
+    const selectedStoreName =
+      dealershipStores.find((store) => store.id === dealershipStoreId)?.name ?? null;
+    const storeWorkflowConfig = resolveStoreWorkflowConfigFromStoreName(selectedStoreName);
+    const duplicateSourceFile = await repository.getSourceFileByHash(
+      requestDealershipId,
+      dealershipStoreId,
+      sourceType,
+      fileHash,
+    );
+    let unhealthyDuplicate:
+      | {
+          sourceFile: SourceFile;
+          health: SourceFileHealth;
+        }
+      | null = null;
+    if (duplicateSourceFile) {
+      const reusedTransactions = await repository.listBySourceFile(
         requestDealershipId,
-        dealershipStoreId,
-        sourceType,
-        fileHash,
+        duplicateSourceFile.id,
       );
-      if (duplicateSourceFile) {
+      const storeName =
+        dealershipStores.find((store) => store.id === duplicateSourceFile.dealership_store_id)
+          ?.name ?? null;
+      const duplicateHealth = assessSourceFileHealth(
+        duplicateSourceFile,
+        reusedTransactions.length,
+      );
+      if (!duplicateHealth.healthy) {
+        unhealthyDuplicate = { sourceFile: duplicateSourceFile, health: duplicateHealth };
+      } else {
         await repository.createIngestionEvent(requestDealershipId, {
           dealership_store_id: dealershipStoreId,
           source_file_id: duplicateSourceFile.id,
           reconciliation_run_id: null,
           source_type: sourceType,
-          state: "failed",
-          message: "Duplicate upload detected.",
-          metadata: { file_hash: fileHash, filename: duplicateSourceFile.original_filename },
+          state: "uploaded",
+          message: "Existing upload reused.",
+          metadata: {
+            file_hash: fileHash,
+            requested_filename: request.file.originalname ?? null,
+            existing_source_file_id: duplicateSourceFile.id,
+            existing_filename: duplicateSourceFile.original_filename,
+          },
         });
         await repository.createOperationalEvent(requestDealershipId, {
           dealership_store_id: dealershipStoreId,
@@ -650,240 +638,291 @@ export function createApp(
             file_hash: fileHash,
           },
         });
-        response.status(409).json({
-          detail: "Duplicate upload detected for this source type and file contents.",
+        const autoRun = await evaluateAutoRunAfterUpload(
+          repository,
+          requestDealershipId,
+          duplicateSourceFile,
+          uploadedByUserId,
+        );
+        response.json({
           source_file_id: duplicateSourceFile.id,
+          dealership_store_id: duplicateSourceFile.dealership_store_id,
+          store_name: storeName,
+          source_type: sourceType,
           filename: duplicateSourceFile.original_filename,
-        });
-        return;
-      }
-
-      const preprocessingResult = runUploadPreprocessing(
-        request.file.buffer,
-        sourceType,
-        request.file.originalname ?? null,
-      );
-      if (preprocessingResult.kind === "unsupported") {
-        await repository.createIngestionEvent(requestDealershipId, {
-          dealership_store_id: dealershipStoreId,
-          source_file_id: null,
-          reconciliation_run_id: null,
-          source_type: sourceType,
-          state: "failed",
-          message: preprocessingResult.detail,
-          metadata: {
-            file_hash: fileHash,
-            filename: request.file.originalname ?? null,
-            preprocessing: preprocessingResult.preprocessingMetadata,
+          transaction_count: reusedTransactions.length,
+          stored_row_count: duplicateSourceFile.row_count,
+          stored_validation_error_count: duplicateSourceFile.validation_error_count,
+          validation_errors: [],
+          automated_reconciliation_run_id: autoRun?.id ?? null,
+          reused_existing_file: true,
+          source_file_health: duplicateHealth,
+          warnings: warningsForReusedSourceFile(duplicateSourceFile),
+          existing_file: {
+            source_file_id: duplicateSourceFile.id,
+            filename: duplicateSourceFile.original_filename,
+            store_name: storeName,
+            source_type: duplicateSourceFile.source_type,
+            created_at: duplicateSourceFile.created_at,
           },
-        });
-        response.status(preprocessingResult.statusCode).json({
-          detail: preprocessingResult.detail,
-          preprocessing: preprocessingResult.preprocessingMetadata,
+          preprocessing: null,
         });
         return;
       }
-      const result = {
-        transactions: preprocessingResult.transactions,
-        validationErrors: preprocessingResult.validationErrors,
-      };
-      const importResult = await repository.createSourceFileWithTransactions(
-        requestDealershipId,
-        {
-          source_type: sourceType,
-          dealership_store_id: dealershipStoreId,
-          original_filename: request.file.originalname || "upload.csv",
-          stored_filename: null,
-          file_hash: fileHash,
-          row_count: result.transactions.length,
-          validation_error_count: result.validationErrors.length,
-        },
-        result.transactions,
-      );
-      await repository.createIngestionEvent(requestDealershipId, {
-        dealership_store_id: importResult.sourceFile.dealership_store_id,
-        source_file_id: importResult.sourceFile.id,
-        reconciliation_run_id: null,
-        source_type: sourceType,
-        state: "uploaded",
-        message: "File uploaded.",
-        metadata: { filename: importResult.sourceFile.original_filename, file_hash: fileHash },
-      });
-      await repository.createIngestionEvent(requestDealershipId, {
-        dealership_store_id: importResult.sourceFile.dealership_store_id,
-        source_file_id: importResult.sourceFile.id,
-        reconciliation_run_id: null,
-        source_type: sourceType,
-        state: result.validationErrors.length > 0 ? "validated" : "normalized",
-        message:
-          result.validationErrors.length > 0
-            ? "File validated with warnings."
-            : "File normalized successfully.",
-        metadata: {
-          transaction_count: result.transactions.length,
-          validation_error_count: result.validationErrors.length,
-          preprocessing: preprocessingResult.preprocessingMetadata,
-        },
-      });
-      const autoRun = await evaluateAutoRunAfterUpload(
-        repository,
-        requestDealershipId,
-        importResult.sourceFile,
-      );
 
-      response.json({
-        source_file_id: importResult.sourceFile.id,
-        dealership_store_id: importResult.sourceFile.dealership_store_id,
-        store_name: (await repository.listDealershipStores(requestDealershipId)).find(
-          (store) => store.id === importResult.sourceFile.dealership_store_id,
-        )?.name ?? null,
-        source_type: sourceType,
-        filename: importResult.sourceFile.original_filename,
-        transaction_count: importResult.transactions.length,
-        validation_errors: result.validationErrors,
-        automated_reconciliation_run_id: autoRun?.id ?? null,
-        preprocessing: preprocessingResult.preprocessingMetadata,
+      await repository.createOperationalEvent(requestDealershipId, {
+        dealership_store_id: dealershipStoreId,
+        reconciliation_run_id: null,
+        event_type: "duplicate_upload_warning",
+        severity: "warning",
+        message: "Duplicate upload matched an unhealthy existing source file; reprocessing with the current parser.",
+        metadata: {
+          source_type: sourceType,
+          source_file_id: duplicateSourceFile.id,
+          file_hash: fileHash,
+          health: duplicateHealth,
+        },
       });
-    } catch (error) {
-      const requestDealershipId = getRequestDealershipId(response);
-      const sourceType = isSourceType(request.body?.source_type) ? request.body.source_type : null;
+    }
+
+    const preprocessingResult = runUploadPreprocessing(
+      request.file.buffer,
+      sourceType,
+      request.file.originalname ?? null,
+      storeWorkflowConfig,
+    );
+    if (preprocessingResult.kind === "unsupported") {
       await repository.createIngestionEvent(requestDealershipId, {
-        dealership_store_id: null,
+        dealership_store_id: dealershipStoreId,
         source_file_id: null,
         reconciliation_run_id: null,
         source_type: sourceType,
         state: "failed",
-        message: error instanceof Error ? error.message : "Upload failed.",
-        metadata: {},
+        message: preprocessingResult.detail,
+        metadata: {
+          file_hash: fileHash,
+          filename: request.file.originalname ?? null,
+          preprocessing: preprocessingResult.preprocessingMetadata,
+        },
       });
-      next(error);
-    }
-  });
-
-  app.post("/reconcile", async (request, response, next) => {
-    try {
-      const body = (request.body ?? {}) as ReconciliationRequest;
-      const boaSourceFileId = parseSourceFileId(body.boa_source_file_id);
-      const dealertrackSourceFileId = parseSourceFileId(body.dealertrack_source_file_id);
-      const requestedStoreId = parseOptionalPositiveInteger(body.dealership_store_id);
-
-      if (boaSourceFileId === null) {
-        response.status(422).json({ detail: "boa_source_file_id is required." });
-        return;
-      }
-      if (dealertrackSourceFileId === null) {
-        response.status(422).json({ detail: "dealertrack_source_file_id is required." });
-        return;
-      }
-      if (requestedStoreId === false) {
-        response.status(422).json({ detail: "Invalid dealership_store_id." });
-        return;
-      }
-      if (!canWrite(getAuthenticatedUser(response))) {
-        response.status(403).json({ detail: "Read-only users cannot run reconciliation." });
-        return;
-      }
-
-      const [boaSourceFile, dealertrackSourceFile] = await Promise.all([
-        repository.getSourceFile(boaSourceFileId),
-        repository.getSourceFile(dealertrackSourceFileId),
-      ]);
-
-      const requestDealershipId = getRequestDealershipId(response);
-      if (!boaSourceFile || !dealertrackSourceFile) {
-        response.status(404).json({ detail: "Source file was not found." });
-        return;
-      }
-      if (
-        boaSourceFile.dealership_id !== requestDealershipId ||
-        dealertrackSourceFile.dealership_id !== requestDealershipId
-      ) {
-        response.status(403).json({ detail: "Source file belongs to another dealership." });
-        return;
-      }
-      const reconciliationStoreId = requestedStoreId ?? boaSourceFile.dealership_store_id;
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), reconciliationStoreId))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
-      if (
-        boaSourceFile.dealership_store_id !== dealertrackSourceFile.dealership_store_id ||
-        (reconciliationStoreId !== null &&
-          (boaSourceFile.dealership_store_id !== reconciliationStoreId ||
-            dealertrackSourceFile.dealership_store_id !== reconciliationStoreId))
-      ) {
-        response.status(400).json({
-          detail: "BOA and Dealertrack uploads must belong to the selected store.",
-        });
-        return;
-      }
-
-      if (
-        boaSourceFile.source_type !== "boa" ||
-        dealertrackSourceFile.source_type !== "dealertrack"
-      ) {
-        response.status(400).json({
-          detail:
-            "boa_source_file_id must reference a BOA upload and dealertrack_source_file_id must reference a Dealertrack upload.",
-        });
-        return;
-      }
-
-      const { run, result } = await createReconciliationRunFromSourceFiles({
-        repository,
-        dealershipId: requestDealershipId,
-        boaSourceFile,
-        dealertrackSourceFile,
-        automated: false,
-      });
-      logInfo("reconciliation_run_created", {
-        request_id: response.locals.requestId,
-        dealership_id: requestDealershipId,
-        reconciliation_run_id: run.id,
-        boa_source_file_id: boaSourceFileId,
-        dealertrack_source_file_id: dealertrackSourceFileId,
-        matched_count: run.matched_count,
-        exception_count: run.exception_count,
-        duplicate_count: run.duplicate_count,
-      });
-      await audit(response, "reconciliation_run_created", "reconciliation_run", run.id, null, {
-        boa_source_file_id: boaSourceFileId,
-        dealertrack_source_file_id: dealertrackSourceFileId,
-        matched_count: run.matched_count,
-        exception_count: run.exception_count,
-      });
-
-      response.json({
-        ...result,
-        reconciliation_run_id: run.id,
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get("/reconciliation-runs", async (_request, response, next) => {
-    try {
-      const dealershipStoreId = parseOptionalPositiveInteger(_request.query.store_id);
-      if (dealershipStoreId === false) {
-        response.status(422).json({ detail: "Invalid store_id." });
-        return;
-      }
-      const runs = await repository.listReconciliationRuns(getRequestDealershipId(response), {
-          ...(dealershipStoreId ? { dealershipStoreId } : {}),
-        });
-      response.json(
-        await filterByStoreAccess(
-          repository,
-          getAuthenticatedUser(response),
-          runs,
-          (run) => run.dealership_store_id,
-        ),
+      throw new ValidationError(
+        preprocessingResult.detail,
+        "UNSUPPORTED_FILE_FORMAT",
+        { preprocessing: preprocessingResult.preprocessingMetadata }
       );
-    } catch (error) {
-      next(error);
     }
-  });
+    const result = {
+      transactions: preprocessingResult.transactions,
+      validationErrors: preprocessingResult.validationErrors,
+    };
+    const sourceFileInput = {
+      source_type: sourceType,
+      dealership_store_id: dealershipStoreId,
+      original_filename: request.file.originalname || "upload.csv",
+      stored_filename: null,
+      file_hash: fileHash,
+      row_count: result.transactions.length,
+      validation_error_count: result.validationErrors.length,
+    };
+    const importResult = unhealthyDuplicate
+      ? await repository.replaceSourceFileWithTransactions(
+          requestDealershipId,
+          unhealthyDuplicate.sourceFile.id,
+          sourceFileInput,
+          result.transactions,
+          {
+            filename: request.file.originalname || "upload.csv",
+            content_type: request.file.mimetype || "application/octet-stream",
+            file_size: request.file.size,
+            content: request.file.buffer,
+          },
+        )
+      : await repository.createSourceFileWithTransactions(
+          requestDealershipId,
+          sourceFileInput,
+          result.transactions,
+          {
+            filename: request.file.originalname || "upload.csv",
+            content_type: request.file.mimetype || "application/octet-stream",
+            file_size: request.file.size,
+            content: request.file.buffer,
+          },
+        );
+    if (!importResult) {
+      throw new NotFoundError("Source file");
+    }
+    await repository.createIngestionEvent(requestDealershipId, {
+      dealership_store_id: importResult.sourceFile.dealership_store_id,
+      source_file_id: importResult.sourceFile.id,
+      reconciliation_run_id: null,
+      source_type: sourceType,
+      state: "uploaded",
+      message: unhealthyDuplicate ? "Unhealthy existing upload reprocessed." : "File uploaded.",
+      metadata: {
+        filename: importResult.sourceFile.original_filename,
+        file_hash: fileHash,
+        reused_existing_file: false,
+        previous_health: unhealthyDuplicate?.health ?? null,
+      },
+    });
+    await repository.createIngestionEvent(requestDealershipId, {
+      dealership_store_id: importResult.sourceFile.dealership_store_id,
+      source_file_id: importResult.sourceFile.id,
+      reconciliation_run_id: null,
+      source_type: sourceType,
+      state: result.validationErrors.length > 0 ? "validated" : "normalized",
+      message:
+        result.validationErrors.length > 0
+          ? "File validated with warnings."
+          : "File normalized successfully.",
+      metadata: {
+        transaction_count: result.transactions.length,
+        validation_error_count: result.validationErrors.length,
+        preprocessing: preprocessingResult.preprocessingMetadata,
+      },
+    });
+    const autoRun = await evaluateAutoRunAfterUpload(
+      repository,
+      requestDealershipId,
+      importResult.sourceFile,
+      uploadedByUserId,
+    );
+
+    response.json({
+      source_file_id: importResult.sourceFile.id,
+      dealership_store_id: importResult.sourceFile.dealership_store_id,
+      store_name: dealershipStores.find(
+        (store) => store.id === importResult.sourceFile.dealership_store_id,
+      )?.name ?? null,
+      source_type: sourceType,
+      filename: importResult.sourceFile.original_filename,
+      transaction_count: importResult.transactions.length,
+      stored_row_count: importResult.sourceFile.row_count,
+      stored_validation_error_count: importResult.sourceFile.validation_error_count,
+      validation_errors: result.validationErrors,
+      automated_reconciliation_run_id: autoRun?.id ?? null,
+      reused_existing_file: false,
+      source_file_health: assessSourceFileHealth(
+        importResult.sourceFile,
+        importResult.transactions.length,
+        unhealthyDuplicate ? "reprocessed" : undefined,
+      ),
+      warnings: unhealthyDuplicate
+        ? [
+            `Existing source file ${unhealthyDuplicate.sourceFile.id} was unhealthy and was reprocessed with the current parser.`,
+          ]
+        : [],
+      preprocessing: preprocessingResult.preprocessingMetadata,
+    });
+  }));
+
+  app.post("/reconcile", asyncHandler(async (request, response) => {
+    const body = (request.body ?? {}) as ReconciliationRequest;
+    const boaSourceFileId = parseSourceFileId(body.boa_source_file_id);
+    const dealertrackSourceFileId = parseSourceFileId(body.dealertrack_source_file_id);
+    const requestedStoreId = parseOptionalPositiveInteger(body.dealership_store_id);
+
+    if (boaSourceFileId === null) {
+      throw new ValidationError("boa_source_file_id is required.", "BOA_SOURCE_FILE_ID_REQUIRED");
+    }
+    if (dealertrackSourceFileId === null) {
+      throw new ValidationError("dealertrack_source_file_id is required.", "DEALERTRACK_SOURCE_FILE_ID_REQUIRED");
+    }
+    if (requestedStoreId === false) {
+      throw new ValidationError("Invalid dealership_store_id.", "INVALID_DEALERSHIP_STORE_ID");
+    }
+    if (!canWrite(getAuthenticatedUser(response))) {
+      throw new ForbiddenError("Read-only users cannot run reconciliation.", "READ_ONLY_USER");
+    }
+
+    const [boaSourceFile, dealertrackSourceFile] = await Promise.all([
+      repository.getSourceFile(boaSourceFileId),
+      repository.getSourceFile(dealertrackSourceFileId),
+    ]);
+
+    const requestDealershipId = getRequestDealershipId(response);
+    if (!boaSourceFile || !dealertrackSourceFile) {
+      throw new NotFoundError("Source file");
+    }
+    if (
+      boaSourceFile.dealership_id !== requestDealershipId ||
+      dealertrackSourceFile.dealership_id !== requestDealershipId
+    ) {
+      throw new ForbiddenError("Source file belongs to another dealership.", "DEALERSHIP_MISMATCH");
+    }
+    const reconciliationStoreId = requestedStoreId ?? boaSourceFile.dealership_store_id;
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), reconciliationStoreId))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+    }
+    if (
+      boaSourceFile.dealership_store_id !== dealertrackSourceFile.dealership_store_id ||
+      (reconciliationStoreId !== null &&
+        (boaSourceFile.dealership_store_id !== reconciliationStoreId ||
+          dealertrackSourceFile.dealership_store_id !== reconciliationStoreId))
+    ) {
+      throw new BadRequestError("BOA and Dealertrack uploads must belong to the selected store.");
+    }
+
+    if (
+      boaSourceFile.source_type !== "boa" ||
+      dealertrackSourceFile.source_type !== "dealertrack"
+    ) {
+      throw new BadRequestError(
+        "boa_source_file_id must reference a BOA upload and dealertrack_source_file_id must reference a Dealertrack upload."
+      );
+    }
+
+    const { run, result } = await createReconciliationRunFromSourceFiles({
+      repository,
+      dealershipId: requestDealershipId,
+      boaSourceFile,
+      dealertrackSourceFile,
+      automated: false,
+      uploadedByUserId: getAuthenticatedUser(response).id === 0
+        ? null
+        : getAuthenticatedUser(response).id,
+    });
+    logInfo("reconciliation_run_created", {
+      request_id: response.locals.requestId,
+      dealership_id: requestDealershipId,
+      reconciliation_run_id: run.id,
+      boa_source_file_id: boaSourceFileId,
+      dealertrack_source_file_id: dealertrackSourceFileId,
+      matched_count: run.matched_count,
+      exception_count: run.exception_count,
+      duplicate_count: run.duplicate_count,
+    });
+    await audit(response, "reconciliation_run_created", "reconciliation_run", run.id, null, {
+      boa_source_file_id: boaSourceFileId,
+      dealertrack_source_file_id: dealertrackSourceFileId,
+      matched_count: run.matched_count,
+      exception_count: run.exception_count,
+    });
+
+    response.json({
+      ...result,
+      reconciliation_run_id: run.id,
+    });
+  }));
+
+  app.get("/reconciliation-runs", asyncHandler(async (_request, response) => {
+    const dealershipStoreId = parseOptionalPositiveInteger(_request.query.store_id);
+    if (dealershipStoreId === false) {
+      throw new ValidationError("Invalid store_id.", "INVALID_STORE_ID");
+    }
+    await requireRequestedStoreAccess(repository, getAuthenticatedUser(response), dealershipStoreId);
+    const runs = await repository.listReconciliationRuns(getRequestDealershipId(response), {
+        ...(dealershipStoreId ? { dealershipStoreId } : {}),
+      });
+    response.json(
+      await filterByStoreAccess(
+        repository,
+        getAuthenticatedUser(response),
+        runs,
+        (run) => run.dealership_store_id,
+      ),
+    );
+  }));
 
   app.get("/reconciliation-runs/:id", async (request, response, next) => {
     try {
@@ -976,452 +1015,535 @@ export function createApp(
     }
   });
 
-  app.get("/reconciliation-runs/:id/snapshot", async (request, response, next) => {
-    try {
-      const reconciliationRunId = parsePositiveInteger(request.params.id);
-      if (reconciliationRunId === null) {
-        response.status(404).json({ detail: "Reconciliation run was not found." });
-        return;
-      }
-
-      const runDetail = await repository.getReconciliationRunDetail(
-        getRequestDealershipId(response),
-        reconciliationRunId,
-      );
-      if (!runDetail) {
-        const ownerDealershipId =
-          await repository.getReconciliationRunDealershipId(reconciliationRunId);
-        if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
-          response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
-          return;
-        }
-        response.status(404).json({ detail: "Reconciliation run was not found." });
-        return;
-      }
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), runDetail.dealership_store_id))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
-
-      const snapshot = await repository.getReconciliationRunSnapshot(
-        getRequestDealershipId(response),
-        reconciliationRunId,
-      );
-      if (!snapshot) {
-        response.status(404).json({ detail: "Reconciliation snapshot was not found." });
-        return;
-      }
-
-      response.json(snapshot);
-    } catch (error) {
-      next(error);
+  app.get("/reconciliation-runs/:id/snapshot", asyncHandler(async (request, response) => {
+    const reconciliationRunId = parsePositiveInteger(request.params.id);
+    if (reconciliationRunId === null) {
+      throw new NotFoundError("Reconciliation run");
     }
-  });
 
-  app.get("/reconciliation-runs/:id/replay", async (request, response, next) => {
-    try {
-      const reconciliationRunId = parsePositiveInteger(request.params.id);
-      if (reconciliationRunId === null) {
-        response.status(404).json({ detail: "Reconciliation run was not found." });
-        return;
+    const runDetail = await repository.getReconciliationRunDetail(
+      getRequestDealershipId(response),
+      reconciliationRunId,
+    );
+    if (!runDetail) {
+      const ownerDealershipId =
+        await repository.getReconciliationRunDealershipId(reconciliationRunId);
+      if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
+        throw new ForbiddenError("Reconciliation run belongs to another dealership.", "DEALERSHIP_MISMATCH");
       }
-
-      const runDetail = await repository.getReconciliationRunDetail(
-        getRequestDealershipId(response),
-        reconciliationRunId,
-      );
-      if (!runDetail) {
-        const ownerDealershipId =
-          await repository.getReconciliationRunDealershipId(reconciliationRunId);
-        if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
-          response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
-          return;
-        }
-        response.status(404).json({ detail: "Reconciliation run was not found." });
-        return;
-      }
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), runDetail.dealership_store_id))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
-
-      const replay = await buildReconciliationReplay(
-        repository,
-        getRequestDealershipId(response),
-        reconciliationRunId,
-      );
-      if (!replay) {
-        response.status(404).json({ detail: "Reconciliation snapshot was not found." });
-        return;
-      }
-      await audit(response, "reconciliation_replay", "reconciliation_run", reconciliationRunId, null, {
-        results_changed: replay.results_changed,
-        matched_count_delta: replay.matched_count_delta,
-        exception_count_delta: replay.exception_count_delta,
-      });
-
-      response.json(replay);
-    } catch (error) {
-      next(error);
+      throw new NotFoundError("Reconciliation run");
     }
-  });
-
-  app.get("/reconciliation-runs/:id/exceptions.csv", async (request, response, next) => {
-    try {
-      const reconciliationRunId = parsePositiveInteger(request.params.id);
-      if (reconciliationRunId === null) {
-        response.status(404).json({ detail: "Reconciliation run was not found." });
-        return;
-      }
-
-      const filters = parseReconciliationRunDetailFilters(request.query);
-      if (filters === false) {
-        response.status(422).json({ detail: "Invalid reconciliation run filter." });
-        return;
-      }
-
-      const detail = await repository.getReconciliationRunDetail(
-        getRequestDealershipId(response),
-        reconciliationRunId,
-        filters,
-      );
-      if (!detail) {
-        const ownerDealershipId =
-          await repository.getReconciliationRunDealershipId(reconciliationRunId);
-        if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
-          response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
-          return;
-        }
-        response.status(404).json({ detail: "Reconciliation run was not found." });
-        return;
-      }
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
-
-      response
-        .status(200)
-        .type("text/csv")
-        .setHeader(
-          "Content-Disposition",
-          `attachment; filename="reconciliation-run-${reconciliationRunId}-exceptions.csv"`,
-        )
-        .send(toExceptionsCsv(detail));
-    } catch (error) {
-      next(error);
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), runDetail.dealership_store_id))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
-  });
 
-  app.get("/reconciliation-runs/:id/hurst-fp-rec", async (request, response, next) => {
-    try {
-      const reconciliationRunId = parsePositiveInteger(request.params.id);
-      if (reconciliationRunId === null) {
-        response.status(404).json({ detail: "Reconciliation run was not found." });
-        return;
+    const snapshot = await repository.getReconciliationRunSnapshot(
+      getRequestDealershipId(response),
+      reconciliationRunId,
+    );
+    if (!snapshot) {
+      throw new NotFoundError("Reconciliation snapshot");
+    }
+
+    response.json(snapshot);
+  }));
+
+  app.get("/reconciliation-runs/:id/replay", asyncHandler(async (request, response) => {
+    const reconciliationRunId = parsePositiveInteger(request.params.id);
+    if (reconciliationRunId === null) {
+      throw new NotFoundError("Reconciliation run");
+    }
+
+    const runDetail = await repository.getReconciliationRunDetail(
+      getRequestDealershipId(response),
+      reconciliationRunId,
+    );
+    if (!runDetail) {
+      const ownerDealershipId =
+        await repository.getReconciliationRunDealershipId(reconciliationRunId);
+      if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
+        throw new ForbiddenError("Reconciliation run belongs to another dealership.", "DEALERSHIP_MISMATCH");
       }
+      throw new NotFoundError("Reconciliation run");
+    }
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), runDetail.dealership_store_id))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+    }
 
-      const detail = await repository.getReconciliationRunDetail(
+    const replay = await buildReconciliationReplay(
+      repository,
+      getRequestDealershipId(response),
+      reconciliationRunId,
+    );
+    if (!replay) {
+      throw new NotFoundError("Reconciliation snapshot");
+    }
+    await audit(response, "reconciliation_replay", "reconciliation_run", reconciliationRunId, null, {
+      results_changed: replay.results_changed,
+      matched_count_delta: replay.matched_count_delta,
+      exception_count_delta: replay.exception_count_delta,
+    });
+
+    response.json(replay);
+  }));
+
+  app.get("/reconciliation-runs/:id/artifacts", asyncHandler(async (request, response) => {
+    const reconciliationRunId = parsePositiveInteger(request.params.id);
+    if (reconciliationRunId === null) {
+      throw new NotFoundError("Reconciliation run");
+    }
+
+    const detail = await repository.getReconciliationRunDetail(
+      getRequestDealershipId(response),
+      reconciliationRunId,
+    );
+    if (!detail) {
+      const ownerDealershipId =
+        await repository.getReconciliationRunDealershipId(reconciliationRunId);
+      if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
+        throw new ForbiddenError("Reconciliation run belongs to another dealership.", "DEALERSHIP_MISMATCH");
+      }
+      throw new NotFoundError("Reconciliation run");
+    }
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+    }
+
+    response.json(
+      await repository.listReconciliationArtifacts(
         getRequestDealershipId(response),
         reconciliationRunId,
-      );
-      if (!detail) {
-        const ownerDealershipId =
-          await repository.getReconciliationRunDealershipId(reconciliationRunId);
-        if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
-          response.status(403).json({ detail: "Reconciliation run belongs to another dealership." });
-          return;
-        }
-        response.status(404).json({ detail: "Reconciliation run was not found." });
-        return;
-      }
-      if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
-        response.status(403).json({ detail: "Not authorized for this store." });
-        return;
-      }
+      ),
+    );
+  }));
 
-      const priors = await repository.listPriorUnresolvedExceptions(
-        getRequestDealershipId(response),
+  app.get("/artifacts/:artifactId/download", asyncHandler(async (request, response) => {
+    const artifactId = parsePositiveInteger(request.params.artifactId);
+    if (artifactId === null) {
+      throw new NotFoundError("Artifact");
+    }
+
+    const artifact = await repository.getReconciliationArtifact(
+      getRequestDealershipId(response),
+      artifactId,
+    );
+    if (!artifact) {
+      throw new NotFoundError("Artifact");
+    }
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), artifact.store_id))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+    }
+
+    await auditArtifactDownload(response, artifact);
+    sendArtifactDownload(response, artifact);
+  }));
+
+  app.get("/reconciliation-runs/:id/exceptions.csv", asyncHandler(async (request, response) => {
+    const reconciliationRunId = parsePositiveInteger(request.params.id);
+    if (reconciliationRunId === null) {
+      throw new NotFoundError("Reconciliation run");
+    }
+
+    const filters = parseReconciliationRunDetailFilters(request.query);
+    if (filters === false) {
+      throw new ValidationError("Invalid reconciliation run filter.", "INVALID_FILTER");
+    }
+
+    const detail = await repository.getReconciliationRunDetail(
+      getRequestDealershipId(response),
+      reconciliationRunId,
+      filters,
+    );
+    if (!detail) {
+      const ownerDealershipId =
+        await repository.getReconciliationRunDealershipId(reconciliationRunId);
+      if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
+        throw new ForbiddenError("Reconciliation run belongs to another dealership.", "DEALERSHIP_MISMATCH");
+      }
+      throw new NotFoundError("Reconciliation run");
+    }
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+    }
+
+    response
+      .status(200)
+      .type("text/csv")
+      .setHeader(
+        "Content-Disposition",
+        `attachment; filename="reconciliation-run-${reconciliationRunId}-exceptions.csv"`,
+      )
+      .send(toExceptionsCsv(detail));
+  }));
+
+  app.get("/reconciliation-runs/:id/merged-floorplan", asyncHandler(async (request, response) => {
+    const reconciliationRunId = parsePositiveInteger(request.params.id);
+    if (reconciliationRunId === null) {
+      throw new NotFoundError("Reconciliation run");
+    }
+
+    const detail = await repository.getReconciliationRunDetail(
+      getRequestDealershipId(response),
+      reconciliationRunId,
+    );
+    if (!detail) {
+      const ownerDealershipId =
+        await repository.getReconciliationRunDealershipId(reconciliationRunId);
+      if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
+        throw new ForbiddenError("Reconciliation run belongs to another dealership.", "DEALERSHIP_MISMATCH");
+      }
+      throw new NotFoundError("Reconciliation run");
+    }
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+    }
+
+    const storeKeyOverrideProvided = request.query.store_key !== undefined;
+    const storeKey = parseStoreKey(request.query.store_key);
+    if (storeKeyOverrideProvided && !storeKey) {
+      throw new ValidationError(
+        `store_key must be one of: ${STORE_KEYS.join(", ")}.`,
+        "INVALID_STORE_KEY",
+        { supported_store_keys: [...STORE_KEYS] },
+      );
+    }
+    const storeConfig = storeKey
+      ? getStoreWorkflowConfig(storeKey)
+      : resolveStoreWorkflowConfigFromStoreName(detail.store_name);
+    if (!storeConfig) {
+      throw new ValidationError(
+        "No store workflow config is configured for this reconciliation run.",
+        "STORE_WORKFLOW_CONFIG_NOT_FOUND",
         {
-          dealershipStoreId: detail.dealership_store_id,
-          excludeRunId: reconciliationRunId,
-          createdBefore: detail.created_at,
+          dealership_store_id: detail.dealership_store_id,
+          store_name: detail.store_name,
+          supported_store_keys: [...STORE_KEYS],
         },
       );
-      const enrichedDetail = applyCarryForwardToDetail(detail, priors);
-      const workbook = buildHurstFpRecWorkbook(enrichedDetail);
-      const format = typeof request.query.format === "string" ? request.query.format : "xls";
-      if (format === "json") {
-        response.json(workbook);
+    }
+    const format = typeof request.query.format === "string" ? request.query.format : "xls";
+    if (format !== "json" && !storeKeyOverrideProvided) {
+      const storedArtifact = await repository.findReconciliationArtifact(
+        getRequestDealershipId(response),
+        reconciliationRunId,
+        "MERGED_FLOORPLAN",
+      );
+      if (storedArtifact) {
+        await auditArtifactDownload(response, storedArtifact);
+        sendArtifactDownload(response, storedArtifact);
         return;
       }
-
-      response
-        .status(200)
-        .type("application/vnd.ms-excel")
-        .setHeader(
-          "Content-Disposition",
-          `attachment; filename="hurst-fp-rec-run-${reconciliationRunId}.xls"`,
-        )
-        .send(toHurstFpRecXlsHtml(workbook));
-    } catch (error) {
-      next(error);
     }
+
+    const artifact = buildMergedFloorplanArtifact(detail, storeConfig);
+    if (format === "json") {
+      response.json(artifact.workbook);
+      return;
+    }
+
+    await auditGeneratedArtifactDownload(response, {
+      reconciliationRunId,
+      artifactType: "MERGED_FLOORPLAN",
+      storeId: detail.dealership_store_id,
+      accountingMonth: null,
+      filename: artifact.filename,
+      contentType: artifact.contentType,
+      fileSize: Buffer.byteLength(artifact.html, "utf8"),
+    });
+    response
+      .status(200)
+      .type(artifact.contentType)
+      .setHeader(
+        "Content-Disposition",
+        `attachment; filename="${artifact.filename}"`,
+      )
+      .send(artifact.html);
+  }));
+
+  const fpRecExportHandler = asyncHandler(async (request, response) => {
+    const reconciliationRunId = parsePositiveInteger(request.params.id);
+    if (reconciliationRunId === null) {
+      throw new NotFoundError("Reconciliation run");
+    }
+
+    const detail = await repository.getReconciliationRunDetail(
+      getRequestDealershipId(response),
+      reconciliationRunId,
+    );
+    if (!detail) {
+      const ownerDealershipId =
+        await repository.getReconciliationRunDealershipId(reconciliationRunId);
+      if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
+        throw new ForbiddenError("Reconciliation run belongs to another dealership.", "DEALERSHIP_MISMATCH");
+      }
+      throw new NotFoundError("Reconciliation run");
+    }
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+    }
+
+    const storeKeyOverrideProvided = request.query.store_key !== undefined;
+    const storeKey = parseStoreKey(request.query.store_key);
+    if (storeKeyOverrideProvided && !storeKey) {
+      throw new ValidationError(
+        `store_key must be one of: ${STORE_KEYS.join(", ")}.`,
+        "INVALID_STORE_KEY",
+        { supported_store_keys: [...STORE_KEYS] },
+      );
+    }
+    const storeConfig = storeKey
+      ? getStoreWorkflowConfig(storeKey)
+      : resolveStoreWorkflowConfigFromStoreName(detail.store_name);
+    if (!storeConfig) {
+      throw new ValidationError(
+        "No store workflow config is configured for this reconciliation run.",
+        "STORE_WORKFLOW_CONFIG_NOT_FOUND",
+        {
+          dealership_store_id: detail.dealership_store_id,
+          store_name: detail.store_name,
+          supported_store_keys: [...STORE_KEYS],
+        },
+      );
+    }
+    const format = typeof request.query.format === "string" ? request.query.format : "xls";
+    if (format !== "json" && !storeKeyOverrideProvided) {
+      const storedArtifact = await repository.findReconciliationArtifact(
+        getRequestDealershipId(response),
+        reconciliationRunId,
+        "FP_REC",
+      );
+      if (storedArtifact) {
+        await auditArtifactDownload(response, storedArtifact);
+        sendArtifactDownload(response, storedArtifact);
+        return;
+      }
+    }
+
+    const workbook = buildHurstFpRecWorkbook(detail, storeConfig);
+    if (format === "json") {
+      response.json(workbook);
+      return;
+    }
+    const fpRecHtml = toHurstFpRecXlsHtml(workbook);
+    const fpRecFilename = toHurstFpRecFilename(workbook);
+
+    await auditGeneratedArtifactDownload(response, {
+      reconciliationRunId,
+      artifactType: "FP_REC",
+      storeId: detail.dealership_store_id,
+      accountingMonth: null,
+      filename: fpRecFilename,
+      contentType: "application/vnd.ms-excel",
+      fileSize: Buffer.byteLength(fpRecHtml, "utf8"),
+    });
+    response
+      .status(200)
+      .type("application/vnd.ms-excel")
+      .setHeader(
+        "Content-Disposition",
+        `attachment; filename="${fpRecFilename}"`,
+      )
+      .send(fpRecHtml);
   });
+
+  app.get("/reconciliation-runs/:id/fp-rec", fpRecExportHandler);
+  app.get("/reconciliation-runs/:id/hurst-fp-rec", fpRecExportHandler);
 
   app.patch(
     "/reconciliation-runs/:id/exceptions/:exception_id",
-    async (request, response, next) => {
-      try {
-        const reconciliationRunId = parsePositiveInteger(request.params.id);
-        const exceptionId = parsePositiveInteger(request.params.exception_id);
-        if (reconciliationRunId === null || exceptionId === null) {
-          response.status(404).json({ detail: "Reconciliation exception was not found." });
-          return;
-        }
-        if (!canWrite(getAuthenticatedUser(response))) {
-          response.status(403).json({ detail: "Read-only users cannot update review workflow." });
-          return;
-        }
+    asyncHandler(async (request, response) => {
+      const reconciliationRunId = parsePositiveInteger(request.params.id);
+      const exceptionId = parsePositiveInteger(request.params.exception_id);
+      if (reconciliationRunId === null || exceptionId === null) {
+        throw new NotFoundError("Reconciliation exception");
+      }
+      if (!canWrite(getAuthenticatedUser(response))) {
+        throw new ForbiddenError("Read-only users cannot update review workflow.", "READ_ONLY_USER");
+      }
 
-        const update = parseExceptionReviewUpdate(request.body);
-        if (update === false) {
-          response.status(422).json({ detail: "Invalid exception review update." });
-          return;
-        }
+      const update = parseExceptionReviewUpdate(request.body);
+      if (update === false) {
+        throw new ValidationError("Invalid exception review update.", "INVALID_EXCEPTION_REVIEW_UPDATE");
+      }
 
-        const previousDetail = await repository.getReconciliationRunDetail(
-          getRequestDealershipId(response),
-          reconciliationRunId,
-        );
-        const previousException = previousDetail?.exceptions.find(
-          (candidate) => candidate.exception_id === exceptionId,
-        ) ?? null;
-        if (
-          previousDetail &&
-          !(await canAccessStore(repository, getAuthenticatedUser(response), previousDetail.dealership_store_id))
-        ) {
-          response.status(403).json({ detail: "Not authorized for this store." });
-          return;
-        }
-        const exception = await repository.updateReconciliationExceptionReview(
-          getRequestDealershipId(response),
+      const previousDetail = await repository.getReconciliationRunDetail(
+        getRequestDealershipId(response),
+        reconciliationRunId,
+      );
+      const previousException = previousDetail?.exceptions.find(
+        (candidate) => candidate.exception_id === exceptionId,
+      ) ?? null;
+      if (
+        previousDetail &&
+        !(await canAccessStore(repository, getAuthenticatedUser(response), previousDetail.dealership_store_id))
+      ) {
+        throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+      }
+      const exception = await repository.updateReconciliationExceptionReview(
+        getRequestDealershipId(response),
+        reconciliationRunId,
+        exceptionId,
+        update,
+      );
+      if (!exception) {
+        const owner = await repository.getReconciliationExceptionDealershipId(
           reconciliationRunId,
           exceptionId,
-          update,
         );
-        if (!exception) {
-          const owner = await repository.getReconciliationExceptionDealershipId(
-            reconciliationRunId,
-            exceptionId,
-          );
-          if (owner !== null && owner !== getRequestDealershipId(response)) {
-            response
-              .status(403)
-              .json({ detail: "Reconciliation exception belongs to another dealership." });
-            return;
-          }
-          response.status(404).json({ detail: "Reconciliation exception was not found." });
-          return;
+        if (owner !== null && owner !== getRequestDealershipId(response)) {
+          throw new ForbiddenError("Reconciliation exception belongs to another dealership.", "DEALERSHIP_MISMATCH");
         }
-
-        await audit(
-          response,
-          "review_workflow_updated",
-          "reconciliation_exception",
-          exception.exception_id,
-          previousException,
-          exception,
-        );
-        response.json(exception);
-      } catch (error) {
-        next(error);
+        throw new NotFoundError("Reconciliation exception");
       }
-    },
+
+      await audit(
+        response,
+        "review_workflow_updated",
+        "reconciliation_exception",
+        exception.exception_id,
+        previousException,
+        exception,
+      );
+      response.json(exception);
+    }),
   );
 
   app.get(
     "/source-files/:sourceFileId/transactions",
-    async (request, response, next) => {
-      try {
-        const sourceFileId = parsePositiveInteger(request.params.sourceFileId);
-        if (sourceFileId === null) {
-          response.status(404).json({ detail: "Source file was not found." });
-          return;
-        }
-        const dealershipId = getRequestDealershipId(response);
-        const sourceFile = await repository.getSourceFile(sourceFileId);
-        if (!sourceFile || sourceFile.dealership_id !== dealershipId) {
-          response.status(404).json({ detail: "Source file was not found." });
-          return;
-        }
-        if (
-          !(await canAccessStore(
-            repository,
-            getAuthenticatedUser(response),
-            sourceFile.dealership_store_id,
-          ))
-        ) {
-          response.status(403).json({ detail: "Not authorized for this store." });
-          return;
-        }
-        const transactions = await repository.listBySourceFile(dealershipId, sourceFileId);
-        response.json(
-          transactions.map((transaction) => {
-            const lineage = readLineage(transaction.raw_data ?? {});
-            return {
-              id: transaction.id,
-              source_type: transaction.source_type,
-              source_file_id: transaction.source_file_id,
-              stock_number: transaction.stock_number,
-              vin: transaction.vin,
-              source_row_number: lineage?.source_row_number ?? null,
-              vin_provenance: lineage?.vin_provenance ?? null,
-            };
-          }),
-        );
-      } catch (error) {
-        next(error);
+    asyncHandler(async (request, response) => {
+      const sourceFileId = parsePositiveInteger(request.params.sourceFileId);
+      if (sourceFileId === null) {
+        throw new NotFoundError("Source file");
       }
-    },
+      const dealershipId = getRequestDealershipId(response);
+      const sourceFile = await repository.getSourceFile(sourceFileId);
+      if (!sourceFile || sourceFile.dealership_id !== dealershipId) {
+        throw new NotFoundError("Source file");
+      }
+      if (
+        !(await canAccessStore(
+          repository,
+          getAuthenticatedUser(response),
+          sourceFile.dealership_store_id,
+        ))
+      ) {
+        throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+      }
+      const transactions = await repository.listBySourceFile(dealershipId, sourceFileId);
+      response.json(
+        transactions.map((transaction) => {
+          const lineage = readLineage(transaction.raw_data ?? {});
+          return {
+            id: transaction.id,
+            source_type: transaction.source_type,
+            source_file_id: transaction.source_file_id,
+            stock_number: transaction.stock_number,
+            vin: transaction.vin,
+            source_row_number: lineage?.source_row_number ?? null,
+            vin_provenance: lineage?.vin_provenance ?? null,
+          };
+        }),
+      );
+    }),
   );
 
   app.post(
     "/transactions/:transactionId/vin-enrichment",
-    async (request, response, next) => {
-      try {
-        const transactionId = parsePositiveInteger(request.params.transactionId);
-        if (transactionId === null) {
-          response.status(404).json({ detail: "Transaction was not found." });
-          return;
-        }
-        if (!canWrite(getAuthenticatedUser(response))) {
-          response.status(403).json({ detail: "Read-only users cannot enrich VINs." });
-          return;
-        }
+    asyncHandler(async (request, response) => {
+      const transactionId = parsePositiveInteger(request.params.transactionId);
+      if (transactionId === null) {
+        throw new NotFoundError("Transaction");
+      }
+      if (!canWrite(getAuthenticatedUser(response))) {
+        throw new ForbiddenError("Read-only users cannot enrich VINs.", "READ_ONLY_USER");
+      }
 
-        const parsed = parseVinEnrichmentRequest(request.body);
-        if ("error" in parsed) {
-          response.status(422).json({ detail: vinEnrichmentErrorMessage(parsed.error) });
-          return;
-        }
+      const parsed = parseVinEnrichmentRequest(request.body);
+      if ("error" in parsed) {
+        throw new ValidationError(vinEnrichmentErrorMessage(parsed.error), "INVALID_VIN_ENRICHMENT_REQUEST");
+      }
 
-        const dealershipId = getRequestDealershipId(response);
-        const transaction = await repository.getTransactionById(dealershipId, transactionId);
-        if (!transaction) {
-          response.status(404).json({ detail: "Transaction was not found." });
-          return;
-        }
-        if (transaction.source_type !== "dealertrack") {
-          response.status(422).json({
-            detail: "Manual VIN enrichment is only supported for Dealertrack transactions.",
-          });
-          return;
-        }
-
-        const sourceFile = transaction.source_file_id
-          ? await repository.getSourceFile(transaction.source_file_id)
-          : null;
-        const storeId = sourceFile?.dealership_store_id ?? null;
-        if (!(await canAccessStore(repository, getAuthenticatedUser(response), storeId))) {
-          response.status(403).json({ detail: "Not authorized for this store." });
-          return;
-        }
-
-        const user = getAuthenticatedUser(response);
-        const enrichmentInput: ManualVinEnrichmentInput = {
-          vin: parsed.vin,
-          source: parsed.source,
-          enriched_by: user.email || `user:${user.id}`,
-          note: parsed.dms_reference
-            ? `${parsed.reason} dms_reference=${parsed.dms_reference}`
-            : parsed.reason,
-        };
-        const result = applyManualVinEnrichment(transaction, enrichmentInput);
-        if (!result.ok) {
-          if (result.reason === "no_change") {
-            response.status(409).json({
-              detail: "VIN is already set to the requested value.",
-            });
-            return;
-          }
-          response.status(422).json({ detail: "Invalid VIN." });
-          return;
-        }
-
-        const previousLineage = readLineage(transaction.raw_data ?? {});
-        const updated = await repository.updateTransactionVinAndRawData(
-          dealershipId,
-          transactionId,
-          { vin: result.vin, raw_data: result.raw_data },
+      const dealershipId = getRequestDealershipId(response);
+      const transaction = await repository.getTransactionById(dealershipId, transactionId);
+      if (!transaction) {
+        throw new NotFoundError("Transaction");
+      }
+      if (transaction.source_type !== "dealertrack") {
+        throw new ValidationError(
+          "Manual VIN enrichment is only supported for Dealertrack transactions.",
+          "UNSUPPORTED_SOURCE_TYPE"
         );
-        if (!updated) {
-          response.status(404).json({ detail: "Transaction was not found." });
-          return;
+      }
+
+      const sourceFile = transaction.source_file_id
+        ? await repository.getSourceFile(transaction.source_file_id)
+        : null;
+      const storeId = sourceFile?.dealership_store_id ?? null;
+      if (!(await canAccessStore(repository, getAuthenticatedUser(response), storeId))) {
+        throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+      }
+
+      const user = getAuthenticatedUser(response);
+      const enrichmentInput: ManualVinEnrichmentInput = {
+        vin: parsed.vin,
+        source: parsed.source,
+        enriched_by: user.email || `user:${user.id}`,
+        note: parsed.dms_reference
+          ? `${parsed.reason} dms_reference=${parsed.dms_reference}`
+          : parsed.reason,
+      };
+      const result = applyManualVinEnrichment(transaction, enrichmentInput);
+      if (!result.ok) {
+        if (result.reason === "no_change") {
+          throw new ConflictError("VIN is already set to the requested value.", "VIN_NO_CHANGE");
         }
+        throw new ValidationError("Invalid VIN.", "INVALID_VIN");
+      }
 
-        const auditEvent = await repository.createAuditEvent(dealershipId, {
-          actor_user_id: user.id === 0 ? null : user.id,
-          action_type: "vin_enrichment_applied",
-          entity_type: "transaction",
-          entity_id: String(transactionId),
-          previous_state: toAuditState({
-            vin: transaction.vin,
-            lineage_summary: summarizeLineage(previousLineage),
-          }),
-          new_state: toAuditState({
-            transaction_id: transactionId,
-            source_file_id: transaction.source_file_id,
-            dealership_store_id: storeId,
-            vin: result.vin,
-            vin6: result.vin6,
-            source: parsed.source,
-            reason: parsed.reason,
-            dms_reference: parsed.dms_reference,
-          }),
-        });
+      const previousLineage = readLineage(transaction.raw_data ?? {});
+      const updated = await repository.updateTransactionVinAndRawData(
+        dealershipId,
+        transactionId,
+        { vin: result.vin, raw_data: result.raw_data },
+      );
+      if (!updated) {
+        throw new NotFoundError("Transaction");
+      }
 
-        response.json({
-          transaction: updated,
-          enrichment_applied: true,
+      const auditEvent = await repository.createAuditEvent(dealershipId, {
+        actor_user_id: user.id === 0 ? null : user.id,
+        action_type: "vin_enrichment_applied",
+        entity_type: "transaction",
+        entity_id: String(transactionId),
+        previous_state: toAuditState({
+          vin: transaction.vin,
+          lineage_summary: summarizeLineage(previousLineage),
+        }),
+        new_state: toAuditState({
+          transaction_id: transactionId,
+          source_file_id: transaction.source_file_id,
+          dealership_store_id: storeId,
+          vin: result.vin,
           vin6: result.vin6,
           source: parsed.source,
-          audit_event_id: auditEvent?.id ?? null,
-          requires_rerun: true,
-        });
-      } catch (error) {
-        next(error);
-      }
-    },
+          reason: parsed.reason,
+          dms_reference: parsed.dms_reference,
+        }),
+      });
+
+      response.json({
+        transaction: updated,
+        enrichment_applied: true,
+        vin6: result.vin6,
+        source: parsed.source,
+        audit_event_id: auditEvent?.id ?? null,
+        requires_rerun: true,
+      });
+    }),
   );
 
-  app.use(
-    (
-      error: unknown,
-      _request: express.Request,
-      response: express.Response,
-      _next: express.NextFunction,
-    ) => {
-      if (error instanceof MulterError) {
-        const statusCode = error.code === "LIMIT_FILE_SIZE" ? 413 : 422;
-        response.status(statusCode).json({ detail: uploadErrorMessage(error) });
-        return;
-      }
-      if (error instanceof AppHttpError || error instanceof CsvNormalizationError) {
-        response.status(error.statusCode).json({ detail: error.message });
-        return;
-      }
-      if (error instanceof DuplicateSourceFileError) {
-        response.status(409).json({ detail: error.message });
-        return;
-      }
-      logError("request_failed", {
-        request_id: response.locals.requestId,
-        ...serializeError(error),
-      });
-      response.status(500).json({ detail: "Internal server error." });
-    },
-  );
+  // Centralized error handling middleware
+  app.use(errorHandler);
 
   return app;
 }
@@ -1441,7 +1563,8 @@ function requestLogger(
     logInfo("request_completed", {
       request_id: requestId,
       method: request.method,
-      path: request.originalUrl,
+      path: getLogPath(request),
+      query_keys: Object.keys(request.query).sort(),
       status_code: response.statusCode,
       duration_ms: Math.round(durationMs * 100) / 100,
     });
@@ -1492,12 +1615,127 @@ function getBearerToken(value: unknown): string | null {
   return scheme?.toLowerCase() === "bearer" && token ? token : null;
 }
 
+function getLogPath(request: express.Request): string {
+  if (typeof request.route?.path === "string") {
+    return request.route.path;
+  }
+  return sanitizeLogPath(request.path);
+}
+
+function sanitizeLogPath(path: string): string {
+  return path
+    .replace(/^\/accounts\/[^/]+$/, "/accounts/:account_identifier")
+    .replace(/^\/artifacts\/[^/]+\/download$/, "/artifacts/:artifactId/download")
+    .replace(
+      /^\/reconciliation-runs\/[^/]+(\/(?:analytics|snapshot|replay|artifacts|exceptions\.csv|merged-floorplan|fp-rec|hurst-fp-rec))?$/,
+      "/reconciliation-runs/:id$1",
+    )
+    .replace(
+      /^\/reconciliation-runs\/[^/]+\/exceptions\/[^/]+$/,
+      "/reconciliation-runs/:id/exceptions/:exception_id",
+    )
+    .replace(/^\/source-files\/[^/]+\/transactions$/, "/source-files/:sourceFileId/transactions")
+    .replace(/^\/transactions\/[^/]+\/vin-enrichment$/, "/transactions/:transactionId/vin-enrichment");
+}
+
+type LoginFailure = {
+  count: number;
+  firstFailedAt: number;
+};
+
+function getLoginThrottleKey(request: express.Request, email: string): string {
+  return `${request.ip ?? request.socket.remoteAddress ?? "unknown"}:${email.toLowerCase()}`;
+}
+
+function isLoginRateLimited(
+  failures: Map<string, LoginFailure>,
+  key: string,
+  now = Date.now(),
+): boolean {
+  const failure = failures.get(key);
+  if (!failure) {
+    return false;
+  }
+  if (now - failure.firstFailedAt >= LOGIN_FAILURE_WINDOW_MS) {
+    failures.delete(key);
+    return false;
+  }
+  return failure.count >= LOGIN_FAILURE_LIMIT;
+}
+
+function recordFailedLogin(
+  failures: Map<string, LoginFailure>,
+  key: string,
+  now = Date.now(),
+): void {
+  pruneExpiredLoginFailures(failures, now);
+  const failure = failures.get(key);
+  if (!failure || now - failure.firstFailedAt >= LOGIN_FAILURE_WINDOW_MS) {
+    failures.set(key, { count: 1, firstFailedAt: now });
+    pruneOldestLoginFailures(failures);
+    return;
+  }
+  failure.count += 1;
+  pruneOldestLoginFailures(failures);
+}
+
+function clearFailedLogin(failures: Map<string, LoginFailure>, key: string): void {
+  failures.delete(key);
+}
+
+function pruneExpiredLoginFailures(failures: Map<string, LoginFailure>, now: number): void {
+  for (const [key, failure] of failures) {
+    if (now - failure.firstFailedAt >= LOGIN_FAILURE_WINDOW_MS) {
+      failures.delete(key);
+    }
+  }
+}
+
+function pruneOldestLoginFailures(failures: Map<string, LoginFailure>): void {
+  while (failures.size > LOGIN_FAILURE_MAX_ENTRIES) {
+    const oldestKey = failures.keys().next().value as string | undefined;
+    if (!oldestKey) {
+      return;
+    }
+    failures.delete(oldestKey);
+  }
+}
+
 function getAuthenticatedUser(response: express.Response): AuthUser {
   return response.locals.user as AuthUser;
 }
 
 function getRequestDealershipId(response: express.Response): number {
   return getAuthenticatedUser(response).dealership_id;
+}
+
+async function requireRequestedStoreAccess(
+  repository: TransactionRepository,
+  user: AuthUser,
+  storeId: number | undefined,
+): Promise<void> {
+  if (storeId !== undefined && !(await canAccessStore(repository, user, storeId))) {
+    throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+  }
+}
+
+function sendArtifactDownload(
+  response: express.Response,
+  artifact: ReconciliationArtifact,
+): void {
+  response
+    .status(200)
+    .type(artifact.content_type)
+    .setHeader("Content-Length", String(artifact.file_size))
+    .setHeader(
+      "Content-Disposition",
+      `attachment; filename="${safeHeaderFilename(artifact.filename)}"`,
+    )
+    .send(artifact.content);
+}
+
+function safeHeaderFilename(filename: string): string {
+  return filename.replace(/[\r\n"]/g, "_");
 }
 
 function toPublicUser(user: AuthUser): AuthUser {
@@ -1531,6 +1769,45 @@ async function audit(
   });
 }
 
+async function auditArtifactDownload(
+  response: express.Response,
+  artifact: ReconciliationArtifact,
+): Promise<void> {
+  await audit(response, "artifact_downloaded", "reconciliation_artifact", artifact.id, null, {
+    reconciliation_run_id: artifact.reconciliation_run_id,
+    artifact_type: artifact.artifact_type,
+    dealership_store_id: artifact.store_id,
+    accounting_month: artifact.accounting_month,
+    filename: artifact.filename,
+    content_type: artifact.content_type,
+    file_size: artifact.file_size,
+  });
+}
+
+async function auditGeneratedArtifactDownload(
+  response: express.Response,
+  artifact: {
+    reconciliationRunId: number;
+    artifactType: ReconciliationArtifact["artifact_type"];
+    storeId: number | null;
+    accountingMonth: string | null;
+    filename: string;
+    contentType: string;
+    fileSize: number;
+  },
+): Promise<void> {
+  await audit(response, "artifact_downloaded", "reconciliation_artifact", null, null, {
+    reconciliation_run_id: artifact.reconciliationRunId,
+    artifact_type: artifact.artifactType,
+    dealership_store_id: artifact.storeId,
+    accounting_month: artifact.accountingMonth,
+    filename: artifact.filename,
+    content_type: artifact.contentType,
+    file_size: artifact.fileSize,
+    generated: true,
+  });
+}
+
 function toAuditState(value: unknown): Record<string, unknown> | null {
   if (value === null || value === undefined) {
     return null;
@@ -1558,12 +1835,59 @@ function createFileHash(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
-function uploadErrorMessage(error: MulterError): string {
-  if (error.code === "LIMIT_FILE_SIZE") {
-    return `CSV file exceeds the ${MAX_UPLOAD_BYTES} byte upload limit.`;
+type SourceFileHealthStatus = "healthy" | "unhealthy" | "reprocessed";
+
+type SourceFileHealth = {
+  status: SourceFileHealthStatus;
+  healthy: boolean;
+  reasons: string[];
+  transaction_count: number;
+  row_count: number;
+  validation_error_count: number;
+};
+
+function assessSourceFileHealth(
+  sourceFile: Pick<SourceFile, "row_count" | "validation_error_count">,
+  transactionCount: number,
+  statusOverride?: SourceFileHealthStatus,
+): SourceFileHealth {
+  const reasons: string[] = [];
+  if (transactionCount <= 0) {
+    reasons.push("no_persisted_transactions");
   }
-  return error.message;
+  if (sourceFile.row_count <= 0) {
+    reasons.push("stored_row_count_zero");
+  }
+  const attemptedRows = sourceFile.row_count + sourceFile.validation_error_count;
+  if (attemptedRows > 0 && sourceFile.validation_error_count >= attemptedRows) {
+    reasons.push("validation_errors_indicate_total_parser_failure");
+  }
+
+  const healthy = reasons.length === 0;
+  return {
+    status: statusOverride ?? (healthy ? "healthy" : "unhealthy"),
+    healthy,
+    reasons,
+    transaction_count: transactionCount,
+    row_count: sourceFile.row_count,
+    validation_error_count: sourceFile.validation_error_count,
+  };
 }
+
+function warningsForReusedSourceFile(
+  sourceFile: Pick<SourceFile, "validation_error_count">,
+): string[] {
+  if (sourceFile.validation_error_count <= 0) {
+    return [];
+  }
+  return [
+    `Existing upload was reused with ${sourceFile.validation_error_count} stored validation error${
+      sourceFile.validation_error_count === 1 ? "" : "s"
+    }. Detailed row-level validation errors are not stored for reused uploads.`,
+  ];
+}
+
+// uploadErrorMessage function removed - now handled in errorHandler middleware
 
 function vinEnrichmentErrorMessage(
   error: "invalid_vin" | "invalid_source" | "missing_reason" | "invalid_body" | "invalid_dms_reference",
@@ -1596,14 +1920,6 @@ function summarizeLineage(lineage: RawDataLineage | null): Record<string, unknow
   };
 }
 
-class AppHttpError extends Error {
-  constructor(
-    message: string,
-    readonly statusCode: number,
-  ) {
-    super(message);
-  }
-}
 
 /** A single row that was removed during preprocessing — surfaced for audit. */
 type RemovedRow = {
@@ -1687,8 +2003,18 @@ function runUploadPreprocessing(
   buffer: Buffer,
   sourceType: import("./domain/types.js").SourceType,
   originalFilename: string | null,
+  storeWorkflowConfig?: StoreWorkflowConfig | null,
 ): UploadPreprocessingResult {
-  const decision = preprocessUpload(buffer, sourceType, originalFilename);
+  const decision = preprocessUpload(buffer, sourceType, originalFilename, {
+    dealertrack: storeWorkflowConfig
+      ? {
+          amountColumns: storeWorkflowConfig.dealertrackAmountColumns,
+          accountColumn: storeWorkflowConfig.dealertrackAccountColumn,
+          accountLabel: storeWorkflowConfig.dealertrackAccountLabel,
+          excludedAccountColumns: storeWorkflowConfig.dealertrackExcludedAccountColumns,
+        }
+      : undefined,
+  });
   if (decision.kind === "preprocessed") {
     const { output } = decision;
     return {

@@ -12,8 +12,8 @@ export function VinPresenceDiagnosticsPanel({
   return (
     <div className="grid gap-3">
       <div>
-        <h3 className="text-base font-semibold text-slate-950">VIN Presence Diagnostics</h3>
-        <p className="mt-1 text-sm text-slate-600">
+        <h3 className="text-sm font-semibold text-slate-950">VIN Presence Diagnostics</h3>
+        <p className="forge-copy mt-1">
           VIN presence checks compare extracted VINs only, before transaction matching rules are applied.
         </p>
       </div>
@@ -41,27 +41,27 @@ export function VinPresenceDiagnosticsPanel({
 
 function DiagnosticMetric({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
+    <div className="forge-metric">
       <p className="text-sm font-medium text-slate-600">{label}</p>
-      <p className="mt-1 text-2xl font-semibold text-slate-950">{value}</p>
+      <p className="forge-metric-value">{value}</p>
     </div>
   );
 }
 
 function VinListDisclosure({ label, vins }: { label: string; vins: string[] }) {
   return (
-    <details className="rounded-md border border-slate-200 bg-white">
-      <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-950">
+    <details className="forge-panel">
+      <summary className="forge-summary px-3 py-2 text-slate-950">
         {label} ({vins.length})
       </summary>
-      <div className="border-t border-slate-200 px-4 py-3">
+      <div className="border-t border-slate-200 px-3 py-3">
         {vins.length === 0 ? (
-          <p className="text-sm text-slate-600">None</p>
+          <p className="forge-copy">None</p>
         ) : (
           <div className="flex flex-wrap gap-2">
             {vins.map((vin) => (
               <span
-                className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 font-mono text-xs text-slate-800"
+                className="rounded-sm border border-slate-200 bg-slate-50 px-2.5 py-1 font-mono text-xs text-slate-800"
                 key={vin}
               >
                 {vin}
@@ -80,35 +80,35 @@ function SharedUnmatchedDisclosure({
   entries: VinPresenceTransactionUnmatchedEntry[];
 }) {
   return (
-    <details className="rounded-md border border-slate-200 bg-white">
-      <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-950">
+    <details className="forge-panel">
+      <summary className="forge-summary px-3 py-2 text-slate-950">
         VINs found in both systems but not transaction-matched ({entries.length})
       </summary>
       <div className="border-t border-slate-200">
         {entries.length === 0 ? (
-          <p className="px-4 py-3 text-sm text-slate-600">None</p>
+          <p className="forge-copy px-3 py-3">None</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-              <thead className="bg-slate-50 text-slate-600">
+            <table className="forge-table">
+              <thead>
                 <tr>
-                  <th className="px-3 py-2 font-semibold">VIN</th>
-                  <th className="px-3 py-2 font-semibold">Likely reason</th>
-                  <th className="px-3 py-2 font-semibold">BOA ids</th>
-                  <th className="px-3 py-2 font-semibold">Dealertrack ids</th>
+                  <th>VIN</th>
+                  <th>Likely reason</th>
+                  <th>BOA ids</th>
+                  <th>Dealertrack ids</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200 bg-white">
+              <tbody>
                 {entries.map((entry) => (
                   <tr key={entry.vin}>
-                    <td className="px-3 py-2 font-mono text-xs text-slate-800">{entry.vin}</td>
-                    <td className="px-3 py-2 text-slate-700">
+                    <td className="font-mono text-xs text-slate-800">{entry.vin}</td>
+                    <td className="text-slate-700">
                       {formatDiagnosticReason(entry.likely_reason)}
                     </td>
-                    <td className="px-3 py-2 text-slate-700">
+                    <td className="text-slate-700">
                       {formatIds(entry.unmatched_boa_transaction_ids, entry.boa_transaction_ids)}
                     </td>
-                    <td className="px-3 py-2 text-slate-700">
+                    <td className="text-slate-700">
                       {formatIds(
                         entry.unmatched_dealertrack_transaction_ids,
                         entry.dealertrack_transaction_ids,

@@ -16,6 +16,7 @@ import {
   reconcileTransactionSets,
 } from "./reconciliationEngine.js";
 import { TRANSACTION_NORMALIZER_VERSION } from "./transactionNormalizer.js";
+import { persistReconciliationRunArtifacts } from "./reconciliationArtifacts.js";
 
 const expectedFloorplanSourceTypes: SourceType[] = ["boa", "dealertrack"];
 const staleReconciliationMs = 7 * 24 * 60 * 60 * 1000;
@@ -34,12 +35,14 @@ export async function createReconciliationRunFromSourceFiles({
   boaSourceFile,
   dealertrackSourceFile,
   automated,
+  uploadedByUserId = null,
 }: {
   repository: TransactionRepository;
   dealershipId: number;
   boaSourceFile: SourceFile;
   dealertrackSourceFile: SourceFile;
   automated: boolean;
+  uploadedByUserId?: number | null;
 }): Promise<{ run: ReconciliationRun; result: ReconciliationResponse; duration_ms: number }> {
   const startedAt = Date.now();
   const [boaTransactions, dealertrackTransactions] = await Promise.all([
@@ -58,7 +61,7 @@ export async function createReconciliationRunFromSourceFiles({
     boa_source_file_id: boaSourceFile.id,
     dealertrack_source_file_id: dealertrackSourceFile.id,
     result,
-    status: automated ? "completed_auto" : "completed",
+    status: "artifact_pending",
     input_snapshot: {
       engine_version: RECONCILIATION_ENGINE_VERSION,
       inputs: [
@@ -89,10 +92,31 @@ export async function createReconciliationRunFromSourceFiles({
       ],
     },
   });
+  let completedRun: ReconciliationRun;
+  try {
+    await persistReconciliationRunArtifacts({
+      repository,
+      dealershipId,
+      run,
+      boaSourceFile,
+      dealertrackSourceFile,
+      boaTransactions,
+      dealertrackTransactions,
+      uploadedByUserId,
+    });
+    completedRun = await repository.updateReconciliationRunStatus(
+      dealershipId,
+      run.id,
+      automated ? "completed_auto" : "completed",
+    ) ?? { ...run, status: automated ? "completed_auto" : "completed" };
+  } catch (error) {
+    await repository.updateReconciliationRunStatus(dealershipId, run.id, "artifact_failed");
+    throw error;
+  }
   await repository.createIngestionEvent(dealershipId, {
     dealership_store_id: boaSourceFile.dealership_store_id,
     source_file_id: null,
-    reconciliation_run_id: run.id,
+    reconciliation_run_id: completedRun.id,
     source_type: null,
     state: "reconciled",
     message: automated ? "Automated reconciliation completed." : "Manual reconciliation completed.",
@@ -102,7 +126,7 @@ export async function createReconciliationRunFromSourceFiles({
     dealershipId,
     reconciliationCompletedEvent(
       boaSourceFile.dealership_store_id,
-      run.id,
+      completedRun.id,
       result.exception_count,
       Date.now() - startedAt,
       automated,
@@ -112,20 +136,21 @@ export async function createReconciliationRunFromSourceFiles({
   if (result.exception_count >= 10) {
     await repository.createOperationalEvent(dealershipId, {
       dealership_store_id: boaSourceFile.dealership_store_id,
-      reconciliation_run_id: run.id,
+      reconciliation_run_id: completedRun.id,
       event_type: "new_unresolved_exception_spike",
       severity: "warning",
       message: `Reconciliation created ${result.exception_count} unresolved exceptions.`,
       metadata: { exception_count: result.exception_count },
     });
   }
-  return { run, result, duration_ms: Date.now() - startedAt };
+  return { run: completedRun, result, duration_ms: Date.now() - startedAt };
 }
 
 export async function evaluateAutoRunAfterUpload(
   repository: TransactionRepository,
   dealershipId: number,
   sourceFile: SourceFile,
+  uploadedByUserId: number | null = null,
 ): Promise<ReconciliationRun | null> {
   const jobs = await repository.listScheduledReconciliationJobs(
     dealershipId,
@@ -175,6 +200,7 @@ export async function evaluateAutoRunAfterUpload(
     boaSourceFile,
     dealertrackSourceFile,
     automated: true,
+    uploadedByUserId,
   });
   for (const job of jobs.filter((job) => job.enabled && job.auto_run_on_pair)) {
     await repository.updateScheduledReconciliationJob(dealershipId, job.id, {

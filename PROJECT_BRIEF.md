@@ -1,299 +1,100 @@
-# Dealer Group Accounting Automation Project
+# Dealer-Recon Project Brief
 
-## Current Product Thesis
+## Current V1 Goal
 
-Build a reconciliation and close automation platform for auto dealer groups using Dealertrack and related systems.
+Dealer-Recon v1 is a single-store Hurst Mazda FP REC pilot.
 
-The first wedge is accounting/data processing, not service/BDC.
+The product goal is to automate the clerk's monthly four-step workflow from BOA and Dealertrack source files to the final Hurst FP REC export. The FP REC export is the output of record.
 
-Validated CFO pain areas:
-1. Month-end reconciliations/reporting
-2. OEM receivables and statement reconciliation
-3. Manual data entry between DMS, lender, bank, and OEM systems
+Canonical workflow:
 
-Validated statement:
-Dealertrack-based dealerships lose time and accuracy on daily bank reconciliation and month-end close because cash activity must be manually matched across DMS, bank, and GL systems.
+1. Upload BOA and Dealertrack source files.
+2. Clean and normalize inputs, including removed-row audit and VIN6 extraction.
+3. Run reconciliation and review exceptions.
+4. Generate and store the Hurst FP REC export.
 
-Answer from CFO: true.
+The canonical workflow lives in [docs/product/fp-rec-four-step-workflow.md](docs/product/fp-rec-four-step-workflow.md).
 
-## Target Customer
+## Users
 
-Multi-rooftop auto dealer groups.
+Primary v1 user:
 
-Initial buyer:
-- CFO
+- Hurst Mazda accounting clerk or controller responsible for monthly floorplan reconciliation.
 
-Workflow users:
-- Corporate controller
-- Store controller
-- Accounting manager
-- AP/AR staff
-- OEM receivables/warranty admin
+Secondary review audience:
 
-## Product Direction
+- Engineering reviewer validating upload, parsing, reconciliation, artifact storage, and export generation behavior.
+- Accounting stakeholder validating FP REC fidelity against the accepted clerk workbook.
 
-Do not build generic AI accounting software.
+## V1 Scope
 
-Build a dealership-specific reconciliation layer that ingests data from:
-- Dealertrack/DMS exports
-- Bank exports
-- OEM statements
-- Lender/funding reports
-- GL/accounting reports
-- Spreadsheets
+In scope for v1:
 
-Core function:
-Turn manual reconciliation into exception review.
+- Hurst Mazda only.
+- One accounting month per reconciliation run.
+- One BOA source file and one Dealertrack source file per run.
+- Deterministic BOA and Dealertrack cleaning.
+- Removed-row diagnostics for preprocessing review.
+- VIN6 extraction from BOA VIN and Dealertrack description.
+- Reconciliation using VIN6 plus exact absolute amount equality.
+- Exception review for source-side rows and VIN6 amount mismatches.
+- Hurst FP REC export generation.
+- Stored raw, cleaned, merged, and FP REC artifacts.
 
-## MVP Scope
+## V1 Non-Goals
 
-### MVP 1: Daily Bank/Cash Reconciliation
+These are future scope, not current v1 behavior:
 
-Inputs:
-- Bank transaction CSV
-- Dealertrack/DMS cash receipt export CSV
-- GL/accounting export CSV
+- Multi-store production support.
+- Consolidated multi-store exports.
+- Generic reconciliation SaaS positioning.
+- Full GL, bank, OEM, lender, or accounting-platform expansion.
+- Dashboard analytics, trend deltas, reviewer workload, productivity metrics, and automated close reporting.
+- Direct integrations with Dealertrack, BOA, GL systems, or OEM portals.
 
-Outputs:
-- Auto-matched transactions
-- Unmatched bank transactions
-- Unmatched DMS/GL transactions
-- Amount/date/reference discrepancies
-- Exception report
-- Reconciliation summary
-
-### MVP 2: Month-End Close Support
-
-Inputs:
-- Month-end GL balances
-- supporting schedules
-- reconciliation exports
-
-Outputs:
-- close checklist
-- unresolved exception queue
-- account-level reconciliation status
-- exportable month-end report
-
-### MVP 3: OEM Receivables Reconciliation
-
-Inputs:
-- OEM statement export
-- expected receivables/internal schedule
-- payment deposits
-
-Outputs:
-- matched payments
-- missing payments
-- underpayments
-- duplicate payments
-- timing differences
-
-## Initial Technical Strategy
-
-Start with CSV/manual upload.
-
-Do not integrate directly with Dealertrack on day one.
-
-Reason:
-- Faster validation
-- Lower integration friction
-- Real accounting teams already export reports
-- Easier to demo
-
-Later:
-- API integrations
-- secure SFTP ingestion
-- scheduled imports
-- bank feed integrations
-- OEM portal extraction
-
-## Suggested Stack
-
-The initial brief suggested a Python/FastAPI/SQLAlchemy backend. The prototype
-was built and is maintained on a TypeScript/Express/`node-pg-migrate` backend
-instead; see the root README for the implemented stack. The original
-suggestion is kept here for historical context only.
-
-Backend (implemented):
-- TypeScript
-- Node.js / Express
-- PostgreSQL
-- `node-pg-migrate`
-
-Frontend:
-- React
-- Tailwind
-- simple dashboard
-
-Auth:
-- Clerk or Supabase Auth
-
-Storage:
-- S3-compatible file storage later
-- local storage for prototype
-
-Deployment:
-- Docker
-- Render/Fly.io/Railway initially
-
-## Core Data Models
-
-### SourceFile
-- id
-- filename
-- source_type: bank, dms, gl, oem, lender
-- uploaded_at
-- parsed_status
-
-### Transaction
-- id
-- source_file_id
-- source_type
-- transaction_date
-- post_date
-- amount
-- reference_number
-- description
-- account
-- store_id
-- raw_data
-
-### MatchGroup
-- id
-- match_status: matched, partial, exception
-- confidence_score
-- created_at
-
-### MatchItem
-- id
-- match_group_id
-- transaction_id
-
-### Exception
-- id
-- exception_type
-- severity
-- description
-- suggested_action
-- status
-- assigned_to
-- created_at
-- resolved_at
-
-## Matching Logic V1
-
-Match transactions using:
-1. exact amount + exact date
-2. exact amount + date within tolerance
-3. reference/check/deposit number match
-4. description similarity
-5. grouped deposit matching
-6. confidence scoring
-
-Exception types:
-- missing_in_bank
-- missing_in_dms
-- missing_in_gl
-- amount_mismatch
-- date_mismatch
-- duplicate_transaction
-- possible_grouped_deposit
-- unresolved
-
-## First Engineering Tasks for Codex
-
-1. Create repo scaffold:
-   - TypeScript/Express backend (originally proposed as FastAPI; see Suggested Stack)
-   - React frontend
-   - Docker compose
-   - PostgreSQL service
-
-2. Build CSV upload endpoint:
-   - upload source file
-   - classify source type
-   - parse into normalized transactions table
-
-3. Build reconciliation engine:
-   - compare bank transactions against DMS/GL transactions
-   - return matched/unmatched/exception groups
-
-4. Build exception dashboard:
-   - upload files
-   - view reconciliation summary
-   - view exception queue
-   - filter by source, amount, date, status
-
-5. Add sample data:
-   - bank_transactions_sample.csv
-   - dealertrack_cash_receipts_sample.csv
-   - gl_activity_sample.csv
-   - oem_statement_sample.csv
-
-6. Add README:
-   - product purpose
-   - setup instructions
-   - sample workflow
-
-## Product Principle
-
-The user should not manually reconcile every line.
-
-The user should only review exceptions.
-
-## Current Discovery Status
-
-Known:
-- CFO validated pain in month-end close, OEM receivables, and manual data entry.
-- Dealer group uses Dealertrack and VinSolutions.
-- VinSolutions is not central to phase 1.
-- Dealertrack/DMS, bank, OEM, lender, and GL data fragmentation is central.
-
-Unknown:
-- Which exact account reconciliation consumes the most time
-- Whether daily cash, OEM receivables, or month-end close is the best first wedge
-- What file formats they can export from Dealertrack
-- Whether their accounting GL is fully inside Dealertrack or another system
-- Volume of transactions per store/month
-- Current spreadsheet process
-- Current close timeline
-- Current exception categories
-
-## Next Discovery Questions
-
-Ask the CFO/controller:
-
-1. Which reconciliation consumes the most manual effort today?
-   - daily cash/bank
-   - OEM receivables
-   - lender funding/CIT
-   - warranty receivables
-   - another area
-
-2. What reports are exported today from Dealertrack, bank portals, OEM portals, and GL?
-
-3. Can we review anonymized sample exports?
-
-4. What does the current reconciliation spreadsheet look like?
-
-5. How many stores are involved?
-
-6. How many hours per month are spent on this?
-
-7. What causes the most exceptions?
-
-8. What does “done” mean during month-end close?
-
-## Do Not Build Yet
-
-Do not build:
-- chatbot
-- generic AP automation
-- broad AI dealership assistant
-- VinSolutions CRM integration
-- direct Dealertrack integration before validating export-based workflow
-
-Build first:
-- upload-based reconciliation prototype
-- exception detection
-- month-end reporting dashboard
+Historical docs and code may mention these ideas. They should not be used as v1 acceptance criteria.
+
+## Product Boundaries
+
+The dashboard should help the clerk complete the workflow. It should not redefine the product around metrics or generic analytics.
+
+The v1 success condition is simple: a Hurst Mazda user can upload the monthly BOA and Dealertrack files, review the resulting exceptions, and download a stored Hurst FP REC export that preserves the expected row classifications and totals.
+
+## Reconciliation Rules
+
+- Confirmed match: BOA VIN6 equals Dealertrack VIN6 and `abs(BOA amount) == abs(Dealertrack amount)` in cents.
+- Matched rows are excluded from exception sections.
+- BOA-only row: appears as `On statement-not on GL`.
+- Dealertrack-only row: appears as `On schedule-not on statement`.
+- VIN6 amount mismatch: never merge into one row. Emit reviewable BOA-side and Dealertrack-side exception lines.
+- Non-zero variance is allowed when exceptions exist.
+
+See [docs/implementation/exception-taxonomy.md](docs/implementation/exception-taxonomy.md).
+
+## Artifacts
+
+Each completed run should retain:
+
+- Raw BOA upload.
+- Raw Dealertrack upload.
+- Cleaned BOA CSV.
+- Cleaned Dealertrack CSV.
+- Merged Floorplan workbook.
+- Hurst FP REC workbook.
+
+Artifact behavior is documented in [docs/implementation/reconciliation-artifacts.md](docs/implementation/reconciliation-artifacts.md).
+
+## Review Readiness
+
+Security and code review should trace risks through:
+
+- File upload limits, MIME/extension filtering, duplicate detection, and store authorization.
+- Source-specific parsing and unsupported format handling.
+- Preprocessing diagnostics and removed-row audit.
+- Reconciliation rules and exception taxonomy.
+- Artifact persistence and access-controlled download.
+- FP REC export generation from reconciled run data.
+
+## Future Scope
+
+Future work may include more stores, broader accounting workflows, richer review states, direct integrations, object storage, formal retention policy, and analytics. Those items require their own source artifacts, acceptance criteria, and review plan before they become product scope.

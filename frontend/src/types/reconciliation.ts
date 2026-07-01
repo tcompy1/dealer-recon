@@ -181,36 +181,20 @@ export type ReconciliationRunMetrics = {
   total_matched_transactions: number;
   total_exception_count: number;
   unresolved_count: number;
-  match_rate_percent: number;
   category_distribution: Partial<Record<ReconciliationExceptionCategory, number>>;
-  average_time_to_resolution_hours: number | null;
 };
 
 export type ReconciliationRunComparison = {
   current_run_id: number;
   previous_run_id: number | null;
-  newly_resolved_exception_ids: number[];
   newly_created_exception_ids: number[];
   recurring_exception_ids: number[];
-  category_delta_summary: Array<{
+  category_summary: Array<{
     exception_category: ReconciliationExceptionCategory;
     current_count: number;
-    previous_count: number;
-    delta: number;
-  }>;
-  reviewer_workload_trends: Array<{
-    reviewer: string;
-    current_count: number;
-    previous_count: number;
-    delta: number;
   }>;
   run_comparison_summary: {
     current: ReconciliationRunMetrics;
-    previous: ReconciliationRunMetrics | null;
-    matched_count_delta: number | null;
-    unresolved_count_delta: number | null;
-    match_rate_delta_percent: number | null;
-    newly_resolved_count: number;
     newly_created_count: number;
     recurring_count: number;
   };
@@ -251,6 +235,28 @@ export type ReconciliationRunFilters = {
   reviewStatus?: ReconciliationExceptionReviewStatus | "";
   assignedTo?: string;
   search?: string;
+};
+
+export type ReconciliationArtifactType =
+  | "RAW_BOA"
+  | "RAW_DEALERTRACK"
+  | "CLEANED_BOA"
+  | "CLEANED_DEALERTRACK"
+  | "MERGED_FLOORPLAN"
+  | "FP_REC";
+
+export type ReconciliationArtifact = {
+  id: number;
+  reconciliation_run_id: number;
+  dealership_id: number;
+  store_id: number | null;
+  accounting_month: string;
+  uploaded_by: number | null;
+  artifact_type: ReconciliationArtifactType;
+  filename: string;
+  file_size: number;
+  content_type: string;
+  created_at: string;
 };
 
 export type ReconciliationExceptionStatus = "unresolved" | "ignored" | "resolved";

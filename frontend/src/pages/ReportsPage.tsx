@@ -1,14 +1,17 @@
 import { useMemo, useState } from "react";
 
 import { getMonthEndReport, getMonthEndReportCsvUrl } from "../api/reports";
+import type { CurrentUser } from "../types/auth";
 import type { MonthEndReport, MonthEndReportAccount } from "../types/report";
+import { formatRunId } from "../utils/formatRunId";
 
-export function ReportsPage() {
+export function ReportsPage({ currentUser }: { currentUser: CurrentUser }) {
   const [startDate, setStartDate] = useState(defaultStartDate());
   const [endDate, setEndDate] = useState(defaultEndDate());
   const [report, setReport] = useState<MonthEndReport | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const canGenerateReport = currentUser.role === "platform_admin";
   const dateError = getDateError(startDate, endDate);
 
   const csvUrl = useMemo(
@@ -17,6 +20,9 @@ export function ReportsPage() {
   );
 
   async function handleGenerateReport() {
+    if (!canGenerateReport) {
+      return;
+    }
     if (dateError) {
       setError(dateError);
       return;
@@ -44,7 +50,13 @@ export function ReportsPage() {
           </p>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-[180px_180px_auto_auto] md:items-end">
+        <div
+          className={
+            canGenerateReport
+              ? "grid gap-3 md:grid-cols-[180px_180px_auto_auto] md:items-end"
+              : "grid gap-3 md:grid-cols-[180px_180px] md:items-end"
+          }
+        >
           <label className="grid gap-1 text-sm font-medium text-slate-700">
             Start date
             <input
@@ -63,15 +75,17 @@ export function ReportsPage() {
               onChange={(event) => setEndDate(event.target.value)}
             />
           </label>
-          <button
-            className="inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-            disabled={isLoading || Boolean(dateError)}
-            type="button"
-            onClick={() => void handleGenerateReport()}
-          >
-            {isLoading ? "Generating..." : "Generate report"}
-          </button>
-          {report && !dateError ? (
+          {canGenerateReport ? (
+            <button
+              className="inline-flex h-10 items-center justify-center rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+              disabled={isLoading || Boolean(dateError)}
+              type="button"
+              onClick={() => void handleGenerateReport()}
+            >
+              {isLoading ? "Generating..." : "Generate report"}
+            </button>
+          ) : null}
+          {canGenerateReport && report && !dateError ? (
             <a
               className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
               download
@@ -83,8 +97,11 @@ export function ReportsPage() {
         </div>
 
         {dateError ? <InfoBanner message={dateError} /> : null}
+        {!canGenerateReport ? (
+          <InfoBanner message="Month-end report generation requires platform admin access." />
+        ) : null}
         {error ? <ErrorBanner message={error} /> : null}
-        {!report ? (
+        {!report && canGenerateReport ? (
           <InfoBanner message="Choose a start and end date that cover the transaction dates in the uploaded BOA and Dealertrack CSVs, then generate the month-end report." />
         ) : null}
       </section>
@@ -210,7 +227,7 @@ function IncludedRuns({ runs }: { runs: MonthEndReport["reconciliation_runs_incl
               runs.map((run) => (
                 <tr key={run.reconciliation_run_id}>
                   <td className="px-3 py-2 font-medium text-slate-950">
-                    {run.reconciliation_run_id}
+                    {formatRunId(run.created_at)}
                   </td>
                   <td className="px-3 py-2 text-slate-700">{run.boa_filename}</td>
                   <td className="px-3 py-2 text-slate-700">{run.dealertrack_filename}</td>

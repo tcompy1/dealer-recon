@@ -12,6 +12,8 @@ const SOURCE_TYPES: Array<{ label: string; value: SourceType }> = [
   { label: "OEM", value: "oem" },
 ];
 
+const VALIDATION_ERROR_PREVIEW_LIMIT = 10;
+
 export function FileUploader() {
   const [sourceType, setSourceType] = useState<SourceType>("bank");
   const [file, setFile] = useState<File | null>(null);
@@ -93,23 +95,28 @@ export function FileUploader() {
 
       {result ? (
         <div className="mt-6 rounded-md border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950">
-          <p className="font-medium">
-            Parsed {result.transaction_count} transaction
-            {result.transaction_count === 1 ? "" : "s"} from {result.filename}.
-          </p>
+          {result.reused_existing_file ? (
+            <p className="font-medium">
+              Reused existing upload {result.filename} with {result.transaction_count} transaction
+              {result.transaction_count === 1 ? "" : "s"}.
+            </p>
+          ) : (
+            <p className="font-medium">
+              Parsed {result.transaction_count} transaction
+              {result.transaction_count === 1 ? "" : "s"} from {result.filename}.
+            </p>
+          )}
+
+          {result.warnings && result.warnings.length > 0 ? (
+            <ul className="mt-3 list-disc space-y-1 rounded-md border border-amber-200 bg-amber-50 px-6 py-3 text-amber-950">
+              {result.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          ) : null}
 
           {result.validation_errors.length > 0 ? (
-            <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-950">
-              <p className="font-medium">Validation errors</p>
-              <ul className="mt-2 list-disc space-y-1 pl-5">
-                {result.validation_errors.map((validationError, index) => (
-                  <li key={`${validationError.row ?? "file"}-${validationError.field ?? "file"}-${index}`}>
-                    {validationError.row ? `Row ${validationError.row}: ` : ""}
-                    {validationError.message}
-                  </li>
-                ))}
-              </ul>
-            </div>
+            <ValidationErrors errors={result.validation_errors} />
           ) : null}
         </div>
       ) : null}
@@ -120,5 +127,34 @@ export function FileUploader() {
         </div>
       ) : null}
     </section>
+  );
+}
+
+function ValidationErrors({ errors }: { errors: UploadResponse["validation_errors"] }) {
+  const visibleErrors = errors.slice(0, VALIDATION_ERROR_PREVIEW_LIMIT);
+  const hiddenCount = Math.max(errors.length - visibleErrors.length, 0);
+
+  return (
+    <details className="mt-3 rounded-md border border-amber-200 bg-amber-50 text-amber-950">
+      <summary className="cursor-pointer px-3 py-2 font-medium">
+        {errors.length} validation error{errors.length === 1 ? "" : "s"} found. Showing first{" "}
+        {visibleErrors.length} when expanded.
+      </summary>
+      <div className="max-h-64 overflow-auto border-t border-amber-200 bg-white">
+        <ul className="list-disc space-y-1 px-6 py-3">
+          {visibleErrors.map((validationError, index) => (
+            <li key={`${validationError.row ?? "file"}-${validationError.field ?? "file"}-${index}`}>
+              {validationError.row ? `Row ${validationError.row}: ` : ""}
+              {validationError.message}
+            </li>
+          ))}
+        </ul>
+      </div>
+      {hiddenCount > 0 ? (
+        <p className="border-t border-amber-200 px-3 py-2 text-xs">
+          {hiddenCount} additional validation error{hiddenCount === 1 ? "" : "s"} hidden.
+        </p>
+      ) : null}
+    </details>
   );
 }

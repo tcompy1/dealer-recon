@@ -11,10 +11,13 @@
     "migrate:down": "tsx src/db/migrate.ts down",
     "migrate:prod": "node dist/db/migrate.js",
     "migrate:prod:down": "node dist/db/migrate.js down",
+    "seed:demo-auth": "tsx src/db/seedDemoAuth.ts",
     "test": "vitest run",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "recon": "tsx src/cli/runFloorplanRecon.ts"
+    "recon": "tsx src/cli/runFloorplanRecon.ts",
+    "export:hurst-fp-rec": "tsx src/cli/generateHurstFpRecExport.ts",
+    "cleanup:unhealthy-uploads": "tsx src/cli/cleanupUnhealthyUploads.ts"
   },
   "dependencies": {
     "@types/bcryptjs": "^2.4.6",

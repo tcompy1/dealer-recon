@@ -2,13 +2,16 @@ import type {
   MonthEndReport,
   ReconciliationRunDetail,
 } from "../domain/types.js";
+import { neutralizeSpreadsheetText } from "../spreadsheetText.js";
+
+type CsvScalar = string | number | null;
+type CsvCell = CsvScalar | { value: CsvScalar; preservePlainNumericText?: boolean };
 
 export function toExceptionsCsv(detail: ReconciliationRunDetail): string {
   const headers = [
     "reconciliation_run_id",
     "exception_id",
-    "exception_type",
-    "exception_category",
+    "placement",
     "status",
     "note",
     "review_status",
@@ -26,7 +29,7 @@ export function toExceptionsCsv(detail: ReconciliationRunDetail): string {
     "stock_number",
     "vin",
     "description",
-    "reason",
+    "research_prompt",
     "created_at",
   ];
   const rows = detail.exceptions.map((exception) => {
@@ -34,8 +37,7 @@ export function toExceptionsCsv(detail: ReconciliationRunDetail): string {
     return [
       detail.reconciliation_run_id,
       exception.exception_id,
-      exception.exception_type,
-      exception.exception_category,
+      formatExceptionPlacement(exception),
       exception.status,
       exception.note,
       exception.review_status,
@@ -47,18 +49,55 @@ export function toExceptionsCsv(detail: ReconciliationRunDetail): string {
       transaction.id,
       transaction.transaction_date,
       transaction.post_date,
-      transaction.amount,
+      { value: transaction.amount, preservePlainNumericText: true },
       transaction.amount_cents,
       transaction.reference_number,
       transaction.stock_number,
       transaction.vin,
       transaction.description,
-      exception.reason,
+      neutralExceptionPrompt(exception),
       exception.created_at,
     ];
   });
 
   return [headers, ...rows].map((row) => row.map(toCsvCell).join(",")).join("\n") + "\n";
+}
+
+function exceptionPlacement(
+  exception: ReconciliationRunDetail["exceptions"][number],
+): "statement" | "schedule" | "manual_review" {
+  if (
+    exception.exception_type === "needs_review_vin6_only" ||
+    exception.exception_category === "vin6_match_amount_mismatch"
+  ) {
+    return "manual_review";
+  }
+  if (exception.exception_type === "missing_in_dealertrack" || exception.source_type === "boa") {
+    return "statement";
+  }
+  return "schedule";
+}
+
+function formatExceptionPlacement(exception: ReconciliationRunDetail["exceptions"][number]): string {
+  const placement = exceptionPlacement(exception);
+  if (placement === "statement") {
+    return "On statement-not on GL";
+  }
+  if (placement === "schedule") {
+    return "On schedule-not on statement";
+  }
+  return "Needs manual review";
+}
+
+function neutralExceptionPrompt(exception: ReconciliationRunDetail["exceptions"][number]): string {
+  const placement = exceptionPlacement(exception);
+  if (placement === "statement") {
+    return "BOA statement row with no matching Dealertrack/GL row";
+  }
+  if (placement === "schedule") {
+    return "Dealertrack/GL row with no matching BOA statement row";
+  }
+  return "VIN appears on both sides but amount differs; review manually";
 }
 
 export function toMonthEndReportCsv(report: MonthEndReport): string {
@@ -75,9 +114,9 @@ export function toMonthEndReportCsv(report: MonthEndReport): string {
   const rows = report.account_summaries.map((account) => [
     account.account_identifier,
     account.account_type,
-    sourceTotalAmount(account.source_totals, "boa"),
-    sourceTotalAmount(account.source_totals, "dealertrack"),
-    account.net_difference_amount,
+    { value: sourceTotalAmount(account.source_totals, "boa"), preservePlainNumericText: true },
+    { value: sourceTotalAmount(account.source_totals, "dealertrack"), preservePlainNumericText: true },
+    { value: account.net_difference_amount, preservePlainNumericText: true },
     account.unresolved_exception_count,
     account.resolved_exception_count,
     account.ignored_exception_count,
@@ -93,13 +132,23 @@ function sourceTotalAmount(
   return sourceTotals.find((total) => total.source_type === sourceType)?.amount ?? "0.00";
 }
 
-function toCsvCell(value: string | number | null): string {
+function toCsvCell(cell: CsvCell): string {
+  const value = isCsvCellOptions(cell) ? cell.value : cell;
+  const preservePlainNumericText = isCsvCellOptions(cell)
+    ? cell.preservePlainNumericText
+    : false;
   if (value === null) {
     return "";
   }
-  const text = String(value);
+  const text = typeof value === "number"
+    ? String(value)
+    : neutralizeSpreadsheetText(value, { preservePlainNumericText });
   if (/[",\n\r]/.test(text)) {
     return `"${text.replace(/"/g, '""')}"`;
   }
   return text;
+}
+
+function isCsvCellOptions(cell: CsvCell): cell is { value: CsvScalar; preservePlainNumericText?: boolean } {
+  return typeof cell === "object" && cell !== null && "value" in cell;
 }

@@ -90,6 +90,24 @@ export type SourceFile = {
   created_at: string;
 };
 
+export type SourceFileUploadContent = {
+  source_file_id: number;
+  dealership_id: number;
+  dealership_store_id: number | null;
+  filename: string;
+  content_type: string;
+  file_size: number;
+  content: Buffer;
+  created_at: string;
+};
+
+export type NewSourceFileUploadContent = Omit<
+  SourceFileUploadContent,
+  "source_file_id" | "dealership_id" | "dealership_store_id" | "created_at" | "file_size"
+> & {
+  file_size?: number;
+};
+
 export type NewSourceFile = Omit<
   SourceFile,
   "id" | "dealership_id" | "dealership_store_id" | "created_at"
@@ -115,8 +133,27 @@ export type UploadResponse = {
   source_type: SourceType;
   filename: string;
   transaction_count: number;
+  stored_row_count: number;
+  stored_validation_error_count: number;
   validation_errors: ValidationError[];
   automated_reconciliation_run_id?: number | null;
+  reused_existing_file: boolean;
+  source_file_health: {
+    status: "healthy" | "unhealthy" | "reprocessed";
+    healthy: boolean;
+    reasons: string[];
+    transaction_count: number;
+    row_count: number;
+    validation_error_count: number;
+  };
+  warnings?: string[];
+  existing_file?: {
+    source_file_id: number;
+    filename: string;
+    store_name: string | null;
+    source_type: SourceType;
+    created_at: string;
+  };
 };
 
 export const scheduledReconciliationCadences = ["daily", "weekly", "monthly"] as const;
@@ -385,6 +422,42 @@ export type ReconciliationRun = {
   created_at: string;
 };
 
+export const reconciliationArtifactTypes = [
+  "RAW_BOA",
+  "RAW_DEALERTRACK",
+  "CLEANED_BOA",
+  "CLEANED_DEALERTRACK",
+  "MERGED_FLOORPLAN",
+  "FP_REC",
+] as const;
+
+export type ReconciliationArtifactType = (typeof reconciliationArtifactTypes)[number];
+
+export type ReconciliationArtifactMetadata = {
+  id: number;
+  reconciliation_run_id: number;
+  dealership_id: number;
+  store_id: number | null;
+  accounting_month: string;
+  uploaded_by: number | null;
+  artifact_type: ReconciliationArtifactType;
+  filename: string;
+  file_size: number;
+  content_type: string;
+  created_at: string;
+};
+
+export type ReconciliationArtifact = ReconciliationArtifactMetadata & {
+  content: Buffer;
+};
+
+export type NewReconciliationArtifact = Omit<
+  ReconciliationArtifact,
+  "id" | "dealership_id" | "created_at" | "file_size"
+> & {
+  file_size?: number;
+};
+
 export type PersistReconciliationRunInput = {
   dealership_id: number;
   dealership_store_id?: number | null;
@@ -469,6 +542,8 @@ export const reconciliationExceptionTypes = [
   "duplicate_transaction",
   "missing_in_boa",
   "missing_in_dealertrack",
+  "needs_review_vin6_only",
+  "needs_review_amount_only",
 ] as const;
 
 export type ReconciliationExceptionType = (typeof reconciliationExceptionTypes)[number];
@@ -561,36 +636,20 @@ export type ReconciliationRunMetrics = {
   total_matched_transactions: number;
   total_exception_count: number;
   unresolved_count: number;
-  match_rate_percent: number;
   category_distribution: Partial<Record<ReconciliationExceptionCategory, number>>;
-  average_time_to_resolution_hours: number | null;
 };
 
 export type ReconciliationRunComparison = {
   current_run_id: number;
   previous_run_id: number | null;
-  newly_resolved_exception_ids: number[];
   newly_created_exception_ids: number[];
   recurring_exception_ids: number[];
-  category_delta_summary: Array<{
+  category_summary: Array<{
     exception_category: ReconciliationExceptionCategory;
     current_count: number;
-    previous_count: number;
-    delta: number;
-  }>;
-  reviewer_workload_trends: Array<{
-    reviewer: string;
-    current_count: number;
-    previous_count: number;
-    delta: number;
   }>;
   run_comparison_summary: {
     current: ReconciliationRunMetrics;
-    previous: ReconciliationRunMetrics | null;
-    matched_count_delta: number | null;
-    unresolved_count_delta: number | null;
-    match_rate_delta_percent: number | null;
-    newly_resolved_count: number;
     newly_created_count: number;
     recurring_count: number;
   };
@@ -604,12 +663,7 @@ export type DealerGroupAnalytics = {
     store_name: string;
     run_count: number;
     unresolved_count: number;
-    match_rate_percent: number;
     recurring_exception_count: number;
-    reviewer_workload: Array<{
-      reviewer: string;
-      exception_count: number;
-    }>;
   }>;
 };
 
