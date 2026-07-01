@@ -1,0 +1,16 @@
+# Dealer-Recon v1 same-origin HTTPS reverse proxy.
+#
+# Replace dealer-recon.example.com with the pilot hostname, then install as
+# /etc/caddy/Caddyfile on the VPS. This keeps frontend and backend on one
+# browser origin so SameSite=Lax cookies work for v1.
+
+dealer-recon.example.com {
+	encode zstd gzip
+
+	@backend {
+		path /health /ready /login /logout /me /audit-events* /dealer-groups* /stores* /automation* /source-files* /accounts* /reports* /upload /reconcile /reconciliation-runs* /artifacts* /transactions*
+	}
+
+	reverse_proxy @backend 127.0.0.1:8000
+	reverse_proxy 127.0.0.1:5173
+}
