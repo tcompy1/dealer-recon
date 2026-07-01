@@ -139,6 +139,11 @@ export interface TransactionRepository {
     endDate: string,
   ): Promise<MonthEndReport>;
   createReconciliationRun(input: PersistReconciliationRunInput): Promise<ReconciliationRun>;
+  updateReconciliationRunStatus(
+    dealershipId: number,
+    reconciliationRunId: number,
+    status: string,
+  ): Promise<ReconciliationRun | null>;
   getSourceFileUploadContent(
     dealershipId: number,
     sourceFileId: number,
@@ -784,6 +789,21 @@ export class MemoryTransactionRepository implements TransactionRepository {
     }
 
     return run;
+  }
+
+  async updateReconciliationRunStatus(
+    dealershipId: number,
+    reconciliationRunId: number,
+    status: string,
+  ): Promise<ReconciliationRun | null> {
+    const run = this.reconciliationRuns.find(
+      (candidate) => candidate.dealership_id === dealershipId && candidate.id === reconciliationRunId,
+    );
+    if (!run) {
+      return null;
+    }
+    run.status = status;
+    return { ...run };
   }
 
   async getSourceFileUploadContent(

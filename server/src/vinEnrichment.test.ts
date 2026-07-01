@@ -299,6 +299,11 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
           raw_data: {},
         } as NewTransaction,
       ],
+      {
+        filename: "boa.csv",
+        content_type: "text/csv",
+        content: Buffer.from("boa raw"),
+      },
     );
 
     const sourceFileDt = await repository.createSourceFileWithTransactions(
@@ -344,6 +349,11 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
           },
         } as NewTransaction,
       ],
+      {
+        filename: "dt.csv",
+        content_type: "text/csv",
+        content: Buffer.from("dealertrack raw"),
+      },
     );
 
     const dtTransaction = sourceFileDt.transactions[0];

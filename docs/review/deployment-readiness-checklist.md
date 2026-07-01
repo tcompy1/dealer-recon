@@ -84,8 +84,8 @@ Auth/session requirements:
 Health/readiness endpoints:
 
 - `GET /health` returns `{ status: "ok" }` without dependency checks.
-- `GET /ready` runs the provided readiness function, currently database `SELECT 1`.
-- `/ready` does not verify migrations/schema or production user provisioning.
+- `GET /ready` runs the provided readiness function and must verify Postgres connectivity plus required migrated tables.
+- `/ready` does not verify production user provisioning.
 
 ## 3. Deployment Readiness
 
@@ -284,9 +284,8 @@ Blockers before dealership exposure:
 
 Risks to explicitly accept or fix:
 
-- `/ready` can pass before migrations are applied.
 - Production compose does not run migrations automatically.
-- `SameSite=Lax` cookie and no CSRF token require controlled same-site/private deployment.
+- `SameSite=Lax` cookie and no CSRF token require a controlled same-site/origin private HTTPS deployment for v1.
 - In-process login throttle is single-instance only.
 - Postgres contains raw uploads and artifacts; backup access is sensitive.
 - `UPLOAD_STORAGE_PATH` is misleading but not currently required.

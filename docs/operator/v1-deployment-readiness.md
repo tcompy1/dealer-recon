@@ -19,6 +19,8 @@ V1 deployment scope:
 - Frontend hosted with access to the backend API.
 - Stored FP REC artifact as the output of record.
 
+V1 deployment constraint: serve the frontend and backend from the same site/origin behind HTTPS for the private pilot. Split frontend/backend domains are not supported for v1 unless CSRF protection and cross-site cookie settings are reviewed and explicitly accepted.
+
 Out of scope:
 
 - Multi-store production operations.
@@ -147,7 +149,7 @@ Before deployment:
 Smoke test after deployment:
 
 - GET /health returns ok.
-- GET /ready returns ready.
+- GET /ready returns ready only after Postgres is reachable and required migrated tables are present.
 - Login succeeds with a real user.
 - Store-scoped user sees only Hurst store data.
 - Upload non-sensitive test BOA and Dealertrack files in the target environment.

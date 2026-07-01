@@ -22,6 +22,22 @@ import {
 type CsvScalar = string | number | null;
 type CsvCell = CsvScalar | { value: CsvScalar; preservePlainNumericText?: boolean };
 
+export const REQUIRED_HURST_V1_ARTIFACT_TYPES = [
+  "RAW_BOA",
+  "RAW_DEALERTRACK",
+  "CLEANED_BOA",
+  "CLEANED_DEALERTRACK",
+  "MERGED_FLOORPLAN",
+  "FP_REC",
+] as const satisfies readonly ReconciliationArtifactType[];
+
+export class ReconciliationArtifactPersistenceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReconciliationArtifactPersistenceError";
+  }
+}
+
 export async function persistReconciliationRunArtifacts({
   repository,
   dealershipId,
@@ -43,7 +59,9 @@ export async function persistReconciliationRunArtifacts({
 }): Promise<ReconciliationArtifactMetadata[]> {
   const detail = await repository.getReconciliationRunDetail(dealershipId, run.id);
   if (!detail) {
-    return [];
+    throw new ReconciliationArtifactPersistenceError(
+      `Cannot persist artifacts for reconciliation run ${run.id}: run detail is unavailable.`,
+    );
   }
 
   const accountingMonth = resolveAccountingMonth(
@@ -56,8 +74,16 @@ export async function persistReconciliationRunArtifacts({
     accounting_month: accountingMonth,
     uploaded_by: uploadedByUserId,
   };
+  const storeConfig = resolveStoreWorkflowConfigFromStoreName(detail.store_name);
   const artifacts: NewReconciliationArtifact[] = [
-    ...await rawArtifacts(repository, dealershipId, base, boaSourceFile, dealertrackSourceFile),
+    ...await rawArtifacts(
+      repository,
+      dealershipId,
+      base,
+      boaSourceFile,
+      dealertrackSourceFile,
+      storeConfig !== undefined,
+    ),
     cleanedArtifact(base, "CLEANED_BOA", cleanedFilename(boaSourceFile, accountingMonth), boaTransactions),
     cleanedArtifact(
       base,
@@ -67,33 +93,41 @@ export async function persistReconciliationRunArtifacts({
     ),
   ];
 
-  const storeConfig = resolveStoreWorkflowConfigFromStoreName(detail.store_name);
-  if (storeConfig) {
-    const mergedArtifact = buildMergedFloorplanArtifact(detail, storeConfig);
-    const fpRecWorkbook = buildHurstFpRecWorkbook(detail, storeConfig);
-    const fpRecHtml = toHurstFpRecXlsHtml(fpRecWorkbook);
-    artifacts.push(
-      {
-        ...base,
-        artifact_type: "MERGED_FLOORPLAN",
-        filename: mergedArtifact.filename,
-        content_type: mergedArtifact.contentType,
-        content: Buffer.from(mergedArtifact.html, "utf8"),
-      },
-      {
-        ...base,
-        artifact_type: "FP_REC",
-        filename: toHurstFpRecFilename(fpRecWorkbook),
-        content_type: "application/vnd.ms-excel",
-        content: Buffer.from(fpRecHtml, "utf8"),
-      },
-    );
+  if (!storeConfig) {
+    const created: ReconciliationArtifactMetadata[] = [];
+    for (const artifact of artifacts) {
+      created.push(await repository.createReconciliationArtifact(dealershipId, artifact));
+    }
+    return created;
   }
+
+  const mergedArtifact = buildMergedFloorplanArtifact(detail, storeConfig);
+  const fpRecWorkbook = buildHurstFpRecWorkbook(detail, storeConfig);
+  const fpRecHtml = toHurstFpRecXlsHtml(fpRecWorkbook);
+  artifacts.push(
+    {
+      ...base,
+      artifact_type: "MERGED_FLOORPLAN",
+      filename: mergedArtifact.filename,
+      content_type: mergedArtifact.contentType,
+      content: Buffer.from(mergedArtifact.html, "utf8"),
+    },
+    {
+      ...base,
+      artifact_type: "FP_REC",
+      filename: toHurstFpRecFilename(fpRecWorkbook),
+      content_type: "application/vnd.ms-excel",
+      content: Buffer.from(fpRecHtml, "utf8"),
+    },
+  );
+
+  assertRequiredArtifacts(artifacts.map((artifact) => artifact.artifact_type), run.id);
 
   const created: ReconciliationArtifactMetadata[] = [];
   for (const artifact of artifacts) {
     created.push(await repository.createReconciliationArtifact(dealershipId, artifact));
   }
+  assertRequiredArtifacts(created.map((artifact) => artifact.artifact_type), run.id);
   return created;
 }
 
@@ -103,6 +137,7 @@ async function rawArtifacts(
   base: ArtifactBase,
   boaSourceFile: SourceFile,
   dealertrackSourceFile: SourceFile,
+  required: boolean,
 ): Promise<NewReconciliationArtifact[]> {
   const [boaUpload, dealertrackUpload] = await Promise.all([
     repository.getSourceFileUploadContent(dealershipId, boaSourceFile.id),
@@ -118,6 +153,10 @@ async function rawArtifacts(
       file_size: boaUpload.file_size,
       content: boaUpload.content,
     });
+  } else if (required) {
+    throw new ReconciliationArtifactPersistenceError(
+      `Cannot persist required Hurst v1 artifact RAW_BOA for source file ${boaSourceFile.id}: raw upload content is unavailable.`,
+    );
   }
   if (dealertrackUpload) {
     artifacts.push({
@@ -128,8 +167,25 @@ async function rawArtifacts(
       file_size: dealertrackUpload.file_size,
       content: dealertrackUpload.content,
     });
+  } else if (required) {
+    throw new ReconciliationArtifactPersistenceError(
+      `Cannot persist required Hurst v1 artifact RAW_DEALERTRACK for source file ${dealertrackSourceFile.id}: raw upload content is unavailable.`,
+    );
   }
   return artifacts;
+}
+
+function assertRequiredArtifacts(
+  artifactTypes: readonly ReconciliationArtifactType[],
+  reconciliationRunId: number,
+): void {
+  const present = new Set(artifactTypes);
+  const missing = REQUIRED_HURST_V1_ARTIFACT_TYPES.filter((artifactType) => !present.has(artifactType));
+  if (missing.length > 0) {
+    throw new ReconciliationArtifactPersistenceError(
+      `Cannot complete Hurst v1 reconciliation run ${reconciliationRunId}: missing required artifacts ${missing.join(", ")}.`,
+    );
+  }
 }
 
 type ArtifactBase = Pick<

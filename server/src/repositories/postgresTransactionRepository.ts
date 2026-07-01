@@ -1098,6 +1098,22 @@ export class PostgresTransactionRepository implements TransactionRepository {
     }
   }
 
+  async updateReconciliationRunStatus(
+    dealershipId: number,
+    reconciliationRunId: number,
+    status: string,
+  ): Promise<ReconciliationRun | null> {
+    const result = await this.pool.query<ReconciliationRunRow>(
+      `UPDATE reconciliation_runs
+       SET status = $3
+       WHERE dealership_id = $1
+         AND id = $2
+       RETURNING *`,
+      [dealershipId, reconciliationRunId, status],
+    );
+    return result.rows[0] ? toReconciliationRun(result.rows[0]) : null;
+  }
+
   async getSourceFileUploadContent(
     dealershipId: number,
     sourceFileId: number,

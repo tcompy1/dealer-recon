@@ -222,8 +222,8 @@ Expected local validation observed on 2026-06-30:
 - Latest v1 work is still ahead of `main`, so reviewers must inspect the deployment branch, not only `main`.
 - Database-backed migration tests were skipped in the default local test run unless test DB env is configured.
 - Production compose does not run migrations automatically.
-- `/ready` checks DB connectivity, not schema/migration completeness.
+- `/ready` checks Postgres connectivity plus required migrated tables, including `pgmigrations`, `source_file_upload_contents`, and `reconciliation_artifacts`.
 - Current frontend has no React Router client routes, but nginx lacks an explicit SPA fallback for future route refreshes.
-- Cross-site frontend/backend hosting can break cookie login because cookies are `SameSite=Lax`.
+- Cross-site frontend/backend hosting is not supported for v1; serve frontend and backend from the same site/origin behind HTTPS because cookies are `SameSite=Lax` and no CSRF token is implemented yet.
 - `UPLOAD_STORAGE_PATH` is obsolete/confusing for current v1 because raw uploads and artifacts are stored in Postgres.
 - Artifact retention/deletion policy remains an owner decision, not a code behavior.

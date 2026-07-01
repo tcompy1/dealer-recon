@@ -90,8 +90,8 @@ Auth/session/cookie handling:
 - Confirm `/login`, `/logout`, `/me`, protected-route middleware, `dealer_recon_session`, and bearer-token fallback are acceptable for a private pilot.
 - Confirm the custom HMAC token verifier has no obvious parsing, expiry, user binding, or timing issues.
 - Confirm cookie settings are production-safe only when served over HTTPS with `NODE_ENV=production`.
-- Confirm `sameSite: "lax"` is acceptable only for same-site frontend/backend deployment. If frontend and backend are on unrelated domains, login will likely not persist for fetch/XHR because the cookie is not `SameSite=None; Secure`.
-- Confirm lack of CSRF token is accepted only for same-site/private pilot deployment with tightly scoped CORS, or require CSRF protection before internet exposure.
+- Confirm `sameSite: "lax"` is acceptable only for same-site/origin frontend/backend deployment behind HTTPS. If frontend and backend are on unrelated domains, login will likely not persist for fetch/XHR because the cookie is not `SameSite=None; Secure`.
+- Confirm lack of CSRF token is accepted only for a same-site/origin private HTTPS pilot with tightly scoped CORS, or require CSRF protection before internet exposure.
 - Confirm in-process login throttling is accepted only for one backend instance; multi-instance deployment needs shared rate limiting.
 
 CORS config:
@@ -172,8 +172,8 @@ Expected results:
 
 - Latest v1 work is not merged into `main`; deployment branch must be selected deliberately.
 - `docker-compose.prod.yml` does not run migrations automatically.
-- `/ready` confirms database connectivity only, not migration/schema readiness.
-- Cross-site split hosting is risky with `SameSite=Lax`; prefer same-site deployment or a reverse proxy for v1.
+- `/ready` checks Postgres connectivity plus required migrated tables, including `pgmigrations`, `source_file_upload_contents`, and `reconciliation_artifacts`.
+- Cross-site split hosting is not supported for v1; use same-site/origin HTTPS deployment or a reverse proxy.
 - No explicit CSRF token exists.
 - In-process login throttle is not shared across backend replicas.
 - Postgres stores raw uploads and artifacts; database backups are sensitive artifacts.
