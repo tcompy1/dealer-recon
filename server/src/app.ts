@@ -16,6 +16,8 @@ import {
 } from "./auth.js";
 import {
   isSourceType,
+  type DealershipStore,
+  type DealershipStoreWithRooftopSupport,
   type ReconciliationArtifact,
   type ReconciliationRequest,
   type SourceFile,
@@ -50,10 +52,13 @@ import {
 import {
   getStoreWorkflowConfig,
   parseStoreKey,
+  resolveEnabledRooftopProfileFromStoreName,
+  resolveRooftopProfileFromStoreName,
   resolveStoreWorkflowConfigFromStoreName,
   STORE_KEYS,
   type StoreWorkflowConfig,
 } from "./config/storeWorkflowConfig.js";
+import { rooftopValidationError } from "./services/rooftopValidation.js";
 import { buildMergedFloorplanArtifact } from "./services/mergedFloorplanExport.js";
 import { applyCarryForwardToDetail } from "./services/exceptionCarryForward.js";
 import {
@@ -115,6 +120,27 @@ const allowedUploadMimeTypes = new Set([
   "application/octet-stream",
 ]);
 const allowedUploadExtensions = /\.(csv|xls|xml|html?)$/i;
+
+const UNSUPPORTED_ROOFTOP_MESSAGE =
+  "The selected store is not enabled for floorplan reconciliation.";
+const UNSUPPORTED_ROOFTOP_RECOVERY =
+  "Select an enabled rooftop or complete that rooftop's evidence onboarding.";
+
+export function withRooftopSupport(
+  store: DealershipStore,
+): DealershipStoreWithRooftopSupport {
+  const profile = resolveRooftopProfileFromStoreName(store.name);
+  return {
+    ...store,
+    rooftop_profile: profile
+      ? {
+          id: profile.profileId,
+          version: profile.profileVersion,
+          enabled: profile.enabled,
+        }
+      : null,
+  };
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -297,7 +323,7 @@ export function createApp(
       filterStoresForUser(
         getAuthenticatedUser(response),
         await repository.listDealershipStores(getRequestDealershipId(response)),
-      ),
+      ).map(withRooftopSupport),
     );
   }));
 
@@ -562,7 +588,6 @@ export function createApp(
       throw new ValidationError("File is required.", "FILE_REQUIRED");
     }
 
-    const fileHash = createFileHash(request.file.buffer);
     const requestDealershipId = getRequestDealershipId(response);
     const uploadedByUserId = getAuthenticatedUser(response).id === 0
       ? null
@@ -584,6 +609,12 @@ export function createApp(
     const dealershipStores = await repository.listDealershipStores(requestDealershipId);
     const selectedStoreName =
       dealershipStores.find((store) => store.id === dealershipStoreId)?.name ?? null;
+    const rooftopProfile = resolveEnabledRooftopProfileFromStoreName(selectedStoreName);
+    const isFloorplanSource = sourceType === "boa" || sourceType === "dealertrack";
+    if (isFloorplanSource && !rooftopProfile) {
+      throw unsupportedRooftopError(request.body.accounting_month);
+    }
+    const fileHash = createFileHash(request.file.buffer);
     const storeWorkflowConfig = resolveStoreWorkflowConfigFromStoreName(selectedStoreName);
     const duplicateSourceFile = await repository.getSourceFileByHash(
       requestDealershipId,
@@ -853,6 +884,15 @@ export function createApp(
     const reconciliationStoreId = requestedStoreId ?? boaSourceFile.dealership_store_id;
     if (!(await canAccessStore(repository, getAuthenticatedUser(response), reconciliationStoreId))) {
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+    }
+    const selectedStoreName = reconciliationStoreId === null
+      ? null
+      : (await repository.listDealershipStores(requestDealershipId)).find(
+          (store) => store.id === reconciliationStoreId,
+        )?.name ?? null;
+    const rooftopProfile = resolveEnabledRooftopProfileFromStoreName(selectedStoreName);
+    if (!rooftopProfile) {
+      throw unsupportedRooftopError(request.body.accounting_month);
     }
     if (
       boaSourceFile.dealership_store_id !== dealertrackSourceFile.dealership_store_id ||
@@ -1833,6 +1873,27 @@ async function resolveStoreIdForRequest(
 
 function createFileHash(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
+}
+
+function nonEmptyStringOrNull(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function unsupportedRooftopError(accountingMonth: unknown): ValidationError {
+  return rooftopValidationError(
+    "ROOFTOP_PROFILE_UNSUPPORTED",
+    UNSUPPORTED_ROOFTOP_MESSAGE,
+    {
+      source: null,
+      accounting_month: nonEmptyStringOrNull(accountingMonth),
+      rooftop_profile_id: null,
+      recovery: UNSUPPORTED_ROOFTOP_RECOVERY,
+    },
+  );
 }
 
 type SourceFileHealthStatus = "healthy" | "unhealthy" | "reprocessed";

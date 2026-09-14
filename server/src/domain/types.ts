@@ -1,3 +1,5 @@
+import type { RooftopProfileId } from "../config/storeWorkflowConfig.js";
+
 export const sourceTypes = ["bank", "boa", "dealertrack", "dms", "gl", "oem"] as const;
 
 export type SourceType = (typeof sourceTypes)[number];
@@ -63,6 +65,14 @@ export type DealershipStore = {
   dealer_group_id: number | null;
   name: string;
   created_at: string;
+};
+
+export type DealershipStoreWithRooftopSupport = DealershipStore & {
+  rooftop_profile: {
+    id: RooftopProfileId;
+    version: string;
+    enabled: boolean;
+  } | null;
 };
 
 export type NewDealershipStore = {

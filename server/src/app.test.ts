@@ -327,6 +327,28 @@ describe("app", () => {
     expect(forbiddenUploadResponse.status).toBe(403);
   });
 
+  test("GET /stores exposes enabled rooftop support without changing store visibility", async () => {
+    const app = createFallbackApp();
+    const createdStore = await request(app).post("/stores").send({ name: "Hiley Acura" });
+
+    const response = await request(app).get("/stores");
+
+    expect(createdStore.status).toBe(201);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Hiley Acura",
+          rooftop_profile: { id: "acura-v1", version: "1", enabled: true },
+        }),
+        expect.objectContaining({
+          name: "Hiley Mazda of Arlington",
+          rooftop_profile: null,
+        }),
+      ]),
+    );
+  });
+
   test("store-scoped users cannot access other-store source files, runs, or artifacts", async () => {
     const authRepository = new MemoryAuthRepository();
     await authRepository.addUser({
@@ -350,16 +372,19 @@ describe("app", () => {
     });
     const adminAgent = request.agent(app);
     await adminAgent.post("/login").send({ email: "admin@example.com", password: "correct-password" });
+    const otherStoreResponse = await adminAgent.post("/stores").send({ name: "Hiley Acura" });
+    expect(otherStoreResponse.status).toBe(201);
+    const otherStoreId = otherStoreResponse.body.id as number;
     const reconciliation = await createReconciliationWithAgentRows(adminAgent, {
       boaCsv: boaUploadCsv("M90202", "1HGCM82633A004352", "$902.00", "90202"),
       dealertrackCsv: dealertrackUploadCsv("M90202", "-902", "1HGCM82633A004352"),
       boaFilename: "store2-boa.csv",
       dealertrackFilename: "store2-dealertrack.csv",
-      storeId: 2,
+      storeId: otherStoreId,
     });
     const fpRecArtifact = await repository.createReconciliationArtifact(1, {
       reconciliation_run_id: reconciliation.reconciliation_run_id,
-      store_id: 2,
+      store_id: otherStoreId,
       accounting_month: "2025-09",
       uploaded_by: null,
       artifact_type: "FP_REC",
@@ -371,9 +396,9 @@ describe("app", () => {
     const clerkAgent = request.agent(app);
     await clerkAgent.post("/login").send({ email: "store1@example.com", password: "correct-password" });
 
-    const forbiddenFilesResponse = await clerkAgent.get("/source-files").query({ store_id: 2 });
+    const forbiddenFilesResponse = await clerkAgent.get("/source-files").query({ store_id: otherStoreId });
     const filteredFilesResponse = await clerkAgent.get("/source-files");
-    const forbiddenRunListResponse = await clerkAgent.get("/reconciliation-runs").query({ store_id: 2 });
+    const forbiddenRunListResponse = await clerkAgent.get("/reconciliation-runs").query({ store_id: otherStoreId });
     const filteredRunsResponse = await clerkAgent.get("/reconciliation-runs");
     const forbiddenRunResponse = await clerkAgent.get(
       `/reconciliation-runs/${reconciliation.reconciliation_run_id}`,
@@ -387,13 +412,13 @@ describe("app", () => {
     expect(forbiddenFilesResponse.body.error.message).toBe("Not authorized for this store.");
     expect(filteredFilesResponse.status).toBe(200);
     expect(filteredFilesResponse.body).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ dealership_store_id: 2 })]),
+      expect.arrayContaining([expect.objectContaining({ dealership_store_id: otherStoreId })]),
     );
     expect(forbiddenRunListResponse.status).toBe(403);
     expect(forbiddenRunListResponse.body.error.message).toBe("Not authorized for this store.");
     expect(filteredRunsResponse.status).toBe(200);
     expect(filteredRunsResponse.body).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ dealership_store_id: 2 })]),
+      expect.arrayContaining([expect.objectContaining({ dealership_store_id: otherStoreId })]),
     );
     expect(forbiddenRunResponse.status).toBe(403);
     expect(forbiddenArtifactsResponse.status).toBe(403);
@@ -822,6 +847,43 @@ describe("app", () => {
       validation_errors: [],
     });
     expect(response.body.source_file_id).toEqual(expect.any(Number));
+  });
+
+  test("POST /upload rejects an unsupported rooftop before creating persisted work", async () => {
+    const repository = new MemoryTransactionRepository();
+    const app = createFallbackApp(repository);
+    const sourceFilesBefore = await repository.listSourceFiles(1);
+    const transactionsBefore = await repository.listBySource(1, "boa");
+    const runsBefore = await repository.listReconciliationRuns(1);
+
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .field("store_id", "2")
+      .field("accounting_month", "2026-04")
+      .attach(
+        "file",
+        Buffer.from(boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101")),
+        "boa.csv",
+      );
+
+    expect(response.status).toBe(422);
+    expect(response.body).toMatchObject({
+      error: {
+        code: "ROOFTOP_PROFILE_UNSUPPORTED",
+        message: "The selected store is not enabled for floorplan reconciliation.",
+        details: {
+          source: null,
+          accounting_month: "2026-04",
+          rooftop_profile_id: null,
+          recovery: "Select an enabled rooftop or complete that rooftop's evidence onboarding.",
+        },
+      },
+    });
+    await expect(repository.listSourceFiles(1)).resolves.toEqual(sourceFilesBefore);
+    await expect(repository.listBySource(1, "boa")).resolves.toEqual(transactionsBefore);
+    await expect(repository.listReconciliationRuns(1)).resolves.toEqual(runsBefore);
+    await expect(repository.listReconciliationArtifacts(1, 1)).resolves.toEqual([]);
   });
 
   test("POST /upload returns preprocessing diagnostics summary for BOA HTML XLS uploads", async () => {
@@ -1314,7 +1376,7 @@ describe("app", () => {
 
     const createStoreResponse = await request(app)
       .post("/stores")
-      .send({ name: "Hiley Mazda of Test" });
+      .send({ name: "Hiley Acura" });
     expect(createStoreResponse.status).toBe(201);
     const storeId = createStoreResponse.body.id as number;
 
@@ -1334,7 +1396,7 @@ describe("app", () => {
       expect.arrayContaining([
         expect.objectContaining({
           dealership_store_id: storeId,
-          store_name: "Hiley Mazda of Test",
+          store_name: "Hiley Acura",
         }),
       ]),
     );
@@ -1344,7 +1406,7 @@ describe("app", () => {
     expect(runsResponse.body).toEqual([
       expect.objectContaining({
         dealership_store_id: storeId,
-        store_name: "Hiley Mazda of Test",
+        store_name: "Hiley Acura",
       }),
     ]);
   });
@@ -1510,6 +1572,69 @@ describe("app", () => {
 
     expect(response.status).toBe(422);
     expect(response.body.error.message).toBe("boa_source_file_id is required.");
+  });
+
+  test("POST /reconcile rejects an unsupported rooftop before creating persisted work", async () => {
+    const repository = new MemoryTransactionRepository();
+    const app = createFallbackApp(repository);
+    const boaImport = await repository.createSourceFileWithTransactions(
+      1,
+      {
+        source_type: "boa",
+        dealership_store_id: 2,
+        original_filename: "legacy-arlington-boa.csv",
+        stored_filename: null,
+        file_hash: "legacy-arlington-boa",
+        row_count: 0,
+        validation_error_count: 0,
+      },
+      [],
+    );
+    const dealertrackImport = await repository.createSourceFileWithTransactions(
+      1,
+      {
+        source_type: "dealertrack",
+        dealership_store_id: 2,
+        original_filename: "legacy-arlington-dealertrack.csv",
+        stored_filename: null,
+        file_hash: "legacy-arlington-dealertrack",
+        row_count: 0,
+        validation_error_count: 0,
+      },
+      [],
+    );
+    const sourceFilesBefore = await repository.listSourceFiles(1);
+    const boaTransactionsBefore = await repository.listBySource(1, "boa");
+    const dealertrackTransactionsBefore = await repository.listBySource(1, "dealertrack");
+    const runsBefore = await repository.listReconciliationRuns(1);
+
+    const response = await request(app).post("/reconcile").send({
+      boa_source_file_id: boaImport.sourceFile.id,
+      dealertrack_source_file_id: dealertrackImport.sourceFile.id,
+      dealership_store_id: 2,
+      accounting_month: "2026-04",
+    });
+
+    expect(response.status).toBe(422);
+    expect(response.body).toMatchObject({
+      error: {
+        code: "ROOFTOP_PROFILE_UNSUPPORTED",
+        message: "The selected store is not enabled for floorplan reconciliation.",
+        details: {
+          source: null,
+          accounting_month: "2026-04",
+          rooftop_profile_id: null,
+          recovery: "Select an enabled rooftop or complete that rooftop's evidence onboarding.",
+        },
+      },
+    });
+    await expect(repository.listSourceFiles(1)).resolves.toEqual(sourceFilesBefore);
+    await expect(repository.listBySource(1, "boa")).resolves.toEqual(boaTransactionsBefore);
+    await expect(repository.listBySource(1, "dealertrack")).resolves.toEqual(
+      dealertrackTransactionsBefore,
+    );
+    await expect(repository.listReconciliationRuns(1)).resolves.toEqual(runsBefore);
+    await expect(repository.listReconciliationArtifacts(1, 1)).resolves.toEqual([]);
   });
 
   test("GET /reconciliation-runs lists persisted runs", async () => {
@@ -2347,141 +2472,95 @@ describe("app", () => {
     );
   });
 
-  test("GET /reconciliation-runs/:id/merged-floorplan resolves FW config from raw upload flow", async () => {
+  test("POST /upload keeps the configured Fort Worth rooftop disabled", async () => {
     const app = createFallbackApp();
     const storeResponse = await request(app)
       .post("/stores")
       .send({ name: "Hiley Cars Fort Worth" });
     expect(storeResponse.status).toBe(201);
-    const fwStoreId = storeResponse.body.id as number;
-
-    const boaUpload = await uploadFixtureCsv(
-      app,
-      "boa",
-      "server/src/presenters/__fixtures__/fw/FW BOA FEB.csv",
-      "FW BOA FEB.csv",
-      fwStoreId,
-    );
-    const dealertrackUpload = await uploadFixtureCsv(
-      app,
-      "dealertrack",
-      "server/src/presenters/__fixtures__/fw/FW DT FEB.csv",
-      "FW DT FEB.csv",
-      fwStoreId,
-    );
-
-    const reconciliation = await request(app).post("/reconcile").send({
-      boa_source_file_id: boaUpload.source_file_id,
-      dealertrack_source_file_id: dealertrackUpload.source_file_id,
-      dealership_store_id: fwStoreId,
-    });
-    expect(reconciliation.status).toBe(200);
 
     const response = await request(app)
-      .get(`/reconciliation-runs/${reconciliation.body.reconciliation_run_id}/merged-floorplan`)
-      .query({ format: "json" });
-    const detailResponse = await request(app).get(
-      `/reconciliation-runs/${reconciliation.body.reconciliation_run_id}`,
-    );
-    const fpRecResponse = await request(app)
-      .get(`/reconciliation-runs/${reconciliation.body.reconciliation_run_id}/fp-rec`)
-      .query({ format: "json" });
+      .post("/upload")
+      .field("source_type", "boa")
+      .field("store_id", String(storeResponse.body.id))
+      .field("accounting_month", "2026-04")
+      .attach(
+        "file",
+        await loadFixture("server/src/presenters/__fixtures__/fw/FW BOA FEB.csv"),
+        "FW BOA FEB.csv",
+      );
 
-    expect(response.status).toBe(200);
-    expect(response.body.headers).toEqual([
-      "FW",
-      "Serial No/VIN",
-      "VIN6",
-      "Ending Balance",
-      "2100",
-      "VIN6",
-      "Description",
-      "Control",
-    ]);
-    expect(response.body.store_config).toMatchObject({
-      storeKey: "fw",
-      mergedSheetLabel: "FW",
-      mergedSheetLabelAliases: ["FW", "FORT WORTH"],
-      dealertrackAccountLabel: "2100",
-      dealertrackAmountColumns: ["2100", "2101", "2101S"],
-      dealertrackExcludedAccountColumns: ["2110"],
+    expect(response.status).toBe(422);
+    expect(response.body.error).toMatchObject({
+      code: "ROOFTOP_PROFILE_UNSUPPORTED",
+      details: {
+        accounting_month: "2026-04",
+        rooftop_profile_id: null,
+      },
     });
-    expect(response.body.headers).not.toContain("2110");
-    expect(response.body.store_config.dealertrackAmountColumns).not.toContain("2110");
-    expect(detailResponse.status).toBe(200);
-    const detailCounts = {
-      matched: detailResponse.body.match_groups.length,
-      boaOnly: detailResponse.body.exceptions.filter(
-        (exception: { source_type: string }) => exception.source_type === "boa",
-      ).length,
-      dealertrackOnly: detailResponse.body.exceptions.filter(
-        (exception: { source_type: string }) => exception.source_type === "dealertrack",
-      ).length,
-    };
-    expect(countApiRows(response.body.rows)).toEqual(detailCounts);
-    expect(response.body.boa_total_amount_cents).toBe(3_449_894_154);
-    expect(response.body.dealertrack_total_amount_cents).toBe(-3_275_177_349);
-
-    const dealertrackTransactions = [
-      ...detailResponse.body.match_groups.flatMap(
-        (group: { transactions: Array<{ source_type: string; transaction: { account: string; account_identifier: string } }> }) =>
-          group.transactions,
-      ),
-      ...detailResponse.body.exceptions,
-    ].filter((entry: { source_type: string }) => entry.source_type === "dealertrack");
-    expect(dealertrackTransactions).toHaveLength(635);
-    expect(
-      dealertrackTransactions.every(
-        (entry: { transaction: { account: string; account_identifier: string } }) =>
-          entry.transaction.account === "2100" &&
-          entry.transaction.account_identifier === "floorplan",
-      ),
-    ).toBe(true);
-    expect(fpRecResponse.status).toBe(200);
-    expect(fpRecResponse.body.headers).toEqual(response.body.headers);
-    expect(fpRecResponse.body.store_config).toMatchObject({
-      storeKey: "fw",
-      mergedSheetLabel: "FW",
-      dealertrackAccountLabel: "2100",
-      dealertrackAmountColumns: ["2100", "2101", "2101S"],
-      dealertrackExcludedAccountColumns: ["2110"],
-    });
-    expect(countApiRows(fpRecResponse.body.rows)).toEqual(detailCounts);
-    expect(fpRecResponse.body.boa_total_amount_cents).toBe(3_449_894_154);
-    expect(fpRecResponse.body.dealertrack_total_amount_cents).toBe(-3_275_177_349);
   });
 
   test("GET /reconciliation-runs/:id/merged-floorplan validates unconfigured stores and bad overrides", async () => {
-    const app = createFallbackApp();
+    const repository = new MemoryTransactionRepository();
+    const app = createFallbackApp(repository);
     const storeResponse = await request(app)
       .post("/stores")
       .send({ name: "Hiley Mazda of Test" });
     expect(storeResponse.status).toBe(201);
     const testStoreId = storeResponse.body.id as number;
-    const reconciliation = await createReconciliationWithRows(app, {
-      boaCsv: boaUploadCsv("M50101", "1HGCM82633A004352", "$501.00", "50101"),
-      dealertrackCsv: dealertrackUploadCsv("M50101", "-501", "1HGCM82633A004352"),
-      boaFilename: "boa-unconfigured-store.csv",
-      dealertrackFilename: "dt-unconfigured-store.csv",
-      storeId: testStoreId,
+    const boaImport = await repository.createSourceFileWithTransactions(1, {
+      source_type: "boa",
+      dealership_store_id: testStoreId,
+      original_filename: "boa-unconfigured-store.csv",
+      stored_filename: null,
+      file_hash: "boa-unconfigured-store",
+      row_count: 0,
+      validation_error_count: 0,
+    }, []);
+    const dealertrackImport = await repository.createSourceFileWithTransactions(1, {
+      source_type: "dealertrack",
+      dealership_store_id: testStoreId,
+      original_filename: "dt-unconfigured-store.csv",
+      stored_filename: null,
+      file_hash: "dt-unconfigured-store",
+      row_count: 0,
+      validation_error_count: 0,
+    }, []);
+    const reconciliation = await repository.createReconciliationRun({
+      dealership_id: 1,
+      dealership_store_id: testStoreId,
+      boa_source_file_id: boaImport.sourceFile.id,
+      dealertrack_source_file_id: dealertrackImport.sourceFile.id,
+      result: {
+        matched_count: 0,
+        exception_count: 0,
+        duplicate_count: 0,
+        match_groups: [],
+        exceptions: [],
+        vin_presence_diagnostics: {
+          extracted_vin_sets: { boa: [], dealertrack: [] },
+          vin_presence_exceptions: { dealertrack_not_in_boa: [], boa_not_in_dealertrack: [] },
+          transaction_unmatched_shared_vins: [],
+        },
+      },
     });
 
     const unconfiguredStore = await request(app).get(
-      `/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`,
+      `/reconciliation-runs/${reconciliation.id}/merged-floorplan`,
     );
     const badOverride = await request(app)
-      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
+      .get(`/reconciliation-runs/${reconciliation.id}/merged-floorplan`)
       .query({ store_key: "lexus" });
     const explicitOverride = await request(app)
-      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
+      .get(`/reconciliation-runs/${reconciliation.id}/merged-floorplan`)
       .query({ store_key: "hurst", format: "json" });
     const fpRecUnconfiguredStore = await request(app)
-      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/fp-rec`);
+      .get(`/reconciliation-runs/${reconciliation.id}/fp-rec`);
     const fpRecBadOverride = await request(app)
-      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/fp-rec`)
+      .get(`/reconciliation-runs/${reconciliation.id}/fp-rec`)
       .query({ store_key: "lexus" });
     const fpRecExplicitOverride = await request(app)
-      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/fp-rec`)
+      .get(`/reconciliation-runs/${reconciliation.id}/fp-rec`)
       .query({ store_key: "hurst", format: "json" });
 
     expect(unconfiguredStore.status).toBe(422);
@@ -2940,6 +3019,10 @@ describe("app", () => {
     const repository = new MemoryTransactionRepository();
     const firstDealershipApp = createFallbackApp(repository, 1);
     const secondDealershipApp = createFallbackApp(repository, 2);
+    const secondDealershipStore = await request(secondDealershipApp)
+      .post("/stores")
+      .send({ name: "Hiley Mazda of Hurst" });
+    expect(secondDealershipStore.status).toBe(201);
     const boaUpload = await uploadCsv(
       firstDealershipApp,
       "boa",
@@ -2951,6 +3034,7 @@ describe("app", () => {
       "dealertrack",
       dealertrackUploadCsv("M11111", "-100"),
       "dealertrack-one.csv",
+      secondDealershipStore.body.id,
     );
 
     const response = await request(firstDealershipApp).post("/reconcile").send({
@@ -3221,23 +3305,6 @@ function countApiRows(rows: Array<{ classification: string }>): {
     boaOnly: rows.filter((row) => row.classification === "boa_only").length,
     dealertrackOnly: rows.filter((row) => row.classification === "dealertrack_only").length,
   };
-}
-
-async function uploadFixtureCsv(
-  app: ReturnType<typeof createApp>,
-  sourceType: string,
-  fixturePath: string,
-  filename: string,
-  storeId: number,
-) {
-  const uploadRequest = request(app)
-    .post("/upload")
-    .field("source_type", sourceType)
-    .field("store_id", String(storeId));
-  const response = await uploadRequest.attach("file", await loadFixture(fixturePath), filename);
-
-  expect(response.status).toBe(200);
-  return response.body as { source_file_id: number; automated_reconciliation_run_id?: number | null };
 }
 
 async function createReconciliation(app: ReturnType<typeof createApp>) {
