@@ -21,14 +21,20 @@ exports.up = (pgm) => {
       ADD CONSTRAINT source_files_accounting_month_check
       CHECK (
         accounting_month IS NULL
-        OR accounting_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'
+        OR (
+          accounting_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'
+          AND accounting_month !~ '^0000-'
+        )
       );
 
     ALTER TABLE reconciliation_runs
       ADD CONSTRAINT reconciliation_runs_accounting_month_check
       CHECK (
         accounting_month IS NULL
-        OR accounting_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'
+        OR (
+          accounting_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'
+          AND accounting_month !~ '^0000-'
+        )
       );
 
     DROP INDEX IF EXISTS ux_source_files_dealership_source_type_file_hash;
@@ -38,12 +44,29 @@ exports.up = (pgm) => {
         dealership_store_id,
         source_type,
         accounting_month,
+        rooftop_profile_id,
+        rooftop_profile_version,
         file_hash,
         parser_name,
         parser_version,
         preprocessor_name,
         preprocessor_version
       );
+
+    CREATE UNIQUE INDEX ux_source_files_legacy_identity
+      ON source_files (
+        dealership_id,
+        dealership_store_id,
+        source_type,
+        file_hash
+      )
+      WHERE accounting_month IS NULL
+        AND rooftop_profile_id IS NULL
+        AND rooftop_profile_version IS NULL
+        AND parser_name IS NULL
+        AND parser_version IS NULL
+        AND preprocessor_name IS NULL
+        AND preprocessor_version IS NULL;
   `);
 };
 
@@ -62,6 +85,7 @@ exports.down = async (pgm) => {
   }
   pgm.sql(`
     DROP INDEX IF EXISTS ux_source_files_reusable_identity;
+    DROP INDEX IF EXISTS ux_source_files_legacy_identity;
     ALTER TABLE source_files DROP CONSTRAINT IF EXISTS source_files_accounting_month_check;
     ALTER TABLE reconciliation_runs DROP CONSTRAINT IF EXISTS reconciliation_runs_accounting_month_check;
     ALTER TABLE source_files

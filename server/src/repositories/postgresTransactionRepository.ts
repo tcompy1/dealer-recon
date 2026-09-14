@@ -2386,6 +2386,7 @@ function isDuplicateSourceFileError(error: unknown): boolean {
     "constraint" in error &&
     (error.constraint === "ux_source_files_source_type_file_hash" ||
       error.constraint === "ux_source_files_dealership_source_type_file_hash" ||
+      error.constraint === "ux_source_files_legacy_identity" ||
       error.constraint === "ux_source_files_reusable_identity")
   );
 }

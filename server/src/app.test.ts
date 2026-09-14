@@ -460,13 +460,16 @@ describe("app", () => {
       row_count: 0,
       validation_error_count: 0,
     }, []);
-    nullBoaImport.sourceFile.dealership_store_id = null;
-    nullDealertrackImport.sourceFile.dealership_store_id = null;
+    setLegacyMemorySourceFileStore(repository, nullBoaImport.sourceFile.id, null);
+    setLegacyMemorySourceFileStore(repository, nullDealertrackImport.sourceFile.id, null);
     const nullRun = await repository.createReconciliationRun({
       dealership_id: 1,
       dealership_store_id: 1,
       boa_source_file_id: nullBoaImport.sourceFile.id,
       dealertrack_source_file_id: nullDealertrackImport.sourceFile.id,
+      accounting_month: null,
+      rooftop_profile_id: null,
+      rooftop_profile_version: null,
       result: {
         matched_count: 0,
         exception_count: 0,
@@ -2631,6 +2634,9 @@ describe("app", () => {
       dealership_store_id: testStoreId,
       boa_source_file_id: boaImport.sourceFile.id,
       dealertrack_source_file_id: dealertrackImport.sourceFile.id,
+      accounting_month: null,
+      rooftop_profile_id: null,
+      rooftop_profile_version: null,
       result: {
         matched_count: 0,
         exception_count: 0,
@@ -3567,4 +3573,19 @@ async function createReconciliationWithRows(
     transaction_unmatched_shared_vins: expect.any(Array),
   });
   return response.body as { reconciliation_run_id: number };
+}
+
+function setLegacyMemorySourceFileStore(
+  repository: MemoryTransactionRepository,
+  sourceFileId: number,
+  dealershipStoreId: number | null,
+): void {
+  const memoryState = repository as unknown as {
+    sourceFiles: Array<{ id: number; dealership_store_id: number | null }>;
+  };
+  const sourceFile = memoryState.sourceFiles.find((candidate) => candidate.id === sourceFileId);
+  if (!sourceFile) {
+    throw new Error(`Missing memory source-file fixture ${sourceFileId}.`);
+  }
+  sourceFile.dealership_store_id = dealershipStoreId;
 }

@@ -1,10 +1,12 @@
 import request from "supertest";
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, expectTypeOf, test, vi } from "vitest";
 
 import { createApp } from "../app.js";
+import type { RooftopProfileId } from "../config/storeWorkflowConfig.js";
 import { parseAccountingMonth, type AccountingMonth } from "../domain/accountingMonth.js";
 import type {
   ProfiledNewSourceFile,
+  PersistReconciliationRunInput,
   ReconciliationResponse,
   SourceProcessingIdentity,
   TransactionSummary,
@@ -17,6 +19,7 @@ import {
   PostgresTransactionRepository,
 } from "./postgresTransactionRepository.js";
 import {
+  DuplicateSourceFileError,
   MemoryTransactionRepository,
   type TransactionRepository,
 } from "./transactionRepository.js";
@@ -30,32 +33,50 @@ const boaUploadCsv = (stockNumber: string, vin: string, amount: string, referenc
 const _dealertrackUploadCsv = (stockNumber: string, amount: string) =>
   `${stockNumber},"BOA FLOORPLAN",${amount},0`;
 
+expectTypeOf<
+  Pick<
+    PersistReconciliationRunInput,
+    "accounting_month" | "rooftop_profile_id" | "rooftop_profile_version"
+  >
+>().toEqualTypeOf<{
+  accounting_month: AccountingMonth | null;
+  rooftop_profile_id: RooftopProfileId | null;
+  rooftop_profile_version: string | null;
+}>();
+
 describe("reusable source identity persistence", () => {
   test("memory repository round-trips profiled and legacy receipts by exact identity", async () => {
     await assertReusableSourceIdentityRoundTrip(new MemoryTransactionRepository(), "memory");
+  });
+
+  test("memory repository rejects duplicate legacy receipts", async () => {
+    await assertDuplicateLegacyReceiptRejected(new MemoryTransactionRepository(), "memory");
+  });
+
+  test("memory repository differentiates receipts by rooftop profile version alone", async () => {
+    await assertProfileVersionDifferentiation(new MemoryTransactionRepository(), "memory");
+  });
+
+  test("memory repository protects preprocessing receipts from caller mutation", async () => {
+    await assertPreprocessingReceiptImmutability(new MemoryTransactionRepository(), "memory");
   });
 });
 
 describeIfDatabase("reusable source identity persistence in PostgreSQL", () => {
   test("round-trips profiled and legacy receipts by exact identity", async () => {
-    if (!databaseUrl) {
-      throw new Error("DATABASE_URL is required for reconciliation persistence tests.");
-    }
+    await withPostgresIdentityRepository(assertReusableSourceIdentityRoundTrip);
+  });
 
-    await withDatabaseTestLock(databaseUrl, async () => {
-      await migrate(databaseUrl);
-      const pool = createPool(databaseUrl);
-      const repository = new PostgresTransactionRepository(pool);
-      const namespace = `postgres-${Date.now()}-${Math.random()}`;
-      try {
-        await assertReusableSourceIdentityRoundTrip(repository, namespace);
-      } finally {
-        await pool.query("DELETE FROM source_files WHERE file_hash LIKE $1", [
-          `task5-${namespace}-%`,
-        ]);
-        await pool.end();
-      }
-    });
+  test("rejects duplicate legacy receipts", async () => {
+    await withPostgresIdentityRepository(assertDuplicateLegacyReceiptRejected);
+  });
+
+  test("differentiates receipts by rooftop profile version alone", async () => {
+    await withPostgresIdentityRepository(assertProfileVersionDifferentiation);
+  });
+
+  test("protects preprocessing receipts from caller mutation", async () => {
+    await withPostgresIdentityRepository(assertPreprocessingReceiptImmutability);
   });
 });
 
@@ -393,6 +414,9 @@ describeIfDatabase("reconciliation persistence", () => {
             dealership_id: 1,
             boa_source_file_id: boaImport.sourceFile.id,
             dealertrack_source_file_id: dealertrackImport.sourceFile.id,
+            accounting_month: null,
+            rooftop_profile_id: null,
+            rooftop_profile_version: null,
             result: failedResult,
           }),
         ).rejects.toThrow();
@@ -696,6 +720,222 @@ async function assertReusableSourceIdentityRoundTrip(
       source_file_id: dealertrackReceipt.sourceFile.id,
       ...dealertrackIdentity,
     }),
+  });
+}
+
+async function assertDuplicateLegacyReceiptRejected(
+  repository: TransactionRepository,
+  namespace: string,
+): Promise<void> {
+  const fileHash = `task5-${namespace}-legacy-duplicate`;
+  const legacySource = {
+    dealership_store_id: 1,
+    source_type: "boa" as const,
+    original_filename: "legacy.csv",
+    stored_filename: null,
+    file_hash: fileHash,
+    row_count: 0,
+    validation_error_count: 0,
+  };
+
+  await repository.createSourceFileWithTransactions(1, legacySource, []);
+  await expect(
+    repository.createSourceFileWithTransactions(
+      1,
+      { ...legacySource, original_filename: "legacy-copy.csv" },
+      [],
+    ),
+  ).rejects.toBeInstanceOf(DuplicateSourceFileError);
+}
+
+async function assertProfileVersionDifferentiation(
+  repository: TransactionRepository,
+  namespace: string,
+): Promise<void> {
+  const month = accountingMonth("2026-04");
+  const fileHash = `task5-${namespace}-profile-version`;
+  const versionOne: SourceProcessingIdentity = {
+    accounting_month: month,
+    rooftop_profile_id: "acura-v1",
+    rooftop_profile_version: "1",
+    parser_name: "boa-csv",
+    parser_version: "1",
+    preprocessor_name: "boa-floorplan",
+    preprocessor_version: "preprocessing-v1",
+  };
+  const versionTwo: SourceProcessingIdentity = {
+    ...versionOne,
+    rooftop_profile_version: "2",
+  };
+
+  const first = await repository.createSourceFileWithTransactions(
+    1,
+    profiledSourceFile(
+      "profile-v1.csv",
+      fileHash,
+      versionOne,
+      preprocessingMetadata(month, versionOne, 6),
+    ),
+    [],
+  );
+  const second = await repository.createSourceFileWithTransactions(
+    1,
+    profiledSourceFile(
+      "profile-v2.csv",
+      fileHash,
+      versionTwo,
+      preprocessingMetadata(month, versionTwo, 7),
+    ),
+    [],
+  );
+
+  expect(second.sourceFile.id).not.toBe(first.sourceFile.id);
+  await expect(
+    repository.getReusableSourceFile(1, 1, "boa", fileHash, versionOne),
+  ).resolves.toMatchObject({ id: first.sourceFile.id, rooftop_profile_version: "1" });
+  await expect(
+    repository.getReusableSourceFile(1, 1, "boa", fileHash, versionTwo),
+  ).resolves.toMatchObject({ id: second.sourceFile.id, rooftop_profile_version: "2" });
+}
+
+async function assertPreprocessingReceiptImmutability(
+  repository: TransactionRepository,
+  namespace: string,
+): Promise<void> {
+  const month = accountingMonth("2026-04");
+  const fileHash = `task5-${namespace}-immutable-receipt`;
+  const dealertrackHash = `task5-${namespace}-immutable-dealertrack`;
+  const identity: SourceProcessingIdentity = {
+    accounting_month: month,
+    rooftop_profile_id: "acura-v1",
+    rooftop_profile_version: "1",
+    parser_name: "boa-csv",
+    parser_version: "1",
+    preprocessor_name: "boa-floorplan",
+    preprocessor_version: "preprocessing-v1",
+  };
+  const metadata = preprocessingMetadata(month, identity, 8);
+  const created = await repository.createSourceFileWithTransactions(
+    1,
+    profiledSourceFile("immutable.csv", fileHash, identity, metadata),
+    [],
+  );
+
+  mutateReceipt(metadata);
+  await expectOriginalReceipt(repository, fileHash, identity);
+
+  mutateReceipt(created.sourceFile.preprocessing_metadata);
+  await expectOriginalReceipt(repository, fileHash, identity);
+
+  const directRead = await repository.getSourceFile(created.sourceFile.id);
+  expect(directRead).not.toBeNull();
+  mutateReceipt(directRead?.preprocessing_metadata ?? null);
+  await expectOriginalReceipt(repository, fileHash, identity);
+
+  const compatibilityRead = await repository.getSourceFileByHash(1, 1, "boa", fileHash);
+  expect(compatibilityRead).not.toBeNull();
+  mutateReceipt(compatibilityRead?.preprocessing_metadata ?? null);
+  await expectOriginalReceipt(repository, fileHash, identity);
+
+  const reusableRead = await repository.getReusableSourceFile(1, 1, "boa", fileHash, identity);
+  expect(reusableRead).not.toBeNull();
+  mutateReceipt(reusableRead?.preprocessing_metadata ?? null);
+  await expectOriginalReceipt(repository, fileHash, identity);
+
+  const listedRead = (await repository.listSourceFiles(1, "boa", 1)).find(
+    (sourceFile) => sourceFile.source_file_id === created.sourceFile.id,
+  );
+  expect(listedRead).toBeDefined();
+  mutateReceipt(listedRead?.preprocessing_metadata ?? null);
+  await expectOriginalReceipt(repository, fileHash, identity);
+
+  const dealertrackIdentity: SourceProcessingIdentity = {
+    ...identity,
+    parser_name: "dealertrack-csv",
+    preprocessor_name: "dealertrack-floorplan",
+  };
+  const dealertrack = await repository.createSourceFileWithTransactions(
+    1,
+    profiledSourceFile(
+      "immutable-dealertrack.csv",
+      dealertrackHash,
+      dealertrackIdentity,
+      preprocessingMetadata(month, dealertrackIdentity, 9, "dealertrack"),
+      "dealertrack",
+    ),
+    [],
+  );
+  const run = await repository.createReconciliationRun({
+    dealership_id: 1,
+    dealership_store_id: 1,
+    boa_source_file_id: created.sourceFile.id,
+    dealertrack_source_file_id: dealertrack.sourceFile.id,
+    accounting_month: month,
+    rooftop_profile_id: "acura-v1",
+    rooftop_profile_version: "1",
+    result: emptyReconciliationResult(),
+  });
+  const detailRead = await repository.getReconciliationRunDetail(1, run.id);
+  expect(detailRead).not.toBeNull();
+  mutateReceipt(detailRead?.boa_source_file.preprocessing_metadata ?? null);
+  await expectOriginalReceipt(repository, fileHash, identity);
+
+  const replacementMetadata = preprocessingMetadata(month, identity, 8);
+  const replaced = await repository.replaceSourceFileWithTransactions(
+    1,
+    created.sourceFile.id,
+    profiledSourceFile("immutable-replaced.csv", fileHash, identity, replacementMetadata),
+    [],
+  );
+  expect(replaced).not.toBeNull();
+  mutateReceipt(replacementMetadata);
+  await expectOriginalReceipt(repository, fileHash, identity);
+  mutateReceipt(replaced?.sourceFile.preprocessing_metadata ?? null);
+  await expectOriginalReceipt(repository, fileHash, identity);
+}
+
+async function expectOriginalReceipt(
+  repository: TransactionRepository,
+  fileHash: string,
+  identity: SourceProcessingIdentity,
+): Promise<void> {
+  const stored = await repository.getReusableSourceFile(1, 1, "boa", fileHash, identity);
+  expect(stored?.preprocessing_metadata?.removed_rows).toEqual([
+    {
+      source: "boa",
+      source_row_number: 8,
+      removal_reason: "zero_balance",
+      key_values: { stock_number: "A100" },
+    },
+  ]);
+}
+
+function mutateReceipt(metadata: UploadPreprocessingMetadata | null): void {
+  if (metadata) {
+    metadata.removed_rows[0].key_values.stock_number = "MUTATED";
+  }
+}
+
+async function withPostgresIdentityRepository(
+  assertion: (repository: TransactionRepository, namespace: string) => Promise<void>,
+): Promise<void> {
+  if (!databaseUrl) {
+    throw new Error("DATABASE_URL is required for reconciliation persistence tests.");
+  }
+
+  await withDatabaseTestLock(databaseUrl, async () => {
+    await migrate(databaseUrl);
+    const pool = createPool(databaseUrl);
+    const repository = new PostgresTransactionRepository(pool);
+    const namespace = `postgres-${Date.now()}-${Math.random()}`;
+    try {
+      await assertion(repository, namespace);
+    } finally {
+      await pool.query("DELETE FROM source_files WHERE file_hash LIKE $1", [
+        `task5-${namespace}-%`,
+      ]);
+      await pool.end();
+    }
   });
 }
 

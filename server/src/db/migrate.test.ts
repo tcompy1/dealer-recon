@@ -30,7 +30,7 @@ describeIfDatabase("migrate", () => {
     }
 
     await withDatabaseTestLock(databaseUrl, async () => {
-      const demoUserCountBefore = await countDemoUsers(databaseUrl);
+      const demoUserCountBefore = await countDemoUsersIfSchemaExists(databaseUrl);
       await migrate(databaseUrl);
       await migrate(databaseUrl);
 
@@ -96,7 +96,7 @@ describeIfDatabase("migrate", () => {
            WHERE lower(email) = lower($1)`,
           [DEMO_EMAIL],
         );
-        expect(Number(demoUserResult.rows[0].count)).toBe(demoUserCountBefore);
+        expect(Number(demoUserResult.rows[0].count)).toBe(demoUserCountBefore ?? 0);
         const amountColumnResult = await pool.query<{ data_type: string }>(
           `SELECT data_type
            FROM information_schema.columns
@@ -266,18 +266,36 @@ describeIfDatabase("migrate", () => {
            WHERE schemaname = 'public'
              AND indexname IN (
                'ux_source_files_dealership_source_type_file_hash',
+               'ux_source_files_legacy_identity',
                'ux_source_files_reusable_identity'
              )
            ORDER BY indexname`,
         );
         expect(indexResult.rows).toEqual([
           {
+            indexname: "ux_source_files_legacy_identity",
+            indexdef: expect.stringContaining("accounting_month IS NULL"),
+          },
+          {
             indexname: "ux_source_files_reusable_identity",
             indexdef: expect.stringMatching(
-              /UNIQUE INDEX ux_source_files_reusable_identity ON public\.source_files USING btree \(dealership_id, dealership_store_id, source_type, accounting_month, file_hash, parser_name, parser_version, preprocessor_name, preprocessor_version\)$/,
+              /UNIQUE INDEX ux_source_files_reusable_identity ON public\.source_files USING btree \(dealership_id, dealership_store_id, source_type, accounting_month, rooftop_profile_id, rooftop_profile_version, file_hash, parser_name, parser_version, preprocessor_name, preprocessor_version\)$/,
             ),
           },
         ]);
+        for (const nullableIdentityColumn of [
+          "accounting_month",
+          "rooftop_profile_id",
+          "rooftop_profile_version",
+          "parser_name",
+          "parser_version",
+          "preprocessor_name",
+          "preprocessor_version",
+        ]) {
+          expect(indexResult.rows[0].indexdef).toContain(
+            `${nullableIdentityColumn} IS NULL`,
+          );
+        }
 
         const monthConstraintResult = await pool.query<{ conname: string }>(
           `SELECT conname
@@ -364,6 +382,12 @@ describeIfDatabase("migrate", () => {
             [`legacy-identity-${unique}`],
           ),
         ).rejects.toThrow();
+        await expect(
+          pool.query(
+            `UPDATE source_files SET accounting_month = '0000-01' WHERE file_hash = $1`,
+            [`legacy-identity-${unique}`],
+          ),
+        ).rejects.toThrow();
 
         const runSourceFiles = await pool.query<{ id: number }>(
           `INSERT INTO source_files (
@@ -391,6 +415,19 @@ describeIfDatabase("migrate", () => {
                status,
                accounting_month
              ) VALUES (1, 1, $1, $2, 'completed', '2026-00')`,
+            [runSourceFiles.rows[0].id, runSourceFiles.rows[1].id],
+          ),
+        ).rejects.toThrow();
+        await expect(
+          pool.query(
+            `INSERT INTO reconciliation_runs (
+               dealership_id,
+               dealership_store_id,
+               boa_source_file_id,
+               dealertrack_source_file_id,
+               status,
+               accounting_month
+             ) VALUES (1, 1, $1, $2, 'completed', '0000-01')`,
             [runSourceFiles.rows[0].id, runSourceFiles.rows[1].id],
           ),
         ).rejects.toThrow();
@@ -474,11 +511,13 @@ describeIfDatabase("migrate", () => {
 
         const appliedState = await pool.query<{
           reusable_index: string;
+          legacy_index: string;
           accounting_month_column_count: string;
           migration_count: string;
         }>(
           `SELECT
              to_regclass('public.ux_source_files_reusable_identity')::text AS reusable_index,
+             to_regclass('public.ux_source_files_legacy_identity')::text AS legacy_index,
              (
                SELECT COUNT(*)::text
                FROM information_schema.columns
@@ -494,6 +533,7 @@ describeIfDatabase("migrate", () => {
         );
         expect(appliedState.rows[0]).toEqual({
           reusable_index: "ux_source_files_reusable_identity",
+          legacy_index: "ux_source_files_legacy_identity",
           accounting_month_column_count: "2",
           migration_count: "1",
         });
@@ -599,9 +639,15 @@ describeIfDatabase("migrate", () => {
   });
 });
 
-async function countDemoUsers(databaseUrl: string): Promise<number> {
+async function countDemoUsersIfSchemaExists(databaseUrl: string): Promise<number | null> {
   const pool = createPool(databaseUrl);
   try {
+    const schemaResult = await pool.query<{ users_table: string | null }>(
+      "SELECT to_regclass('public.users')::text AS users_table",
+    );
+    if (schemaResult.rows[0].users_table === null) {
+      return null;
+    }
     const result = await pool.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count
        FROM users

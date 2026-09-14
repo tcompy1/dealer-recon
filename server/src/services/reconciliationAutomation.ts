@@ -60,6 +60,9 @@ export async function createReconciliationRunFromSourceFiles({
     dealership_store_id: boaSourceFile.dealership_store_id,
     boa_source_file_id: boaSourceFile.id,
     dealertrack_source_file_id: dealertrackSourceFile.id,
+    accounting_month: null,
+    rooftop_profile_id: null,
+    rooftop_profile_version: null,
     result,
     status: "artifact_pending",
     input_snapshot: {

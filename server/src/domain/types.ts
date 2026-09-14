@@ -532,9 +532,9 @@ export type PersistReconciliationRunInput = {
   dealership_store_id?: number | null;
   boa_source_file_id: number;
   dealertrack_source_file_id: number;
-  accounting_month?: AccountingMonth | null;
-  rooftop_profile_id?: RooftopProfileId | null;
-  rooftop_profile_version?: string | null;
+  accounting_month: AccountingMonth | null;
+  rooftop_profile_id: RooftopProfileId | null;
+  rooftop_profile_version: string | null;
   result: ReconciliationResponse;
   input_snapshot?: PersistReconciliationRunSnapshotInput;
   status?: string;

@@ -293,11 +293,23 @@ export class MemoryTransactionRepository implements TransactionRepository {
     transactions: NewTransaction[],
     uploadContent?: NewSourceFileUploadContent,
   ): Promise<SourceFileImport> {
+    const dealershipStoreId =
+      sourceFileInput.dealership_store_id ?? this.getDefaultStoreId(dealershipId);
+    if (
+      hasDuplicateMemorySourceIdentity(
+        this.sourceFiles,
+        dealershipId,
+        dealershipStoreId,
+        sourceFileInput,
+      )
+    ) {
+      throw new DuplicateSourceFileError();
+    }
     const sourceFile: SourceFile = {
       ...sourceFileInput,
       id: this.nextSourceFileId++,
       dealership_id: dealershipId,
-      dealership_store_id: sourceFileInput.dealership_store_id ?? this.getDefaultStoreId(dealershipId),
+      dealership_store_id: dealershipStoreId,
       accounting_month: sourceFileInput.accounting_month ?? null,
       rooftop_profile_id: sourceFileInput.rooftop_profile_id ?? null,
       rooftop_profile_version: sourceFileInput.rooftop_profile_version ?? null,
@@ -305,7 +317,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
       parser_version: sourceFileInput.parser_version ?? null,
       preprocessor_name: sourceFileInput.preprocessor_name ?? null,
       preprocessor_version: sourceFileInput.preprocessor_version ?? null,
-      preprocessing_metadata: sourceFileInput.preprocessing_metadata ?? null,
+      preprocessing_metadata: cloneNullableJson(sourceFileInput.preprocessing_metadata ?? null),
       created_at: new Date().toISOString(),
     };
     this.sourceFiles.push(sourceFile);
@@ -320,7 +332,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     }));
     const inserted = await this.insertMany(scopedTransactions);
 
-    return { sourceFile, transactions: inserted };
+    return { sourceFile: cloneSourceFile(sourceFile), transactions: inserted };
   }
 
   async replaceSourceFileWithTransactions(
@@ -337,8 +349,21 @@ export class MemoryTransactionRepository implements TransactionRepository {
       return null;
     }
 
+    const dealershipStoreId =
+      sourceFileInput.dealership_store_id ?? sourceFile.dealership_store_id;
+    if (
+      hasDuplicateMemorySourceIdentity(
+        this.sourceFiles,
+        dealershipId,
+        dealershipStoreId,
+        sourceFileInput,
+        sourceFileId,
+      )
+    ) {
+      throw new DuplicateSourceFileError();
+    }
     Object.assign(sourceFile, {
-      dealership_store_id: sourceFileInput.dealership_store_id ?? sourceFile.dealership_store_id,
+      dealership_store_id: dealershipStoreId,
       source_type: sourceFileInput.source_type,
       original_filename: sourceFileInput.original_filename,
       stored_filename: sourceFileInput.stored_filename,
@@ -352,7 +377,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
       parser_version: sourceFileInput.parser_version ?? null,
       preprocessor_name: sourceFileInput.preprocessor_name ?? null,
       preprocessor_version: sourceFileInput.preprocessor_version ?? null,
-      preprocessing_metadata: sourceFileInput.preprocessing_metadata ?? null,
+      preprocessing_metadata: cloneNullableJson(sourceFileInput.preprocessing_metadata ?? null),
     });
     if (uploadContent) {
       this.upsertSourceFileUploadContent(sourceFile, uploadContent);
@@ -369,7 +394,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     }));
     const inserted = await this.insertMany(scopedTransactions);
 
-    return { sourceFile, transactions: inserted };
+    return { sourceFile: cloneSourceFile(sourceFile), transactions: inserted };
   }
 
   async insertMany(transactions: NewTransaction[]): Promise<Transaction[]> {
@@ -388,7 +413,8 @@ export class MemoryTransactionRepository implements TransactionRepository {
   }
 
   async getSourceFile(sourceFileId: number): Promise<SourceFile | null> {
-    return this.sourceFiles.find((sourceFile) => sourceFile.id === sourceFileId) ?? null;
+    const sourceFile = this.sourceFiles.find((candidate) => candidate.id === sourceFileId);
+    return sourceFile ? cloneSourceFile(sourceFile) : null;
   }
 
   async getSourceFileByHash(
@@ -397,15 +423,14 @@ export class MemoryTransactionRepository implements TransactionRepository {
     sourceType: SourceType,
     fileHash: string,
   ): Promise<SourceFile | null> {
-    return (
-      this.sourceFiles.find(
-        (sourceFile) =>
-          sourceFile.dealership_id === dealershipId &&
-          sourceFile.dealership_store_id === dealershipStoreId &&
-          sourceFile.source_type === sourceType &&
-          sourceFile.file_hash === fileHash,
-      ) ?? null
+    const sourceFile = this.sourceFiles.find(
+      (sourceFile) =>
+        sourceFile.dealership_id === dealershipId &&
+        sourceFile.dealership_store_id === dealershipStoreId &&
+        sourceFile.source_type === sourceType &&
+        sourceFile.file_hash === fileHash,
     );
+    return sourceFile ? cloneSourceFile(sourceFile) : null;
   }
 
   async getReusableSourceFile(
@@ -415,22 +440,21 @@ export class MemoryTransactionRepository implements TransactionRepository {
     fileHash: string,
     identity: SourceProcessingIdentity,
   ): Promise<SourceFile | null> {
-    return (
-      this.sourceFiles.find(
-        (sourceFile) =>
-          sourceFile.dealership_id === dealershipId &&
-          sourceFile.dealership_store_id === dealershipStoreId &&
-          sourceFile.source_type === sourceType &&
-          sourceFile.file_hash === fileHash &&
-          sourceFile.accounting_month === identity.accounting_month &&
-          sourceFile.rooftop_profile_id === identity.rooftop_profile_id &&
-          sourceFile.rooftop_profile_version === identity.rooftop_profile_version &&
-          sourceFile.parser_name === identity.parser_name &&
-          sourceFile.parser_version === identity.parser_version &&
-          sourceFile.preprocessor_name === identity.preprocessor_name &&
-          sourceFile.preprocessor_version === identity.preprocessor_version,
-      ) ?? null
+    const sourceFile = this.sourceFiles.find(
+      (sourceFile) =>
+        sourceFile.dealership_id === dealershipId &&
+        sourceFile.dealership_store_id === dealershipStoreId &&
+        sourceFile.source_type === sourceType &&
+        sourceFile.file_hash === fileHash &&
+        sourceFile.accounting_month === identity.accounting_month &&
+        sourceFile.rooftop_profile_id === identity.rooftop_profile_id &&
+        sourceFile.rooftop_profile_version === identity.rooftop_profile_version &&
+        sourceFile.parser_name === identity.parser_name &&
+        sourceFile.parser_version === identity.parser_version &&
+        sourceFile.preprocessor_name === identity.preprocessor_name &&
+        sourceFile.preprocessor_version === identity.preprocessor_version,
     );
+    return sourceFile ? cloneSourceFile(sourceFile) : null;
   }
 
   async listSourceFiles(
@@ -1275,7 +1299,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
       parser_version: sourceFile.parser_version,
       preprocessor_name: sourceFile.preprocessor_name,
       preprocessor_version: sourceFile.preprocessor_version,
-      preprocessing_metadata: sourceFile.preprocessing_metadata,
+      preprocessing_metadata: cloneNullableJson(sourceFile.preprocessing_metadata),
       created_at: sourceFile.created_at,
     };
   }
@@ -1377,7 +1401,7 @@ function _toSourceFileSummary(sourceFile: SourceFile): SourceFileSummary {
     parser_version: sourceFile.parser_version,
     preprocessor_name: sourceFile.preprocessor_name,
     preprocessor_version: sourceFile.preprocessor_version,
-    preprocessing_metadata: sourceFile.preprocessing_metadata,
+    preprocessing_metadata: cloneNullableJson(sourceFile.preprocessing_metadata),
     created_at: sourceFile.created_at,
   };
 }
@@ -1722,6 +1746,68 @@ function cloneSourceFileUploadContent(
     ...content,
     content: Buffer.from(content.content),
   };
+}
+
+const sourceProcessingIdentityKeys: Array<keyof SourceProcessingIdentity> = [
+  "accounting_month",
+  "rooftop_profile_id",
+  "rooftop_profile_version",
+  "parser_name",
+  "parser_version",
+  "preprocessor_name",
+  "preprocessor_version",
+];
+
+type NullableSourceProcessingIdentity = Pick<SourceFile, keyof SourceProcessingIdentity>;
+
+function hasDuplicateMemorySourceIdentity(
+  sourceFiles: SourceFile[],
+  dealershipId: number,
+  dealershipStoreId: number | null,
+  sourceFileInput: NewSourceFile,
+  excludedSourceFileId?: number,
+): boolean {
+  const identity = nullableSourceProcessingIdentity(sourceFileInput);
+  const isLegacyIdentity = sourceProcessingIdentityKeys.every((key) => identity[key] === null);
+  const isCompleteIdentity = sourceProcessingIdentityKeys.every((key) => identity[key] !== null);
+  if (!isLegacyIdentity && !isCompleteIdentity) {
+    return false;
+  }
+
+  return sourceFiles.some(
+    (sourceFile) =>
+      sourceFile.id !== excludedSourceFileId &&
+      sourceFile.dealership_id === dealershipId &&
+      sourceFile.dealership_store_id === dealershipStoreId &&
+      sourceFile.source_type === sourceFileInput.source_type &&
+      sourceFile.file_hash === sourceFileInput.file_hash &&
+      sourceProcessingIdentityKeys.every((key) => sourceFile[key] === identity[key]),
+  );
+}
+
+function nullableSourceProcessingIdentity(
+  sourceFile: NewSourceFile,
+): NullableSourceProcessingIdentity {
+  return {
+    accounting_month: sourceFile.accounting_month ?? null,
+    rooftop_profile_id: sourceFile.rooftop_profile_id ?? null,
+    rooftop_profile_version: sourceFile.rooftop_profile_version ?? null,
+    parser_name: sourceFile.parser_name ?? null,
+    parser_version: sourceFile.parser_version ?? null,
+    preprocessor_name: sourceFile.preprocessor_name ?? null,
+    preprocessor_version: sourceFile.preprocessor_version ?? null,
+  };
+}
+
+function cloneSourceFile(sourceFile: SourceFile): SourceFile {
+  return {
+    ...sourceFile,
+    preprocessing_metadata: cloneNullableJson(sourceFile.preprocessing_metadata),
+  };
+}
+
+function cloneNullableJson<T>(value: T | null): T | null {
+  return value === null ? null : cloneJson(value);
 }
 
 function cloneJson<T>(value: T): T {
