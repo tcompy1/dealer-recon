@@ -71,12 +71,6 @@ export interface TransactionRepository {
   ): Promise<SourceFileImport | null>;
   insertMany(transactions: NewTransaction[]): Promise<Transaction[]>;
   getSourceFile(sourceFileId: number): Promise<SourceFile | null>;
-  getSourceFileByHash(
-    dealershipId: number,
-    dealershipStoreId: number | null,
-    sourceType: SourceType,
-    fileHash: string,
-  ): Promise<SourceFile | null>;
   getReusableSourceFile(
     dealershipId: number,
     dealershipStoreId: number,
@@ -414,22 +408,6 @@ export class MemoryTransactionRepository implements TransactionRepository {
 
   async getSourceFile(sourceFileId: number): Promise<SourceFile | null> {
     const sourceFile = this.sourceFiles.find((candidate) => candidate.id === sourceFileId);
-    return sourceFile ? cloneSourceFile(sourceFile) : null;
-  }
-
-  async getSourceFileByHash(
-    dealershipId: number,
-    dealershipStoreId: number | null,
-    sourceType: SourceType,
-    fileHash: string,
-  ): Promise<SourceFile | null> {
-    const sourceFile = this.sourceFiles.find(
-      (sourceFile) =>
-        sourceFile.dealership_id === dealershipId &&
-        sourceFile.dealership_store_id === dealershipStoreId &&
-        sourceFile.source_type === sourceType &&
-        sourceFile.file_hash === fileHash,
-    );
     return sourceFile ? cloneSourceFile(sourceFile) : null;
   }
 

@@ -10,6 +10,8 @@ import type {
   StoreAutomationStatus,
   ReconciliationResponse,
 } from "../domain/types.js";
+import type { AccountingMonth } from "../domain/accountingMonth.js";
+import type { RooftopProfileId } from "../config/storeWorkflowConfig.js";
 import type { TransactionRepository } from "../repositories/transactionRepository.js";
 import {
   RECONCILIATION_ENGINE_VERSION,
@@ -171,7 +173,22 @@ export async function evaluateAutoRunAfterUpload(
     return null;
   }
 
-  const pair = await findLatestSourceFilePair(repository, dealershipId, sourceFile.dealership_store_id);
+  if (
+    sourceFile.accounting_month === null ||
+    sourceFile.rooftop_profile_id === null ||
+    sourceFile.rooftop_profile_version === null
+  ) {
+    await recordMissingExpectedFiles(repository, dealershipId, sourceFile.dealership_store_id);
+    return null;
+  }
+  const pair = await findLatestSourceFilePair(
+    repository,
+    dealershipId,
+    sourceFile.dealership_store_id,
+    sourceFile.accounting_month,
+    sourceFile.rooftop_profile_id,
+    sourceFile.rooftop_profile_version,
+  );
   if (!pair || pair.boa.source_file_id === pair.dealertrack.source_file_id) {
     await recordMissingExpectedFiles(repository, dealershipId, sourceFile.dealership_store_id);
     return null;
@@ -224,7 +241,11 @@ export async function runDueScheduledJobs(
   );
   const runs: ReconciliationRun[] = [];
   for (const job of jobs) {
-    const pair = await findLatestSourceFilePair(repository, dealershipId, job.dealership_store_id);
+    const pair = await findLatestProfiledSourceFilePair(
+      repository,
+      dealershipId,
+      job.dealership_store_id,
+    );
     if (!pair) {
       await recordMissingExpectedFiles(repository, dealershipId, job.dealership_store_id);
       await repository.updateScheduledReconciliationJob(dealershipId, job.id, {
@@ -379,15 +400,69 @@ async function recordMissingExpectedFiles(
   }
 }
 
-async function findLatestSourceFilePair(
+export async function findLatestSourceFilePair(
+  repository: TransactionRepository,
+  dealershipId: number,
+  dealershipStoreId: number | null,
+  accountingMonth: AccountingMonth,
+  rooftopProfileId: RooftopProfileId,
+  rooftopProfileVersion: string,
+): Promise<{ boa: SourceFileSummary; dealertrack: SourceFileSummary } | null> {
+  const files = await repository.listSourceFiles(dealershipId, undefined, dealershipStoreId ?? undefined);
+  const matchesIdentity = (file: SourceFileSummary) =>
+    file.dealership_store_id === dealershipStoreId &&
+    file.accounting_month === accountingMonth &&
+    file.rooftop_profile_id === rooftopProfileId &&
+    file.rooftop_profile_version === rooftopProfileVersion;
+  const boa = files.find((file) => file.source_type === "boa" && matchesIdentity(file));
+  const dealertrack = files.find(
+    (file) => file.source_type === "dealertrack" && matchesIdentity(file),
+  );
+  return boa && dealertrack ? { boa, dealertrack } : null;
+}
+
+async function findLatestProfiledSourceFilePair(
   repository: TransactionRepository,
   dealershipId: number,
   dealershipStoreId: number | null,
 ): Promise<{ boa: SourceFileSummary; dealertrack: SourceFileSummary } | null> {
-  const files = await repository.listSourceFiles(dealershipId, undefined, dealershipStoreId ?? undefined);
-  const boa = files.find((file) => file.source_type === "boa");
-  const dealertrack = files.find((file) => file.source_type === "dealertrack");
-  return boa && dealertrack ? { boa, dealertrack } : null;
+  const files = await repository.listSourceFiles(
+    dealershipId,
+    undefined,
+    dealershipStoreId ?? undefined,
+  );
+  const identities = new Set<string>();
+  for (const file of files) {
+    if (
+      file.dealership_store_id !== dealershipStoreId ||
+      file.accounting_month === null ||
+      file.rooftop_profile_id === null ||
+      file.rooftop_profile_version === null
+    ) {
+      continue;
+    }
+    const identityKey = [
+      file.accounting_month,
+      file.rooftop_profile_id,
+      file.rooftop_profile_version,
+    ].join("\u0000");
+    if (identities.has(identityKey)) {
+      continue;
+    }
+    identities.add(identityKey);
+    const pair = await findLatestSourceFilePair(
+      repository,
+      dealershipId,
+      dealershipStoreId,
+      file.accounting_month,
+      file.rooftop_profile_id,
+      file.rooftop_profile_version,
+    );
+    if (pair) {
+      return pair;
+    }
+  }
+  return null;
 }
 
 function reconciliationCompletedEvent(

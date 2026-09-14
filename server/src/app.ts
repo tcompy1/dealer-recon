@@ -18,9 +18,12 @@ import {
   isSourceType,
   type DealershipStore,
   type DealershipStoreWithRooftopSupport,
+  type NewSourceFile,
+  type ProfiledNewSourceFile,
   type ReconciliationArtifact,
   type ReconciliationRequest,
   type SourceFile,
+  type SourceProcessingIdentity,
 } from "./domain/types.js";
 import {
   parseAccountingMonth,
@@ -656,125 +659,6 @@ export function createApp(
       }
     }
     const fileHash = createFileHash(request.file.buffer);
-    const duplicateSourceFile = await repository.getSourceFileByHash(
-      requestDealershipId,
-      dealershipStoreId,
-      sourceType,
-      fileHash,
-    );
-    let unhealthyDuplicate:
-      | {
-          sourceFile: SourceFile;
-          health: SourceFileHealth;
-        }
-      | null = null;
-    if (duplicateSourceFile) {
-      const reusedTransactions = await repository.listBySourceFile(
-        requestDealershipId,
-        duplicateSourceFile.id,
-      );
-      const storeName =
-        dealershipStores.find((store) => store.id === duplicateSourceFile.dealership_store_id)
-          ?.name ?? null;
-      const duplicateHealth = assessSourceFileHealth(
-        duplicateSourceFile,
-        reusedTransactions.length,
-      );
-      if (!duplicateHealth.healthy) {
-        unhealthyDuplicate = { sourceFile: duplicateSourceFile, health: duplicateHealth };
-      } else {
-        if (isFloorplanSource) {
-          if (!accountingMonth || !rooftopProfile) {
-            throw new Error(
-              "Floorplan duplicate validation requires accounting month and rooftop profile.",
-            );
-          }
-          throw new ConflictError(
-            "An identical floorplan upload exists, but its accounting-period processing identity cannot be verified.",
-            "FLOORPLAN_DUPLICATE_IDENTITY_UNVERIFIED",
-            {
-              source_file_id: duplicateSourceFile.id,
-              source_type: sourceType,
-              accounting_month: accountingMonth,
-              rooftop_profile_id: rooftopProfile.profileId,
-              recovery:
-                "Upload a source with different contents or wait for exact processing-identity reuse.",
-            },
-          );
-        }
-        await repository.createIngestionEvent(requestDealershipId, {
-          dealership_store_id: dealershipStoreId,
-          source_file_id: duplicateSourceFile.id,
-          reconciliation_run_id: null,
-          source_type: sourceType,
-          state: "uploaded",
-          message: "Existing upload reused.",
-          metadata: {
-            file_hash: fileHash,
-            requested_filename: request.file.originalname ?? null,
-            existing_source_file_id: duplicateSourceFile.id,
-            existing_filename: duplicateSourceFile.original_filename,
-          },
-        });
-        await repository.createOperationalEvent(requestDealershipId, {
-          dealership_store_id: dealershipStoreId,
-          reconciliation_run_id: null,
-          event_type: "duplicate_upload_warning",
-          severity: "warning",
-          message: "Duplicate upload detected for this store and source type.",
-          metadata: {
-            source_type: sourceType,
-            source_file_id: duplicateSourceFile.id,
-            file_hash: fileHash,
-          },
-        });
-        const autoRun = await evaluateAutoRunAfterUpload(
-          repository,
-          requestDealershipId,
-          duplicateSourceFile,
-          uploadedByUserId,
-        );
-        response.json({
-          source_file_id: duplicateSourceFile.id,
-          dealership_store_id: duplicateSourceFile.dealership_store_id,
-          store_name: storeName,
-          source_type: sourceType,
-          filename: duplicateSourceFile.original_filename,
-          transaction_count: reusedTransactions.length,
-          stored_row_count: duplicateSourceFile.row_count,
-          stored_validation_error_count: duplicateSourceFile.validation_error_count,
-          validation_errors: [],
-          automated_reconciliation_run_id: autoRun?.id ?? null,
-          reused_existing_file: true,
-          source_file_health: duplicateHealth,
-          warnings: warningsForReusedSourceFile(duplicateSourceFile),
-          existing_file: {
-            source_file_id: duplicateSourceFile.id,
-            filename: duplicateSourceFile.original_filename,
-            store_name: storeName,
-            source_type: duplicateSourceFile.source_type,
-            created_at: duplicateSourceFile.created_at,
-          },
-          preprocessing: null,
-        });
-        return;
-      }
-
-      await repository.createOperationalEvent(requestDealershipId, {
-        dealership_store_id: dealershipStoreId,
-        reconciliation_run_id: null,
-        event_type: "duplicate_upload_warning",
-        severity: "warning",
-        message: "Duplicate upload matched an unhealthy existing source file; reprocessing with the current parser.",
-        metadata: {
-          source_type: sourceType,
-          source_file_id: duplicateSourceFile.id,
-          file_hash: fileHash,
-          health: duplicateHealth,
-        },
-      });
-    }
-
     const preprocessingResult = runUploadPreprocessing(
       request.file.buffer,
       sourceType,
@@ -783,6 +667,49 @@ export function createApp(
       rooftopProfile,
     );
     if (preprocessingResult.kind === "unsupported") {
+      if (isFloorplanSource) {
+        if (!accountingMonth || !rooftopProfile) {
+          throw new Error("Floorplan validation requires accounting month and rooftop profile.");
+        }
+        const validationFailure = preprocessingResult.validationFailure ?? {
+          code: "SOURCE_FORMAT_UNSUPPORTED" as const,
+          message: "The uploaded source format is not supported for this rooftop.",
+          evidence: {
+            detected_format: preprocessingResult.preprocessingMetadata.detected_format,
+            parser_route: preprocessingResult.preprocessingMetadata.parser_route,
+          },
+          recovery:
+            "Export the source in a format supported by the selected rooftop and upload it again.",
+        };
+        await repository.createIngestionEvent(requestDealershipId, {
+          dealership_store_id: dealershipStoreId,
+          source_file_id: null,
+          reconciliation_run_id: null,
+          source_type: sourceType,
+          state: "failed",
+          message: validationFailure.message,
+          metadata: {
+            code: validationFailure.code,
+            file_hash: fileHash,
+            accounting_month: accountingMonth,
+            rooftop_profile_id: rooftopProfile.profileId,
+            detected_format: preprocessingResult.preprocessingMetadata.detected_format,
+            parser_route: preprocessingResult.preprocessingMetadata.parser_route,
+            evidence: validationFailure.evidence,
+          },
+        });
+        throw rooftopValidationError(
+          validationFailure.code,
+          validationFailure.message,
+          {
+            source: sourceType,
+            accounting_month: accountingMonth,
+            rooftop_profile_id: rooftopProfile.profileId,
+            evidence: validationFailure.evidence,
+            recovery: validationFailure.recovery,
+          },
+        );
+      }
       await repository.createIngestionEvent(requestDealershipId, {
         dealership_store_id: dealershipStoreId,
         source_file_id: null,
@@ -806,7 +733,152 @@ export function createApp(
       transactions: preprocessingResult.transactions,
       validationErrors: preprocessingResult.validationErrors,
     };
-    const sourceFileInput = {
+    let sourceIdentity: SourceProcessingIdentity | null = null;
+    if (isFloorplanSource) {
+      if (!accountingMonth || !rooftopProfile || dealershipStoreId === null) {
+        throw new Error("Floorplan persistence requires accounting month, store, and rooftop profile.");
+      }
+      const summary = preprocessingResult.preprocessingMetadata.summary;
+      if (!summary) {
+        throw new Error("Floorplan persistence requires preprocessing provenance.");
+      }
+      sourceIdentity = {
+        accounting_month: accountingMonth,
+        rooftop_profile_id: rooftopProfile.profileId,
+        rooftop_profile_version: rooftopProfile.profileVersion,
+        parser_name: summary.parser_name,
+        parser_version: summary.parser_version,
+        preprocessor_name: summary.preprocessor_name,
+        preprocessor_version: summary.preprocessor_version,
+      };
+    }
+
+    const exactDuplicate = sourceIdentity && dealershipStoreId !== null
+      ? await repository.getReusableSourceFile(
+          requestDealershipId,
+          dealershipStoreId,
+          sourceType,
+          fileHash,
+          sourceIdentity,
+        )
+      : await findSourceFileByHash(
+          repository,
+          requestDealershipId,
+          dealershipStoreId,
+          sourceType,
+          fileHash,
+        );
+    let unhealthyDuplicate: { sourceFile: SourceFile; health: SourceFileHealth } | null = null;
+    if (exactDuplicate) {
+      const reusedTransactions = await repository.listBySourceFile(
+        requestDealershipId,
+        exactDuplicate.id,
+      );
+      const duplicateHealth = assessSourceFileHealth(
+        exactDuplicate,
+        reusedTransactions.length,
+        undefined,
+        sourceIdentity !== null,
+      );
+      if (duplicateHealth.healthy) {
+        const storeName =
+          dealershipStores.find((store) => store.id === exactDuplicate.dealership_store_id)
+            ?.name ?? null;
+        await repository.createIngestionEvent(requestDealershipId, {
+          dealership_store_id: dealershipStoreId,
+          source_file_id: exactDuplicate.id,
+          reconciliation_run_id: null,
+          source_type: sourceType,
+          state: "uploaded",
+          message: "Existing upload reused.",
+          metadata: {
+            file_hash: fileHash,
+            requested_filename: request.file.originalname ?? null,
+            existing_source_file_id: exactDuplicate.id,
+            existing_filename: exactDuplicate.original_filename,
+            ...(sourceIdentity ?? {}),
+          },
+        });
+        await repository.createOperationalEvent(requestDealershipId, {
+          dealership_store_id: dealershipStoreId,
+          reconciliation_run_id: null,
+          event_type: "duplicate_upload_warning",
+          severity: "warning",
+          message: "Duplicate upload detected for this store and source type.",
+          metadata: {
+            source_type: sourceType,
+            source_file_id: exactDuplicate.id,
+            file_hash: fileHash,
+            ...(sourceIdentity ?? {}),
+          },
+        });
+        const autoRun = await evaluateAutoRunAfterUpload(
+          repository,
+          requestDealershipId,
+          exactDuplicate,
+          uploadedByUserId,
+        );
+        response.json({
+          source_file_id: exactDuplicate.id,
+          dealership_store_id: exactDuplicate.dealership_store_id,
+          store_name: storeName,
+          source_type: sourceType,
+          filename: exactDuplicate.original_filename,
+          transaction_count: reusedTransactions.length,
+          stored_row_count: exactDuplicate.row_count,
+          stored_validation_error_count: exactDuplicate.validation_error_count,
+          validation_errors: [],
+          automated_reconciliation_run_id: autoRun?.id ?? null,
+          reused_existing_file: true,
+          source_file_health: duplicateHealth,
+          warnings: [
+            ...preprocessingResult.warnings,
+            ...warningsForReusedSourceFile(exactDuplicate),
+          ],
+          existing_file: {
+            source_file_id: exactDuplicate.id,
+            filename: exactDuplicate.original_filename,
+            store_name: storeName,
+            source_type: exactDuplicate.source_type,
+            created_at: exactDuplicate.created_at,
+          },
+          ...(sourceIdentity ?? {}),
+          preprocessing:
+            exactDuplicate.preprocessing_metadata ?? preprocessingResult.preprocessingMetadata,
+        });
+        return;
+      }
+      unhealthyDuplicate = { sourceFile: exactDuplicate, health: duplicateHealth };
+    } else if (sourceIdentity) {
+      const legacyDuplicate = await findLegacyUnhealthySourceFileByHash(
+        repository,
+        requestDealershipId,
+        dealershipStoreId,
+        sourceType,
+        fileHash,
+      );
+      if (legacyDuplicate) {
+        unhealthyDuplicate = legacyDuplicate;
+      }
+    }
+
+    if (unhealthyDuplicate) {
+      await repository.createOperationalEvent(requestDealershipId, {
+        dealership_store_id: dealershipStoreId,
+        reconciliation_run_id: null,
+        event_type: "duplicate_upload_warning",
+        severity: "warning",
+        message: "Duplicate upload matched an unhealthy existing source file; reprocessing with the current parser.",
+        metadata: {
+          source_type: sourceType,
+          source_file_id: unhealthyDuplicate.sourceFile.id,
+          file_hash: fileHash,
+          health: unhealthyDuplicate.health,
+        },
+      });
+    }
+
+    const baseSourceFileInput: NewSourceFile = {
       source_type: sourceType,
       dealership_store_id: dealershipStoreId,
       original_filename: request.file.originalname || "upload.csv",
@@ -815,6 +887,13 @@ export function createApp(
       row_count: result.transactions.length,
       validation_error_count: result.validationErrors.length,
     };
+    const sourceFileInput: NewSourceFile | ProfiledNewSourceFile = sourceIdentity
+      ? {
+          ...baseSourceFileInput,
+          ...sourceIdentity,
+          preprocessing_metadata: preprocessingResult.preprocessingMetadata,
+        }
+      : baseSourceFileInput;
     const importResult = unhealthyDuplicate
       ? await repository.replaceSourceFileWithTransactions(
           requestDealershipId,
@@ -900,9 +979,11 @@ export function createApp(
       ),
       warnings: unhealthyDuplicate
         ? [
+            ...preprocessingResult.warnings,
             `Existing source file ${unhealthyDuplicate.sourceFile.id} was unhealthy and was reprocessed with the current parser.`,
           ]
-        : [],
+        : preprocessingResult.warnings,
+      ...(sourceIdentity ?? {}),
       preprocessing: preprocessingResult.preprocessingMetadata,
     });
   }));
@@ -1935,6 +2016,85 @@ function createFileHash(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
+async function findSourceFileByHash(
+  repository: TransactionRepository,
+  dealershipId: number,
+  dealershipStoreId: number | null,
+  sourceType: import("./domain/types.js").SourceType,
+  fileHash: string,
+): Promise<SourceFile | null> {
+  const sourceFiles = await repository.listSourceFiles(
+    dealershipId,
+    sourceType,
+    dealershipStoreId ?? undefined,
+  );
+  for (const summary of sourceFiles) {
+    if (summary.dealership_store_id !== dealershipStoreId) {
+      continue;
+    }
+    const sourceFile = await repository.getSourceFile(summary.source_file_id);
+    if (sourceFile?.file_hash === fileHash) {
+      return sourceFile;
+    }
+  }
+  return null;
+}
+
+async function findLegacyUnhealthySourceFileByHash(
+  repository: TransactionRepository,
+  dealershipId: number,
+  dealershipStoreId: number | null,
+  sourceType: import("./domain/types.js").SourceType,
+  fileHash: string,
+): Promise<{ sourceFile: SourceFile; health: SourceFileHealth } | null> {
+  const sourceFiles = await repository.listSourceFiles(
+    dealershipId,
+    sourceType,
+    dealershipStoreId ?? undefined,
+  );
+  for (const summary of sourceFiles) {
+    if (
+      summary.dealership_store_id !== dealershipStoreId ||
+      !hasLegacyProcessingIdentity(summary)
+    ) {
+      continue;
+    }
+    const sourceFile = await repository.getSourceFile(summary.source_file_id);
+    if (!sourceFile || sourceFile.file_hash !== fileHash) {
+      continue;
+    }
+    const transactions = await repository.listBySourceFile(dealershipId, sourceFile.id);
+    const health = assessSourceFileHealth(sourceFile, transactions.length);
+    if (!health.healthy) {
+      return { sourceFile, health };
+    }
+  }
+  return null;
+}
+
+function hasLegacyProcessingIdentity(
+  sourceFile: Pick<
+    SourceFile,
+    | "accounting_month"
+    | "rooftop_profile_id"
+    | "rooftop_profile_version"
+    | "parser_name"
+    | "parser_version"
+    | "preprocessor_name"
+    | "preprocessor_version"
+  >,
+): boolean {
+  return (
+    sourceFile.accounting_month === null &&
+    sourceFile.rooftop_profile_id === null &&
+    sourceFile.rooftop_profile_version === null &&
+    sourceFile.parser_name === null &&
+    sourceFile.parser_version === null &&
+    sourceFile.preprocessor_name === null &&
+    sourceFile.preprocessor_version === null
+  );
+}
+
 function nonEmptyStringOrNull(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
@@ -1968,9 +2128,13 @@ type SourceFileHealth = {
 };
 
 function assessSourceFileHealth(
-  sourceFile: Pick<SourceFile, "row_count" | "validation_error_count">,
+  sourceFile: Pick<
+    SourceFile,
+    "row_count" | "validation_error_count" | "preprocessing_metadata"
+  >,
   transactionCount: number,
   statusOverride?: SourceFileHealthStatus,
+  requirePreprocessingReceipt = false,
 ): SourceFileHealth {
   const reasons: string[] = [];
   if (transactionCount <= 0) {
@@ -1982,6 +2146,9 @@ function assessSourceFileHealth(
   const attemptedRows = sourceFile.row_count + sourceFile.validation_error_count;
   if (attemptedRows > 0 && sourceFile.validation_error_count >= attemptedRows) {
     reasons.push("validation_errors_indicate_total_parser_failure");
+  }
+  if (requirePreprocessingReceipt && sourceFile.preprocessing_metadata === null) {
+    reasons.push("missing_preprocessing_receipt");
   }
 
   const healthy = reasons.length === 0;
@@ -2091,12 +2258,14 @@ type UploadPreprocessingResult =
       transactions: import("./domain/types.js").NewTransaction[];
       validationErrors: import("./domain/types.js").ValidationError[];
       preprocessingMetadata: UploadPreprocessingMetadata;
+      warnings: string[];
     }
   | {
       kind: "unsupported";
       statusCode: 422;
       detail: string;
       preprocessingMetadata: UploadPreprocessingMetadata;
+      validationFailure?: import("./services/preprocessing/index.js").ProfiledUploadValidationFailure;
     };
 
 function runUploadPreprocessing(
@@ -2117,25 +2286,36 @@ function runUploadPreprocessing(
     : routeNonFloorplanUpload(buffer, sourceType, originalFilename);
   if (decision.kind === "preprocessed") {
     const { output } = decision;
+    const preprocessingMetadata: UploadPreprocessingMetadata = {
+      detected_format: output.detection.format,
+      detection_confidence: output.detection.confidence,
+      detection_reason: output.detection.reason,
+      parser_route: output.route.kind,
+      preprocessing_version: output.summary.preprocessing_version,
+      summary: output.summary,
+      diagnostics: output.diagnostics,
+      removed_rows: buildRemovedRows(
+        output.diagnostics,
+        output.summary.source_kind,
+      ),
+      legacy_csv_path: false,
+      unsupported_reason: null,
+    };
+    if (output.validationFailure) {
+      return {
+        kind: "unsupported",
+        statusCode: 422,
+        detail: output.validationFailure.message,
+        preprocessingMetadata,
+        validationFailure: output.validationFailure,
+      };
+    }
     return {
       kind: "ok",
       transactions: output.transactions,
       validationErrors: output.validationErrors,
-      preprocessingMetadata: {
-        detected_format: output.detection.format,
-        detection_confidence: output.detection.confidence,
-        detection_reason: output.detection.reason,
-        parser_route: output.route.kind,
-        preprocessing_version: output.summary.preprocessing_version,
-        summary: output.summary,
-        diagnostics: output.diagnostics,
-        removed_rows: buildRemovedRows(
-          output.diagnostics,
-          output.summary.source_kind,
-        ),
-        legacy_csv_path: false,
-        unsupported_reason: null,
-      },
+      preprocessingMetadata,
+      warnings: output.periodValidation.ok ? output.periodValidation.warnings : [],
     };
   }
   if (decision.kind === "fallback_legacy_csv") {
@@ -2158,6 +2338,7 @@ function runUploadPreprocessing(
         legacy_csv_path: true,
         unsupported_reason: null,
       },
+      warnings: [],
     };
   }
   return {
@@ -2176,6 +2357,7 @@ function runUploadPreprocessing(
       legacy_csv_path: false,
       unsupported_reason: decision.reason,
     },
+    validationFailure: decision.validationFailure,
   };
 }
 

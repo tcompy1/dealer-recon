@@ -832,11 +832,6 @@ async function assertPreprocessingReceiptImmutability(
   mutateReceipt(directRead?.preprocessing_metadata ?? null);
   await expectOriginalReceipt(repository, fileHash, identity);
 
-  const compatibilityRead = await repository.getSourceFileByHash(1, 1, "boa", fileHash);
-  expect(compatibilityRead).not.toBeNull();
-  mutateReceipt(compatibilityRead?.preprocessing_metadata ?? null);
-  await expectOriginalReceipt(repository, fileHash, identity);
-
   const reusableRead = await repository.getReusableSourceFile(1, 1, "boa", fileHash, identity);
   expect(reusableRead).not.toBeNull();
   mutateReceipt(reusableRead?.preprocessing_metadata ?? null);

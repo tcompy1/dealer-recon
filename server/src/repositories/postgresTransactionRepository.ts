@@ -424,19 +424,6 @@ export class PostgresTransactionRepository implements TransactionRepository {
     return result.rows[0] ? toSourceFile(result.rows[0]) : null;
   }
 
-  async getSourceFileByHash(
-    dealershipId: number,
-    dealershipStoreId: number | null,
-    sourceType: SourceType,
-    fileHash: string,
-  ): Promise<SourceFile | null> {
-    const result = await this.pool.query<SourceFileRow>(
-      "SELECT sf.*, ds.name AS store_name FROM source_files sf LEFT JOIN dealership_stores ds ON ds.id = sf.dealership_store_id WHERE sf.dealership_id = $1 AND sf.dealership_store_id IS NOT DISTINCT FROM $2 AND sf.source_type = $3 AND sf.file_hash = $4",
-      [dealershipId, dealershipStoreId, sourceType, fileHash],
-    );
-    return result.rows[0] ? toSourceFile(result.rows[0]) : null;
-  }
-
   async getReusableSourceFile(
     dealershipId: number,
     dealershipStoreId: number,

@@ -202,6 +202,14 @@ export type UploadResponse = {
   stored_row_count: number;
   stored_validation_error_count: number;
   validation_errors: ValidationError[];
+  accounting_month: AccountingMonth;
+  rooftop_profile_id: RooftopProfileId;
+  rooftop_profile_version: string;
+  parser_name: string;
+  parser_version: string;
+  preprocessor_name: string;
+  preprocessor_version: string;
+  preprocessing: UploadPreprocessingMetadata;
   automated_reconciliation_run_id?: number | null;
   reused_existing_file: boolean;
   source_file_health: {
