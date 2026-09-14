@@ -868,7 +868,7 @@ describe("app", () => {
       );
 
     expect(response.status).toBe(422);
-    expect(response.body).toMatchObject({
+    expect(response.body).toEqual({
       error: {
         code: "ROOFTOP_PROFILE_UNSUPPORTED",
         message: "The selected store is not enabled for floorplan reconciliation.",
@@ -878,6 +878,7 @@ describe("app", () => {
           rooftop_profile_id: null,
           recovery: "Select an enabled rooftop or complete that rooftop's evidence onboarding.",
         },
+        request_id: expect.any(String),
       },
     });
     await expect(repository.listSourceFiles(1)).resolves.toEqual(sourceFilesBefore);
@@ -1616,7 +1617,7 @@ describe("app", () => {
     });
 
     expect(response.status).toBe(422);
-    expect(response.body).toMatchObject({
+    expect(response.body).toEqual({
       error: {
         code: "ROOFTOP_PROFILE_UNSUPPORTED",
         message: "The selected store is not enabled for floorplan reconciliation.",
@@ -1626,6 +1627,7 @@ describe("app", () => {
           rooftop_profile_id: null,
           recovery: "Select an enabled rooftop or complete that rooftop's evidence onboarding.",
         },
+        request_id: expect.any(String),
       },
     });
     await expect(repository.listSourceFiles(1)).resolves.toEqual(sourceFilesBefore);

@@ -228,7 +228,7 @@ export function resolveRooftopProfileFromStoreName(
   return (
     STORE_KEYS.map((storeKey) => ROOFTOP_PROFILES[storeKey]).find((config) =>
       config.dealershipStoreNameAliases.some((alias) =>
-        normalizedStoreName.includes(normalizeStoreName(alias)),
+        normalizedStoreName === normalizeStoreName(alias),
       ),
     ) ?? null
   );

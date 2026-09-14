@@ -76,6 +76,8 @@ describe("rooftop profiles", () => {
     "HSV",
     "Hiley Mazda of West",
     "Unknown Motors",
+    "Acura of Arlington",
+    "Not Hurst Motors",
     null,
     undefined,
   ])("%s resolves to no enabled rooftop profile", (storeName) => {
