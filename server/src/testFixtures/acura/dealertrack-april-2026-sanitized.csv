@@ -1,0 +1,8 @@
+Control,Description,324,999
+M50001,Synthetic exact match SYNTHETC000000001,-100.00,-999.00
+M50007,Synthetic duplicate candidate SYNTHETC000000001,-100.00,0.00
+M50003,Synthetic amount mismatch SYNTHETC000000003,-350.00,0.00
+M50004,Synthetic fallback match SYNTHETC000000004,-400.00,0.00
+M50008,Synthetic Dealertrack-only row SYNTHETC000000005,-500.00,0.00
+M50009,Synthetic missing VIN warning,-600.00,0.00
+M50010,Synthetic excluded amount,0.00,-700.00

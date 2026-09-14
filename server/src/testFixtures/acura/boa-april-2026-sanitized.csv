@@ -1,0 +1,10 @@
+Synthetic Acura BOA April 2026
+Training-only reconciliation fixture
+Serial No/VIN,Stock/Lease No,Description,Original Amount,Ending Balance,Invoice Date
+SYNTHETC000000001,M50001,Synthetic exact match,100.00,100.00,2026-04-01
+SYNTHETC000000002,M50002,Synthetic BOA-only row,200.00,200.00,2026-04-02
+SYNTHETC000000003,M50003,Synthetic amount mismatch,300.00,300.00,2026-04-03
+SYNTHETC000000004,M50004,Synthetic original-amount fallback,400.00,,2026-04-04
+SYNTHETC000000005,M50005,Synthetic zero balance,500.00,0.00,2026-04-05
+SYNTHETC000000006,M50006,Straight Line synthetic row,600.00,600.00,2026-04-06
+Total,,,,,

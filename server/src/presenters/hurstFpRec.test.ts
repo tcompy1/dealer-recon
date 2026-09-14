@@ -19,6 +19,9 @@ import {
   type MergedFloorplanWorkbook,
   type MergedFloorplanRow,
 } from "./mergedFloorplan.js";
+import { loadAcuraSanitizedContract } from "../testFixtures/acura/index.js";
+
+const ACURA_SANITIZED_CONTRACT = loadAcuraSanitizedContract();
 
 const CLERK_HEADERS = [
   "HURST",
@@ -910,6 +913,7 @@ describe("store-configured FP Rec from merged floorplan workbook", () => {
 
     expect(html).toContain("Floorplan Reconciliation - Acura");
     expect(html).toContain("<td>324</td>");
+    expect(html).toContain(ACURA_SANITIZED_CONTRACT.fpRec.glLabel);
     expect(html).not.toContain("<td>2100</td>");
     expect(html).not.toContain("Hiley Mazda of Hurst");
   });

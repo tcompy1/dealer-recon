@@ -1,0 +1,10 @@
+ACURA,Serial No/VIN,VIN6,Ending Balance,324,VIN6,Description,Control
+Synthetic exact match,SYNTHETC000000001,000001,100.00,-100.00,000001,Synthetic exact match SYNTHETC000000001,M50001
+,,,,-100.00,000001,Synthetic duplicate candidate SYNTHETC000000001,M50007
+Synthetic BOA-only row,SYNTHETC000000002,000002,200.00,,,,
+Synthetic amount mismatch,SYNTHETC000000003,000003,300.00,,,,
+,,,,-350.00,000003,Synthetic amount mismatch SYNTHETC000000003,M50003
+Synthetic original-amount fallback,SYNTHETC000000004,000004,400.00,-400.00,000004,Synthetic fallback match SYNTHETC000000004,M50004
+,,,,-500.00,000005,Synthetic Dealertrack-only row SYNTHETC000000005,M50008
+,,,,-600.00,,Synthetic missing VIN warning,M50009
+,,,1000.00,-2050.00,,Final Totals:,

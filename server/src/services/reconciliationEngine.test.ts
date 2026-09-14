@@ -1,8 +1,21 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, test, vi } from "vitest";
 
+import { STORE_WORKFLOW_CONFIGS } from "../config/storeWorkflowConfig.js";
+import type { NewTransaction, Transaction } from "../domain/types.js";
 import { MemoryTransactionRepository } from "../repositories/transactionRepository.js";
-import { reconcileTransactions } from "./reconciliationEngine.js";
+import { parseCsvToTable } from "./parsers/csvTableParser.js";
+import { preprocessBoa } from "./preprocessing/boaPreprocessor.js";
+import { preprocessDealertrack } from "./preprocessing/dealertrackPreprocessor.js";
+import { reconcileTransactionSets, reconcileTransactions } from "./reconciliationEngine.js";
+import {
+  ACURA_SANITIZED_FIXTURE_PATHS,
+  loadAcuraSanitizedContract,
+} from "../testFixtures/acura/index.js";
 import { normalizeTransactionsFromCsv } from "./transactionNormalizer.js";
+
+const ACURA_SANITIZED_CONTRACT = loadAcuraSanitizedContract();
 
 const boaFloorplanCsv = [
   "transaction_date,post_date,amount,reference_number,description,account,stock_number,vin",
@@ -19,6 +32,108 @@ const dealertrackFloorplanCsv = [
   'M20450,"BOA FLOORPLAN DUPLICATE",-21100,0',
   'M20888,"BOA FLOORPLAN",-22600,0',
 ].join("\n");
+
+describe("sanitized Acura reconciliation fixture", () => {
+  test.each([
+    {
+      name: "keeps exact VIN6 and absolute-amount matches",
+      assertResult: (result: ReturnType<typeof reconcileTransactionSets>) => {
+        expect(result.matched_count).toBe(ACURA_SANITIZED_CONTRACT.counts.matched);
+      },
+    },
+    {
+      name: "reports duplicate candidates without converting them into matches",
+      assertResult: (result: ReturnType<typeof reconcileTransactionSets>) => {
+        expect(result.duplicate_count).toBe(ACURA_SANITIZED_CONTRACT.counts.duplicateCandidates);
+      },
+    },
+    {
+      name: "splits same-VIN6 amount mismatches into two review rows",
+      assertResult: (result: ReturnType<typeof reconcileTransactionSets>) => {
+        expect(
+          result.exceptions.filter((exception) => exception.exception_type === "needs_review_vin6_only"),
+        ).toHaveLength(ACURA_SANITIZED_CONTRACT.counts.amountMismatchRows);
+      },
+    },
+    {
+      name: "retains one BOA-only and two Dealertrack-only unmatched rows",
+      assertResult: (result: ReturnType<typeof reconcileTransactionSets>) => {
+        expect(
+          result.exceptions.filter((exception) => exception.exception_type === "missing_in_dealertrack"),
+        ).toHaveLength(ACURA_SANITIZED_CONTRACT.counts.boaOnly);
+        expect(
+          result.exceptions.filter((exception) => exception.exception_type === "missing_in_boa"),
+        ).toHaveLength(ACURA_SANITIZED_CONTRACT.counts.dealertrackOnly);
+      },
+    },
+    {
+      name: "preserves integer-cent source totals",
+      assertResult: (result: ReturnType<typeof reconcileTransactionSets>, transactions: Transaction[][]) => {
+        const [boaTransactions, dealertrackTransactions] = transactions;
+        expect(boaTransactions.reduce((total, transaction) => total + transaction.amount_cents, 0)).toBe(
+          ACURA_SANITIZED_CONTRACT.totals.boaCents,
+        );
+        expect(
+          dealertrackTransactions.reduce((total, transaction) => total + transaction.amount_cents, 0),
+        ).toBe(ACURA_SANITIZED_CONTRACT.totals.dealertrackCents);
+      },
+    },
+    {
+      name: "returns matches in deterministic source order",
+      assertResult: (result: ReturnType<typeof reconcileTransactionSets>) => {
+        expect(result.match_groups.map((group) => group.transactions[0]?.amount_cents)).toEqual([
+          10_000,
+          40_000,
+        ]);
+      },
+    },
+  ])("$name", ({ assertResult }) => {
+    const [boaTransactions, dealertrackTransactions] = loadSanitizedAcuraTransactionSets();
+    const result = reconcileTransactionSets(boaTransactions, dealertrackTransactions);
+
+    assertResult(result, [boaTransactions, dealertrackTransactions]);
+  });
+});
+
+function loadSanitizedAcuraTransactionSets(): [Transaction[], Transaction[]] {
+  const boaResult = preprocessBoa(
+    parseCsvToTable(readFileSync(ACURA_SANITIZED_FIXTURE_PATHS.boaCsv), "no_header"),
+  );
+  const dealertrackResult = preprocessDealertrack(
+    parseCsvToTable(readFileSync(ACURA_SANITIZED_FIXTURE_PATHS.dealertrackCsv), "with_header"),
+    {
+      amountColumns: STORE_WORKFLOW_CONFIGS.acura.dealertrackAmountColumns,
+      accountColumn: STORE_WORKFLOW_CONFIGS.acura.dealertrackAccountColumn,
+      accountLabel: STORE_WORKFLOW_CONFIGS.acura.dealertrackAccountLabel,
+      excludedAccountColumns: STORE_WORKFLOW_CONFIGS.acura.dealertrackExcludedAccountColumns,
+    },
+  );
+
+  return [
+    boaResult.transactions.map((transaction, index) => toTransaction(transaction, index + 1)),
+    dealertrackResult.transactions.map((transaction, index) => toTransaction(transaction, index + 10_001)),
+  ];
+}
+
+function toTransaction(transaction: NewTransaction, id: number): Transaction {
+  return {
+    id,
+    dealership_id: 1,
+    source_file_id: transaction.source_file_id,
+    source_type: transaction.source_type,
+    transaction_date: transaction.transaction_date,
+    post_date: transaction.post_date,
+    amount_cents: transaction.amount_cents,
+    reference_number: transaction.reference_number,
+    description: transaction.description,
+    account: transaction.account,
+    account_type: transaction.account_type ?? "floorplan",
+    account_identifier: transaction.account_identifier ?? "floorplan",
+    stock_number: transaction.stock_number,
+    vin: transaction.vin,
+    raw_data: transaction.raw_data,
+  };
+}
 
 describe("reconcileTransactions", () => {
   test("matches BOA positive and Dealertrack negative amounts by explicit VIN and absolute amount", async () => {
