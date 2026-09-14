@@ -1,4 +1,8 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, test } from "vitest";
+
+import { ACURA_SANITIZED_FIXTURE_PATHS } from "../../testFixtures/acura/index.js";
 
 import { parseWithRoute, resolveParserRoute } from "./sourceParserRouter.js";
 
@@ -43,5 +47,32 @@ describe("resolveParserRoute", () => {
     const route = resolveParserRoute("unknown", "boa");
     expect(route.kind).toBe("unsupported");
     expect(parseWithRoute(route, Buffer.from(""))).toBeNull();
+  });
+
+  test("preserves the sanitized BOA CSV banner and source header shape", () => {
+    const route = resolveParserRoute("csv", "boa");
+    const parsed = parseWithRoute(route, readFileSync(ACURA_SANITIZED_FIXTURE_PATHS.boaCsv));
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.header).toBeNull();
+    expect(parsed?.rows[0]).toEqual(["Synthetic Acura BOA April 2026"]);
+    expect(parsed?.rows[2]?.slice(0, 5)).toEqual([
+      "Serial No/VIN",
+      "Stock/Lease No",
+      "Description",
+      "Original Amount",
+      "Ending Balance",
+    ]);
+  });
+
+  test("preserves the sanitized Dealertrack Control, Description, and 324 columns", () => {
+    const route = resolveParserRoute("csv", "dealertrack");
+    const parsed = parseWithRoute(
+      route,
+      readFileSync(ACURA_SANITIZED_FIXTURE_PATHS.dealertrackCsv),
+    );
+
+    expect(parsed?.header).toEqual(["Control", "Description", "324", "999"]);
+    expect(parsed?.rows).toHaveLength(7);
   });
 });

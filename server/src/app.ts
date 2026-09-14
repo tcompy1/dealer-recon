@@ -22,6 +22,10 @@ import {
   type ReconciliationRequest,
   type SourceFile,
 } from "./domain/types.js";
+import {
+  parseAccountingMonth,
+  type AccountingMonth,
+} from "./domain/accountingMonth.js";
 import { type TransactionRepository } from "./repositories/transactionRepository.js";
 import {
   createReconciliationRunFromSourceFiles,
@@ -37,11 +41,17 @@ import {
   buildReconciliationRunComparison,
 } from "./services/runComparisonAnalytics.js";
 import { normalizeTransactionsFromCsv } from "./services/transactionNormalizer.js";
-import { preprocessUpload } from "./services/preprocessing/index.js";
+import {
+  detectFileFormat,
+  preprocessUpload,
+  type PreprocessingOrchestrationDecision,
+} from "./services/preprocessing/index.js";
+import { resolveParserRoute } from "./services/parsers/sourceParserRouter.js";
 import type {
   PreprocessingDiagnostic,
   PreprocessingDiagnosticKind,
-  PreprocessingSummary,
+  RemovedRow,
+  UploadPreprocessingMetadata,
 } from "./services/preprocessing/types.js";
 import { toExceptionsCsv, toMonthEndReportCsv } from "./presenters/csv.js";
 import {
@@ -56,7 +66,7 @@ import {
   resolveRooftopProfileFromStoreName,
   resolveStoreWorkflowConfigFromStoreName,
   STORE_KEYS,
-  type StoreWorkflowConfig,
+  type RooftopProfile,
 } from "./config/storeWorkflowConfig.js";
 import { rooftopValidationError } from "./services/rooftopValidation.js";
 import { buildMergedFloorplanArtifact } from "./services/mergedFloorplanExport.js";
@@ -125,6 +135,8 @@ const UNSUPPORTED_ROOFTOP_MESSAGE =
   "The selected store is not enabled for floorplan reconciliation.";
 const UNSUPPORTED_ROOFTOP_RECOVERY =
   "Select an enabled rooftop or complete that rooftop's evidence onboarding.";
+const ACCOUNTING_MONTH_RECOVERY =
+  "Select the accounting month in YYYY-MM format and upload the source again.";
 
 export function withRooftopSupport(
   store: DealershipStore,
@@ -614,8 +626,36 @@ export function createApp(
     if (isFloorplanSource && !rooftopProfile) {
       throw unsupportedRooftopError(request.body.accounting_month);
     }
+    let accountingMonth: AccountingMonth | null = null;
+    if (isFloorplanSource && rooftopProfile) {
+      const suppliedMonth = request.body.accounting_month;
+      if (typeof suppliedMonth !== "string" || suppliedMonth.length === 0) {
+        throw rooftopValidationError(
+          "ACCOUNTING_MONTH_REQUIRED",
+          "Accounting month is required for floorplan uploads.",
+          {
+            source: sourceType,
+            accounting_month: null,
+            rooftop_profile_id: rooftopProfile.profileId,
+            recovery: ACCOUNTING_MONTH_RECOVERY,
+          },
+        );
+      }
+      accountingMonth = parseAccountingMonth(suppliedMonth);
+      if (!accountingMonth) {
+        throw rooftopValidationError(
+          "INVALID_ACCOUNTING_MONTH",
+          "Accounting month must use YYYY-MM format.",
+          {
+            source: sourceType,
+            accounting_month: suppliedMonth,
+            rooftop_profile_id: rooftopProfile.profileId,
+            recovery: ACCOUNTING_MONTH_RECOVERY,
+          },
+        );
+      }
+    }
     const fileHash = createFileHash(request.file.buffer);
-    const storeWorkflowConfig = resolveStoreWorkflowConfigFromStoreName(selectedStoreName);
     const duplicateSourceFile = await repository.getSourceFileByHash(
       requestDealershipId,
       dealershipStoreId,
@@ -643,6 +683,25 @@ export function createApp(
       if (!duplicateHealth.healthy) {
         unhealthyDuplicate = { sourceFile: duplicateSourceFile, health: duplicateHealth };
       } else {
+        if (isFloorplanSource) {
+          if (!accountingMonth || !rooftopProfile) {
+            throw new Error(
+              "Floorplan duplicate validation requires accounting month and rooftop profile.",
+            );
+          }
+          throw new ConflictError(
+            "An identical floorplan upload exists, but its accounting-period processing identity cannot be verified.",
+            "FLOORPLAN_DUPLICATE_IDENTITY_UNVERIFIED",
+            {
+              source_file_id: duplicateSourceFile.id,
+              source_type: sourceType,
+              accounting_month: accountingMonth,
+              rooftop_profile_id: rooftopProfile.profileId,
+              recovery:
+                "Upload a source with different contents or wait for exact processing-identity reuse.",
+            },
+          );
+        }
         await repository.createIngestionEvent(requestDealershipId, {
           dealership_store_id: dealershipStoreId,
           source_file_id: duplicateSourceFile.id,
@@ -720,7 +779,8 @@ export function createApp(
       request.file.buffer,
       sourceType,
       request.file.originalname ?? null,
-      storeWorkflowConfig,
+      accountingMonth,
+      rooftopProfile,
     );
     if (preprocessingResult.kind === "unsupported") {
       await repository.createIngestionEvent(requestDealershipId, {
@@ -1982,14 +2042,6 @@ function summarizeLineage(lineage: RawDataLineage | null): Record<string, unknow
 }
 
 
-/** A single row that was removed during preprocessing — surfaced for audit. */
-type RemovedRow = {
-  source: "boa" | "dealertrack";
-  source_row_number: number | null;
-  removal_reason: string;
-  key_values: Record<string, string>;
-};
-
 const REMOVAL_KINDS = new Set<PreprocessingDiagnosticKind>([
   "banner_row_removed",
   "zero_balance_row_removed",
@@ -2033,19 +2085,6 @@ function buildRemovedRows(
     }));
 }
 
-type UploadPreprocessingMetadata = {
-  detected_format: string;
-  detection_confidence: string;
-  detection_reason: string;
-  parser_route: string;
-  preprocessing_version: string | null;
-  summary: PreprocessingSummary | null;
-  diagnostics: PreprocessingDiagnostic[];
-  removed_rows: RemovedRow[];
-  legacy_csv_path: boolean;
-  unsupported_reason: string | null;
-};
-
 type UploadPreprocessingResult =
   | {
       kind: "ok";
@@ -2064,18 +2103,18 @@ function runUploadPreprocessing(
   buffer: Buffer,
   sourceType: import("./domain/types.js").SourceType,
   originalFilename: string | null,
-  storeWorkflowConfig?: StoreWorkflowConfig | null,
+  accountingMonth: AccountingMonth | null,
+  rooftopProfile: RooftopProfile | null,
 ): UploadPreprocessingResult {
-  const decision = preprocessUpload(buffer, sourceType, originalFilename, {
-    dealertrack: storeWorkflowConfig
-      ? {
-          amountColumns: storeWorkflowConfig.dealertrackAmountColumns,
-          accountColumn: storeWorkflowConfig.dealertrackAccountColumn,
-          accountLabel: storeWorkflowConfig.dealertrackAccountLabel,
-          excludedAccountColumns: storeWorkflowConfig.dealertrackExcludedAccountColumns,
-        }
-      : undefined,
-  });
+  const decision = sourceType === "boa" || sourceType === "dealertrack"
+    ? runFloorplanUploadPreprocessing(
+        buffer,
+        sourceType,
+        originalFilename,
+        accountingMonth,
+        rooftopProfile,
+      )
+    : routeNonFloorplanUpload(buffer, sourceType, originalFilename);
   if (decision.kind === "preprocessed") {
     const { output } = decision;
     return {
@@ -2137,5 +2176,41 @@ function runUploadPreprocessing(
       legacy_csv_path: false,
       unsupported_reason: decision.reason,
     },
+  };
+}
+
+function runFloorplanUploadPreprocessing(
+  buffer: Buffer,
+  sourceType: "boa" | "dealertrack",
+  originalFilename: string | null,
+  accountingMonth: AccountingMonth | null,
+  rooftopProfile: RooftopProfile | null,
+): PreprocessingOrchestrationDecision {
+  if (!accountingMonth || !rooftopProfile) {
+    throw new Error("Floorplan preprocessing requires accounting month and rooftop profile.");
+  }
+  return preprocessUpload(buffer, sourceType, originalFilename, {
+    accountingMonth,
+    rooftopProfile,
+  });
+}
+
+function routeNonFloorplanUpload(
+  buffer: Buffer,
+  sourceType: import("./domain/types.js").SourceType,
+  originalFilename: string | null,
+): PreprocessingOrchestrationDecision {
+  const detection = detectFileFormat(buffer, originalFilename);
+  const route = resolveParserRoute(detection.format, sourceType);
+  if (route.kind === "csv") {
+    return { kind: "fallback_legacy_csv", detection, route };
+  }
+  return {
+    kind: "unsupported",
+    detection,
+    route,
+    reason: route.kind === "xlsx_native"
+      ? "OOXML native parser not yet implemented; resubmit as CSV or SpreadsheetML export."
+      : `Detected format ${detection.format} cannot be used for ${sourceType} uploads.`,
   };
 }

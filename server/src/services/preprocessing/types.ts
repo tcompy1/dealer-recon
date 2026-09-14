@@ -13,7 +13,14 @@
  * event metadata without requiring a DB schema change.
  */
 
+import type {
+  ParserIdentity,
+  PreprocessorIdentity,
+  RooftopProfile,
+} from "../../config/storeWorkflowConfig.js";
+import type { AccountingMonth } from "../../domain/accountingMonth.js";
 import type { NewTransaction, ValidationError } from "../../domain/types.js";
+import type { SourcePeriodEvidence } from "../sourcePeriodEvidence.js";
 
 export const PREPROCESSING_VERSION = "preprocessing-v1";
 
@@ -80,8 +87,12 @@ export type PreprocessingDiagnostic = {
 export type PreprocessingSummary = {
   source_kind: PreprocessingSourceKind;
   preprocessing_version: string;
-  parser_version: string | null;
+  parser_name: ParserIdentity["name"];
+  parser_version: string;
   parser_format: string | null;
+  preprocessor_name: PreprocessorIdentity["name"];
+  preprocessor_version: string;
+  period_evidence: SourcePeriodEvidence;
   rows_scanned: number;
   rows_accepted: number;
   rows_removed_zero_balance: number;
@@ -102,6 +113,49 @@ export type PreprocessingResult = {
   validationErrors: ValidationError[];
   diagnostics: PreprocessingDiagnostic[];
   summary: PreprocessingSummary;
+};
+
+export type PreprocessUploadOptions = {
+  accountingMonth: AccountingMonth;
+  rooftopProfile: RooftopProfile;
+};
+
+export type BoaPreprocessOptions = {
+  accountingMonth: AccountingMonth;
+  parserIdentity: ParserIdentity;
+  preprocessorIdentity: PreprocessorIdentity;
+};
+
+export type DealertrackPreprocessOptions = {
+  accountingMonth: AccountingMonth;
+  parserIdentity: ParserIdentity;
+  preprocessorIdentity: PreprocessorIdentity;
+  amountColumns?: string[];
+  accountColumn?: string;
+  accountLabel?: string;
+  excludedAccountColumns?: string[];
+  removedAccountColumns?: string[];
+};
+
+/** A single row removed during preprocessing and surfaced for audit. */
+export type RemovedRow = {
+  source: "boa" | "dealertrack";
+  source_row_number: number | null;
+  removal_reason: string;
+  key_values: Record<string, string>;
+};
+
+export type UploadPreprocessingMetadata = {
+  detected_format: string;
+  detection_confidence: string;
+  detection_reason: string;
+  parser_route: string;
+  preprocessing_version: string | null;
+  summary: PreprocessingSummary | null;
+  diagnostics: PreprocessingDiagnostic[];
+  removed_rows: RemovedRow[];
+  legacy_csv_path: boolean;
+  unsupported_reason: string | null;
 };
 
 /**

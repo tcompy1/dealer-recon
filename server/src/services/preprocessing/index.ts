@@ -16,6 +16,7 @@
  * deterministic preprocessing as the SpreadsheetML / HTML-as-XLS variants.
  */
 
+import type { ParserIdentity } from "../../config/storeWorkflowConfig.js";
 import type { NewTransaction, SourceType, ValidationError } from "../../domain/types.js";
 import {
   type FileFormatDetection,
@@ -27,12 +28,21 @@ import {
   resolveParserRoute,
 } from "../parsers/sourceParserRouter.js";
 import type { ParsedTable } from "../parsers/types.js";
-import { preprocessBoa } from "./boaPreprocessor.js";
 import {
-  preprocessDealertrack,
-  type DealertrackPreprocessOptions,
-} from "./dealertrackPreprocessor.js";
-import type { PreprocessingDiagnostic, PreprocessingResult, PreprocessingSummary } from "./types.js";
+  deriveBoaPeriodEvidence,
+  deriveDealertrackPeriodEvidence,
+  type SourcePeriodValidation,
+} from "../sourcePeriodEvidence.js";
+import { preprocessBoa } from "./boaPreprocessor.js";
+import { preprocessDealertrack } from "./dealertrackPreprocessor.js";
+import type {
+  PreprocessingDiagnostic,
+  PreprocessingResult,
+  PreprocessingSummary,
+  PreprocessUploadOptions,
+} from "./types.js";
+
+export type { PreprocessUploadOptions } from "./types.js";
 
 export type PreprocessingOrchestrationOutput = {
   transactions: NewTransaction[];
@@ -41,6 +51,7 @@ export type PreprocessingOrchestrationOutput = {
   summary: PreprocessingSummary;
   detection: FileFormatDetection;
   route: ParserRoute;
+  periodValidation: SourcePeriodValidation;
 };
 
 export type PreprocessingOrchestrationDecision =
@@ -57,15 +68,11 @@ export type PreprocessingOrchestrationDecision =
       reason: string;
     };
 
-export type PreprocessUploadOptions = {
-  dealertrack?: DealertrackPreprocessOptions;
-};
-
 export function preprocessUpload(
   buffer: Buffer,
   sourceType: SourceType,
-  originalFilename: string | null = null,
-  options: PreprocessUploadOptions = {},
+  originalFilename: string | null,
+  options: PreprocessUploadOptions,
 ): PreprocessingOrchestrationDecision {
   const detection = detectFileFormat(buffer, originalFilename);
   const route = resolveParserRoute(detection.format, sourceType);
@@ -106,54 +113,75 @@ export function preprocessUpload(
     };
   }
 
-  const preprocessing = runPreprocessor(sourceType, parsed, options);
+  if (sourceType !== "boa" && sourceType !== "dealertrack") {
+    return {
+      kind: "unsupported",
+      detection,
+      route,
+      reason: `Preprocessing not implemented for source_type=${sourceType}.`,
+    };
+  }
+  const parserIdentity = resolveParserIdentity(
+    options,
+    sourceType,
+    route.format,
+  );
+  if (!parserIdentity) {
+    return {
+      kind: "unsupported",
+      detection,
+      route,
+      reason: `Detected format ${route.format} is not configured for ${sourceType} in rooftop profile ${options.rooftopProfile.profileId}.`,
+    };
+  }
+  const periodValidation = sourceType === "boa"
+    ? deriveBoaPeriodEvidence(parsed, originalFilename, options.accountingMonth)
+    : deriveDealertrackPeriodEvidence(parsed, originalFilename, options.accountingMonth);
+  const preprocessing = runProfiledPreprocessor(
+    sourceType,
+    parsed,
+    options,
+    parserIdentity,
+  );
+  preprocessing.summary.period_evidence = periodValidation.evidence;
   return {
     kind: "preprocessed",
-    output: { ...preprocessing, detection, route },
+    output: { ...preprocessing, detection, route, periodValidation },
   };
 }
 
-function runPreprocessor(
-  sourceType: SourceType,
+function runProfiledPreprocessor(
+  sourceType: "boa" | "dealertrack",
   parsed: ParsedTable,
   options: PreprocessUploadOptions,
+  parserIdentity: ParserIdentity,
 ): PreprocessingResult {
   if (sourceType === "boa") {
-    return preprocessBoa(parsed);
+    return preprocessBoa(parsed, {
+      accountingMonth: options.accountingMonth,
+      parserIdentity,
+      preprocessorIdentity: options.rooftopProfile.preprocessorIdentities.boa,
+    });
   }
-  if (sourceType === "dealertrack") {
-    return preprocessDealertrack(parsed, options.dealertrack);
-  }
-  // For non-floorplan source types we don't currently preprocess. This
-  // branch exists to keep the function total — the orchestrator's route
-  // resolution will only pick source-specific routes for floorplan sources,
-  // so in practice this is unreachable.
-  return {
-    transactions: [],
-    validationErrors: [],
-    diagnostics: [
-      {
-        kind: "row_skipped_unknown_structure",
-        message: `Preprocessing not implemented for source_type=${sourceType}.`,
-        source_row_number: null,
-      },
-    ],
-    summary: {
-      source_kind: "boa",
-      preprocessing_version: "preprocessing-v1",
-      parser_version: null,
-      parser_format: null,
-      rows_scanned: 0,
-      rows_accepted: 0,
-      rows_removed_zero_balance: 0,
-      rows_removed_straightline: 0,
-      rows_removed_banner: 0,
-      rows_skipped_unknown: 0,
-      rows_requiring_manual_enrichment: 0,
-      duplicate_vin6_count: 0,
-      preprocessed_at: new Date().toISOString(),
-    },
-  };
+  return preprocessDealertrack(parsed, {
+    accountingMonth: options.accountingMonth,
+    parserIdentity,
+    preprocessorIdentity: options.rooftopProfile.preprocessorIdentities.dealertrack,
+    amountColumns: options.rooftopProfile.dealertrackAmountColumns,
+    accountColumn: options.rooftopProfile.dealertrackAccountColumn,
+    accountLabel: options.rooftopProfile.dealertrackAccountLabel,
+    excludedAccountColumns: options.rooftopProfile.dealertrackExcludedAccountColumns,
+  });
+}
+
+function resolveParserIdentity(
+  options: PreprocessUploadOptions,
+  sourceType: "boa" | "dealertrack",
+  format: ParserRoute["format"],
+): ParserIdentity | null {
+  return options.rooftopProfile.parserIdentities[sourceType].find(
+    (identity) => identity.format === format,
+  ) ?? null;
 }
 
 export { detectFileFormat } from "../fileFormatDetector.js";

@@ -317,6 +317,7 @@ describe("app", () => {
       .post("/upload")
       .field("source_type", "boa")
       .field("store_id", "2")
+      .field("accounting_month", "2026-04")
       .attach("file", Buffer.from(boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101")), "boa.csv");
 
     expect(storesResponse.status).toBe(200);
@@ -663,6 +664,7 @@ describe("app", () => {
       .post("/upload")
       .field("source_type", "boa")
       .field("store_id", "1")
+      .field("accounting_month", "2026-04")
       .attach(
         "file",
         Buffer.from([
@@ -675,6 +677,7 @@ describe("app", () => {
       .post("/upload")
       .field("source_type", "dealertrack")
       .field("store_id", "1")
+      .field("accounting_month", "2026-04")
       .attach("file", Buffer.from(dealertrackUploadCsv("M30101", "-301")), "dealertrack.csv");
     const reconciliation = await accountingAgent.post("/reconcile").send({
       boa_source_file_id: boaUpload.body.source_file_id,
@@ -894,6 +897,7 @@ describe("app", () => {
     const response = await request(app)
       .post("/upload")
       .field("source_type", "boa")
+      .field("accounting_month", "2026-03")
       .attach("file", buffer, "boa_billing_statement_sample.xls");
 
     expect(response.status).toBe(200);
@@ -948,6 +952,7 @@ describe("app", () => {
     const response = await request(app)
       .post("/upload")
       .field("source_type", "dealertrack")
+      .field("accounting_month", "2026-04")
       .attach("file", buffer, "dealertrack_floorplan_sample.xml");
 
     expect(response.status).toBe(200);
@@ -970,6 +975,7 @@ describe("app", () => {
     const response = await request(app)
       .post("/upload")
       .field("source_type", "dealertrack")
+      .field("accounting_month", "2026-04")
       .attach("file", Buffer.from(xml), "dealertrack-hostile.xml");
 
     expect(response.status).toBe(422);
@@ -988,6 +994,7 @@ describe("app", () => {
     const response = await request(app)
       .post("/upload")
       .field("source_type", "boa")
+      .field("accounting_month", "2026-04")
       .attach(
         "file",
         Buffer.from(boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101")),
@@ -999,9 +1006,68 @@ describe("app", () => {
       legacy_csv_path: false,
       parser_route: "boa_csv",
       preprocessing_version: expect.any(String),
-      summary: expect.objectContaining({ source_kind: "boa" }),
+      summary: expect.objectContaining({
+        source_kind: "boa",
+        parser_name: "boa-csv",
+        preprocessor_name: "boa-floorplan",
+        period_evidence: expect.objectContaining({
+          selectedMonth: "2026-04",
+          status: "compatible_incomplete",
+        }),
+      }),
       diagnostics: expect.any(Array),
     });
+  });
+
+  test("POST /upload rejects a malformed accounting month for a floorplan source", async () => {
+    const repository = new MemoryTransactionRepository();
+    const app = createFallbackApp(repository);
+
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .field("accounting_month", "2026-4")
+      .attach(
+        "file",
+        Buffer.from(boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101")),
+        "boa.csv",
+      );
+
+    expect(response.status).toBe(422);
+    expect(response.body.error).toMatchObject({
+      code: "INVALID_ACCOUNTING_MONTH",
+      details: {
+        source: "boa",
+        accounting_month: "2026-4",
+        rooftop_profile_id: "hurst-v1",
+      },
+    });
+    await expect(repository.listSourceFiles(1)).resolves.toEqual([]);
+  });
+
+  test("POST /upload requires an accounting month for a floorplan source", async () => {
+    const repository = new MemoryTransactionRepository();
+    const app = createFallbackApp(repository);
+
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "dealertrack")
+      .attach(
+        "file",
+        Buffer.from(dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352")),
+        "dealertrack.csv",
+      );
+
+    expect(response.status).toBe(422);
+    expect(response.body.error).toMatchObject({
+      code: "ACCOUNTING_MONTH_REQUIRED",
+      details: {
+        source: "dealertrack",
+        accounting_month: null,
+        rooftop_profile_id: "hurst-v1",
+      },
+    });
+    await expect(repository.listSourceFiles(1)).resolves.toEqual([]);
   });
 
   test("POST /upload routes Dealertrack CSV uploads through source-specific preprocessing (not legacy)", async () => {
@@ -1009,6 +1075,7 @@ describe("app", () => {
     const response = await request(app)
       .post("/upload")
       .field("source_type", "dealertrack")
+      .field("accounting_month", "2026-04")
       .attach(
         "file",
         Buffer.from(dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352")),
@@ -1041,6 +1108,7 @@ describe("app", () => {
     const response = await request(app)
       .post("/upload")
       .field("source_type", "boa")
+      .field("accounting_month", "2026-04")
       .attach("file", xlsxBuffer, "boa.xls");
 
     expect(response.status).toBe(422);
@@ -1069,6 +1137,7 @@ describe("app", () => {
     const response = await request(app)
       .post("/upload")
       .field("source_type", "boa")
+      .field("accounting_month", "2026-04")
       .attach("file", buffer, "dealertrack.xml");
 
     expect(response.status).toBe(422);
@@ -1099,6 +1168,7 @@ describe("app", () => {
     const response = await request(app)
       .post("/upload")
       .field("source_type", "boa")
+      .field("accounting_month", "2026-04")
       .attach("file", opaqueBytes, "boa.xls");
 
     expect(response.status).toBe(422);
@@ -1187,6 +1257,7 @@ describe("app", () => {
       .post("/upload")
       .field("source_type", "dealertrack")
       .field("store_id", "1")
+      .field("accounting_month", "2026-04")
       .attach("file", dealertrackFixture, "DT HURST APRIL (1).csv");
 
     expect(uploadResponse.status).toBe(200);
@@ -1494,46 +1565,73 @@ describe("app", () => {
     );
   });
 
-  test("duplicate uploads reuse the existing source file and create a warning event", async () => {
-    const app = createFallbackApp();
+  test("same-month floorplan duplicates fail closed until processing identity is persisted", async () => {
+    const repository = new MemoryTransactionRepository();
+    const app = createFallbackApp(repository);
     const csv = boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101");
     const firstUpload = await uploadCsv(app, "boa", csv, "duplicate-boa.csv", 1);
+    const transactionsBefore = await repository.listBySourceFile(1, firstUpload.source_file_id);
+    const ingestionEventsBefore = await repository.listIngestionEvents(1, 1);
 
     const duplicateResponse = await request(app)
       .post("/upload")
       .field("source_type", "boa")
       .field("store_id", "1")
+      .field("accounting_month", "2026-04")
       .attach("file", Buffer.from(csv), "duplicate-boa-again.csv");
 
-    expect(duplicateResponse.status).toBe(200);
-    expect(duplicateResponse.body).toEqual(
-      expect.objectContaining({
+    expect(duplicateResponse.status).toBe(409);
+    expect(duplicateResponse.body.error).toMatchObject({
+      code: "FLOORPLAN_DUPLICATE_IDENTITY_UNVERIFIED",
+      details: {
         source_file_id: firstUpload.source_file_id,
         source_type: "boa",
-        filename: "duplicate-boa.csv",
-        transaction_count: 1,
-        validation_errors: [],
-        reused_existing_file: true,
-        existing_file: expect.objectContaining({
-          source_file_id: firstUpload.source_file_id,
-          filename: "duplicate-boa.csv",
-          store_name: "Hiley Mazda of Hurst",
-          source_type: "boa",
-          created_at: expect.any(String),
-        }),
-      }),
+        accounting_month: "2026-04",
+        rooftop_profile_id: "hurst-v1",
+      },
+    });
+    expect(duplicateResponse.body).not.toHaveProperty("reused_existing_file");
+    await expect(repository.listSourceFiles(1, "boa", 1)).resolves.toHaveLength(1);
+    await expect(repository.listBySourceFile(1, firstUpload.source_file_id)).resolves.toEqual(
+      transactionsBefore,
     );
-    const ingestionResponse = await request(app).get("/automation/ingestion-events").query({ store_id: 1 });
-    expect(ingestionResponse.body).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ state: "uploaded", message: "Existing upload reused." }),
-      ]),
+    await expect(repository.listIngestionEvents(1, 1)).resolves.toEqual(
+      ingestionEventsBefore,
     );
-    const eventsResponse = await request(app).get("/automation/events").query({ store_id: 1 });
-    expect(eventsResponse.body).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ event_type: "duplicate_upload_warning" }),
-      ]),
+  });
+
+  test("cross-month floorplan duplicates do not reuse stale transactions or period metadata", async () => {
+    const repository = new MemoryTransactionRepository();
+    const app = createFallbackApp(repository);
+    const csv = boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101");
+    const firstUpload = await uploadCsv(app, "boa", csv, "april-boa.csv", 1);
+    const transactionsBefore = await repository.listBySourceFile(1, firstUpload.source_file_id);
+    const ingestionEventsBefore = await repository.listIngestionEvents(1, 1);
+
+    const duplicateResponse = await request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .field("store_id", "1")
+      .field("accounting_month", "2026-05")
+      .attach("file", Buffer.from(csv), "may-boa.csv");
+
+    expect(duplicateResponse.status).toBe(409);
+    expect(duplicateResponse.body.error).toMatchObject({
+      code: "FLOORPLAN_DUPLICATE_IDENTITY_UNVERIFIED",
+      details: {
+        source_file_id: firstUpload.source_file_id,
+        source_type: "boa",
+        accounting_month: "2026-05",
+        rooftop_profile_id: "hurst-v1",
+      },
+    });
+    expect(duplicateResponse.body).not.toHaveProperty("reused_existing_file");
+    await expect(repository.listSourceFiles(1, "boa", 1)).resolves.toHaveLength(1);
+    await expect(repository.listBySourceFile(1, firstUpload.source_file_id)).resolves.toEqual(
+      transactionsBefore,
+    );
+    await expect(repository.listIngestionEvents(1, 1)).resolves.toEqual(
+      ingestionEventsBefore,
     );
   });
 
@@ -3288,6 +3386,9 @@ async function uploadCsv(
   const uploadRequest = request(app)
     .post("/upload")
     .field("source_type", sourceType);
+  if (sourceType === "boa" || sourceType === "dealertrack") {
+    uploadRequest.field("accounting_month", "2026-04");
+  }
   if (storeId) {
     uploadRequest.field("store_id", String(storeId));
   }
@@ -3335,11 +3436,14 @@ async function uploadCsvWithAgent(
   filename: string,
   storeId: number,
 ) {
-  const response = await agent
+  const uploadRequest = agent
     .post("/upload")
     .field("source_type", sourceType)
-    .field("store_id", String(storeId))
-    .attach("file", Buffer.from(csv), filename);
+    .field("store_id", String(storeId));
+  if (sourceType === "boa" || sourceType === "dealertrack") {
+    uploadRequest.field("accounting_month", "2026-04");
+  }
+  const response = await uploadRequest.attach("file", Buffer.from(csv), filename);
 
   expect(response.status).toBe(200);
   return response.body as { source_file_id: number; automated_reconciliation_run_id?: number | null };
@@ -3384,6 +3488,7 @@ async function createReconciliationWithAgent(agent: ReturnType<typeof request.ag
     .post("/upload")
     .field("source_type", "boa")
     .field("store_id", "1")
+    .field("accounting_month", "2026-04")
     .attach(
       "file",
       Buffer.from(
@@ -3398,6 +3503,7 @@ async function createReconciliationWithAgent(agent: ReturnType<typeof request.ag
     .post("/upload")
     .field("source_type", "dealertrack")
     .field("store_id", "1")
+    .field("accounting_month", "2026-04")
     .attach(
       "file",
       Buffer.from(

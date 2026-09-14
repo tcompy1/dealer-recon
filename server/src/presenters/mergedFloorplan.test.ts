@@ -5,7 +5,11 @@ import { fileURLToPath } from "node:url";
 import { parse } from "csv-parse/sync";
 import { describe, expect, test } from "vitest";
 
-import { STORE_WORKFLOW_CONFIGS } from "../config/storeWorkflowConfig.js";
+import {
+  ROOFTOP_PROFILES,
+  STORE_WORKFLOW_CONFIGS,
+} from "../config/storeWorkflowConfig.js";
+import { type AccountingMonth, parseAccountingMonth } from "../domain/accountingMonth.js";
 import { parseAmountToCents } from "../domain/money.js";
 import type { NewTransaction, TransactionSummary } from "../domain/types.js";
 import { parseCsvToTable } from "../services/parsers/csvTableParser.js";
@@ -35,6 +39,12 @@ const HURST_HEADERS = [
 
 const ACURA_SANITIZED_CONTRACT = loadAcuraSanitizedContract();
 const ACURA_HEADERS = ACURA_SANITIZED_CONTRACT.mergedHeaders;
+
+function accountingMonth(value: string): AccountingMonth {
+  const parsed = parseAccountingMonth(value);
+  if (!parsed) throw new Error(`Invalid accounting month in test: ${value}`);
+  return parsed;
+}
 
 const FW_HEADERS = [
   "FW",
@@ -627,8 +637,16 @@ function preprocessRawAcuraFixtures(): {
     readFileSync(ACURA_SANITIZED_FIXTURE_PATHS.dealertrackCsv),
     "with_header",
   );
-  const boaResult = preprocessBoa(boaParsed);
+  const selectedMonth = accountingMonth("2026-04");
+  const boaResult = preprocessBoa(boaParsed, {
+    accountingMonth: selectedMonth,
+    parserIdentity: ROOFTOP_PROFILES.acura.parserIdentities.boa[0],
+    preprocessorIdentity: ROOFTOP_PROFILES.acura.preprocessorIdentities.boa,
+  });
   const dealertrackResult = preprocessDealertrack(dealertrackParsed, {
+    accountingMonth: selectedMonth,
+    parserIdentity: ROOFTOP_PROFILES.acura.parserIdentities.dealertrack[0],
+    preprocessorIdentity: ROOFTOP_PROFILES.acura.preprocessorIdentities.dealertrack,
     amountColumns: STORE_WORKFLOW_CONFIGS.acura.dealertrackAmountColumns,
     accountColumn: STORE_WORKFLOW_CONFIGS.acura.dealertrackAccountColumn,
     accountLabel: STORE_WORKFLOW_CONFIGS.acura.dealertrackAccountLabel,
@@ -686,8 +704,22 @@ function preprocessRawFwFixtures(fixtureCase: AcuraMergedFixtureCase): {
     readFwFixture("raw", fixtureCase.rawDealertrackFilename),
     "with_header",
   );
-  const boaResult = preprocessBoa(boaParsed);
+  const selectedMonth = accountingMonth(
+    fixtureCase.month === "FEB"
+      ? "2026-02"
+      : fixtureCase.month === "MARCH"
+        ? "2026-03"
+        : "2026-04",
+  );
+  const boaResult = preprocessBoa(boaParsed, {
+    accountingMonth: selectedMonth,
+    parserIdentity: ROOFTOP_PROFILES.fw.parserIdentities.boa[0],
+    preprocessorIdentity: ROOFTOP_PROFILES.fw.preprocessorIdentities.boa,
+  });
   const dealertrackResult = preprocessDealertrack(dealertrackParsed, {
+    accountingMonth: selectedMonth,
+    parserIdentity: ROOFTOP_PROFILES.fw.parserIdentities.dealertrack[0],
+    preprocessorIdentity: ROOFTOP_PROFILES.fw.preprocessorIdentities.dealertrack,
     amountColumns: STORE_WORKFLOW_CONFIGS.fw.dealertrackAmountColumns,
     accountColumn: STORE_WORKFLOW_CONFIGS.fw.dealertrackAccountColumn,
     accountLabel: STORE_WORKFLOW_CONFIGS.fw.dealertrackAccountLabel,

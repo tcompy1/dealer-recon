@@ -1,8 +1,36 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, test } from "vitest";
 
+import { ROOFTOP_PROFILES } from "../../config/storeWorkflowConfig.js";
+import { type AccountingMonth, parseAccountingMonth } from "../../domain/accountingMonth.js";
+import { ACURA_SANITIZED_FIXTURE_PATHS } from "../../testFixtures/acura/index.js";
+import { parseCsvToTable } from "../parsers/csvTableParser.js";
 import type { ParsedTable } from "../parsers/types.js";
-import { preprocessBoa } from "./boaPreprocessor.js";
+import {
+  preprocessBoa as runPreprocessBoa,
+  type BoaPreprocessOptions,
+} from "./boaPreprocessor.js";
 import { LINEAGE_RAW_DATA_KEY, type RawDataLineage } from "./types.js";
+
+function accountingMonth(value: string): AccountingMonth {
+  const parsed = parseAccountingMonth(value);
+  if (!parsed) throw new Error(`Invalid accounting month in test: ${value}`);
+  return parsed;
+}
+
+const DEFAULT_OPTIONS: BoaPreprocessOptions = {
+  accountingMonth: accountingMonth("2026-04"),
+  parserIdentity: ROOFTOP_PROFILES.acura.parserIdentities.boa[0],
+  preprocessorIdentity: ROOFTOP_PROFILES.acura.preprocessorIdentities.boa,
+};
+
+function preprocessBoa(
+  parsed: ParsedTable,
+  overrides: Partial<BoaPreprocessOptions> = {},
+) {
+  return runPreprocessBoa(parsed, { ...DEFAULT_OPTIONS, ...overrides });
+}
 
 function table(header: string[] | null, rows: string[][]): ParsedTable {
   return { header, rows, warnings: [] };
@@ -101,7 +129,7 @@ describe("preprocessBoa", () => {
       ],
     );
 
-    const result = preprocessBoa(parsed, { now: new Date("2026-06-09T12:00:00Z") });
+    const result = preprocessBoa(parsed, { accountingMonth: accountingMonth("2026-06") });
     expect(result.transactions).toHaveLength(1);
     const rawData = result.transactions[0].raw_data;
 
@@ -152,7 +180,7 @@ describe("preprocessBoa", () => {
     expect(result.transactions[0].stock_number).toBe("B36278");
   });
 
-  test("flags current-calendar-month maturities for payoff review", () => {
+  test("flags selected-accounting-month maturities for payoff review", () => {
     const parsed = table(
       [
         "Invoice Date",
@@ -162,19 +190,19 @@ describe("preprocessBoa", () => {
         "Ending Balance",
       ],
       [
-        ["04/01/2026", "1FTFW1E80PFA11111", "M20001", "06/15/2026", "$25,000.00"],
-        ["04/02/2026", "1FTFW1E80PFA22222", "M20002", "07/15/2026", "$26,000.00"],
+        ["04/01/2026", "1FTFW1E80PFA11111", "M20001", "04/15/2026", "$25,000.00"],
+        ["04/02/2026", "1FTFW1E80PFA22222", "M20002", "05/15/2026", "$26,000.00"],
       ],
     );
 
-    const result = preprocessBoa(parsed, { now: new Date("2026-06-09T12:00:00Z") });
+    const result = preprocessBoa(parsed, { accountingMonth: accountingMonth("2026-04") });
     expect(result.summary.current_month_maturity_count).toBe(1);
     expect(
       result.diagnostics.some((d) => d.kind === "current_month_maturity_payoff_review"),
     ).toBe(true);
 
     const currentMaturity = result.transactions.find((transaction) => transaction.stock_number === "M20001");
-    expect(currentMaturity?.raw_data).toHaveProperty("Maturity Date", "06/15/2026");
+    expect(currentMaturity?.raw_data).toHaveProperty("Maturity Date", "04/15/2026");
     const lineage = currentMaturity?.raw_data[LINEAGE_RAW_DATA_KEY] as RawDataLineage;
     expect(
       lineage.transformations.some((stage) => stage.stage === "maturity_payoff_review_flagged"),
@@ -416,5 +444,69 @@ describe("preprocessBoa", () => {
       b.transactions.map((t) => ({ vin: t.vin, amount: t.amount_cents })),
     );
     expect(a.summary.rows_accepted).toBe(b.summary.rows_accepted);
+  });
+
+  test("preprocesses the sanitized Acura BOA rows with exact provenance and removal evidence", () => {
+    const parsed = parseCsvToTable(
+      readFileSync(ACURA_SANITIZED_FIXTURE_PATHS.boaCsv),
+      "no_header",
+    );
+    const result = runPreprocessBoa(parsed, DEFAULT_OPTIONS);
+
+    expect(result.summary).toMatchObject({
+      parser_name: "boa-csv",
+      parser_version: "1",
+      preprocessor_name: "boa-floorplan",
+      preprocessor_version: "preprocessing-v1",
+      rows_scanned: 9,
+      rows_accepted: 4,
+      rows_removed_banner: 3,
+      rows_removed_zero_balance: 1,
+      rows_removed_straightline: 1,
+      period_evidence: {
+        source: "boa",
+        selectedMonth: "2026-04",
+        explicitMonths: ["2026-04"],
+        status: "confirmed",
+      },
+    });
+    expect(result.transactions.map((transaction) => transaction.amount_cents)).toEqual([
+      10_000,
+      20_000,
+      30_000,
+      40_000,
+    ]);
+    expect(result.transactions.map((transaction) => transaction.vin)).toEqual([
+      "SYNTHETC000000001",
+      "SYNTHETC000000002",
+      "SYNTHETC000000003",
+      "SYNTHETC000000004",
+    ]);
+    expect(result.transactions.map((transaction) => {
+      const lineage = transaction.raw_data[LINEAGE_RAW_DATA_KEY] as RawDataLineage;
+      return lineage.vin_provenance?.vin6;
+    })).toEqual(["000001", "000002", "000003", "000004"]);
+    expect(result.diagnostics.filter((diagnostic) => diagnostic.kind === "banner_row_removed"))
+      .toHaveLength(3);
+    expect(result.diagnostics.filter((diagnostic) => diagnostic.kind === "zero_balance_row_removed"))
+      .toHaveLength(1);
+    expect(result.diagnostics.filter((diagnostic) => diagnostic.kind === "straightline_row_removed"))
+      .toHaveLength(1);
+    expect(result.diagnostics.filter((diagnostic) => diagnostic.kind === "ambiguous_amount_column"))
+      .toHaveLength(1);
+  });
+
+  test("rejects a malformed short row with an exact diagnostic", () => {
+    const result = preprocessBoa(table(HEADER, [["04/01/2026"]]));
+
+    expect(result.transactions).toEqual([]);
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "row_skipped_malformed",
+          source_row_number: 2,
+        }),
+      ]),
+    );
   });
 });

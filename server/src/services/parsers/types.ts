@@ -18,6 +18,8 @@ export type ParserWarning = {
 
 export type ParsedTable = {
   header: string[] | null;
+  /** Rows that appeared before a parser-supplied header, retained as source evidence. */
+  preambleRows?: string[][];
   rows: string[][];
   warnings: ParserWarning[];
 };

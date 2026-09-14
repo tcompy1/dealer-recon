@@ -2,7 +2,11 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, test, vi } from "vitest";
 
-import { STORE_WORKFLOW_CONFIGS } from "../config/storeWorkflowConfig.js";
+import {
+  ROOFTOP_PROFILES,
+  STORE_WORKFLOW_CONFIGS,
+} from "../config/storeWorkflowConfig.js";
+import { parseAccountingMonth } from "../domain/accountingMonth.js";
 import type { NewTransaction, Transaction } from "../domain/types.js";
 import { MemoryTransactionRepository } from "../repositories/transactionRepository.js";
 import { parseCsvToTable } from "./parsers/csvTableParser.js";
@@ -96,12 +100,22 @@ describe("sanitized Acura reconciliation fixture", () => {
 });
 
 function loadSanitizedAcuraTransactionSets(): [Transaction[], Transaction[]] {
+  const accountingMonth = parseAccountingMonth("2026-04");
+  if (!accountingMonth) throw new Error("Invalid sanitized Acura accounting month");
   const boaResult = preprocessBoa(
     parseCsvToTable(readFileSync(ACURA_SANITIZED_FIXTURE_PATHS.boaCsv), "no_header"),
+    {
+      accountingMonth,
+      parserIdentity: ROOFTOP_PROFILES.acura.parserIdentities.boa[0],
+      preprocessorIdentity: ROOFTOP_PROFILES.acura.preprocessorIdentities.boa,
+    },
   );
   const dealertrackResult = preprocessDealertrack(
     parseCsvToTable(readFileSync(ACURA_SANITIZED_FIXTURE_PATHS.dealertrackCsv), "with_header"),
     {
+      accountingMonth,
+      parserIdentity: ROOFTOP_PROFILES.acura.parserIdentities.dealertrack[0],
+      preprocessorIdentity: ROOFTOP_PROFILES.acura.preprocessorIdentities.dealertrack,
       amountColumns: STORE_WORKFLOW_CONFIGS.acura.dealertrackAmountColumns,
       accountColumn: STORE_WORKFLOW_CONFIGS.acura.dealertrackAccountColumn,
       accountLabel: STORE_WORKFLOW_CONFIGS.acura.dealertrackAccountLabel,

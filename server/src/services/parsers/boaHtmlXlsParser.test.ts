@@ -18,7 +18,7 @@ const FIXTURE_PATH = join(
 );
 
 describe("parseBoaHtmlXls", () => {
-  test("locates header by fingerprint and skips banner rows", () => {
+  test("locates the header and preserves preceding banner rows as metadata", () => {
     const buffer = readFileSync(FIXTURE_PATH);
     const result = parseBoaHtmlXls(buffer);
     expect(result.header).not.toBeNull();
@@ -27,6 +27,8 @@ describe("parseBoaHtmlXls", () => {
     expect(lowered.some((cell) => cell.includes("vin"))).toBe(true);
     expect(lowered.some((cell) => cell.includes("stock"))).toBe(true);
     expect(lowered.some((cell) => cell.includes("original amount"))).toBe(true);
+    expect(result.preambleRows).toHaveLength(3);
+    expect(result.preambleRows?.flat().join(" ")).toContain("2026-03");
   });
 
   test("extracts data rows from the largest table", () => {

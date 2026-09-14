@@ -10,8 +10,8 @@
  *     Original Amount win even if it appears first
  *   - drop zero-balance rows (recorded as zero_balance_row_removed)
  *   - drop Straightline rows (recorded as straightline_row_removed)
- *   - extract VIN, compute VIN6, evaluate maturity date against the actual
- *     current calendar month for payoff review
+ *   - extract VIN, compute VIN6, evaluate maturity date against the selected
+ *     accounting month for payoff review
  *   - prune retained working columns to the Hiley worksheet shape
  *   - sort the retained rows by ending balance ascending, then VIN6 ascending
  *   - calculate the retained Ending Balance autosum
@@ -24,16 +24,20 @@ import { formatCents, parseAmountToCents } from "../../domain/money.js";
 import type { NewTransaction, ValidationError } from "../../domain/types.js";
 import { computeVin6, extractVin6FromDescription } from "../../domain/vin6.js";
 import type { ParsedTable } from "../parsers/types.js";
+import { deriveBoaPeriodEvidence } from "../sourcePeriodEvidence.js";
 import {
   LINEAGE_RAW_DATA_KEY,
   PREPROCESSING_VERSION,
   type PreprocessingDiagnostic,
   type PreprocessingResult,
   type PreprocessingSummary,
+  type BoaPreprocessOptions,
   type RawDataLineage,
   type RowLineageEntry,
   type VinProvenance,
 } from "./types.js";
+
+export type { BoaPreprocessOptions } from "./types.js";
 
 const VIN_FULL_RE = /\b(?=[A-HJ-NPR-Z0-9]{17}\b)(?=[A-HJ-NPR-Z0-9]*[A-Z])(?=[A-HJ-NPR-Z0-9]*\d)[A-HJ-NPR-Z0-9]{17}\b/i;
 const STOCK_RE = /\bM\d{4,6}\b/i;
@@ -119,10 +123,6 @@ const WORKING_OUTPUT_REMOVED_COLUMN_ALIASES = [
   "principal adjustments",
 ];
 
-export type BoaPreprocessOptions = {
-  now?: Date;
-};
-
 type BoaWorkingRow = {
   sourceRowNumber: number;
   cells: string[];
@@ -142,13 +142,13 @@ type BoaWorkingRow = {
 
 export function preprocessBoa(
   parsed: ParsedTable,
-  options: BoaPreprocessOptions = {},
+  options: BoaPreprocessOptions,
 ): PreprocessingResult {
   const diagnostics: PreprocessingDiagnostic[] = [];
   const validationErrors: ValidationError[] = [];
-  const currentCalendarMonth = monthKey(options.now ?? new Date());
-  let rowsScanned = 0;
-  let rowsRemovedBanner = 0;
+  const selectedAccountingMonth = options.accountingMonth;
+  let rowsScanned = parsed.preambleRows?.length ?? 0;
+  let rowsRemovedBanner = parsed.preambleRows?.length ?? 0;
   let rowsRemovedZero = 0;
   let rowsRemovedStraightline = 0;
   let rowsSkippedUnknown = 0;
@@ -163,15 +163,21 @@ export function preprocessBoa(
     });
   }
 
+  parsed.preambleRows?.forEach((_, index) => {
+    diagnostics.push({
+      kind: "banner_row_removed",
+      message: "Banner row removed by the source parser before preprocessing.",
+      source_row_number: index + 1,
+    });
+  });
+
   let header = parsed.header;
   let dataStartIndex = 0;
-  let bannerOffset = 0;
 
   if (!header) {
     const located = locateHeaderInRows(parsed.rows);
     if (located) {
       header = located.header;
-      bannerOffset = located.index;
       for (let i = 0; i < located.index; i += 1) {
         rowsScanned += 1;
         rowsRemovedBanner += 1;
@@ -192,7 +198,7 @@ export function preprocessBoa(
     diagnostics.push({
       kind: "header_row_detected",
       message: "Header row supplied by parser.",
-      source_row_number: 1,
+      source_row_number: (parsed.preambleRows?.length ?? 0) + 1,
     });
   }
 
@@ -202,8 +208,24 @@ export function preprocessBoa(
   const acceptedRows: BoaWorkingRow[] = [];
 
   dataRows.forEach((rawRow, index) => {
-    const sourceRowNumber = bannerOffset + dataStartIndex + index + 1;
+    const sourceRowNumber = parsed.header
+      ? (parsed.preambleRows?.length ?? 0) + index + 2
+      : dataStartIndex + index + 1;
     rowsScanned += 1;
+
+    if (header && rawRow.length !== header.length) {
+      rowsSkippedUnknown += 1;
+      diagnostics.push({
+        kind: "row_skipped_malformed",
+        message: "Row removed: column count does not match the BOA header.",
+        source_row_number: sourceRowNumber,
+        details: {
+          expected_columns: header.length,
+          actual_columns: rawRow.length,
+        },
+      });
+      return;
+    }
 
     const cleaned = rawRow.map(cleanCell);
     if (cleaned.every((cell) => cell.length === 0)) {
@@ -421,7 +443,7 @@ export function preprocessBoa(
     for (const row of acceptedRows) {
       row.lineage.push({ stage: "sorted", detail: "maturity_date_asc_for_payoff_review" });
       const normalizedMaturity = normalizeIsoDate(row.maturityDate ?? "");
-      if (normalizedMaturity?.startsWith(currentCalendarMonth)) {
+      if (normalizedMaturity?.startsWith(selectedAccountingMonth)) {
         currentMonthMaturityCount += 1;
         row.lineage.push({
           stage: "maturity_payoff_review_flagged",
@@ -429,22 +451,22 @@ export function preprocessBoa(
         });
         diagnostics.push({
           kind: "current_month_maturity_payoff_review",
-          message: "BOA row has a current-calendar-month maturity and requires payoff review.",
+          message: "BOA row has a selected-accounting-month maturity and requires payoff review.",
           source_row_number: row.sourceRowNumber,
           vin6: row.vin6,
           stock_number: row.stockNumber,
           details: {
             maturity_date: row.maturityDate,
-            calendar_month: currentCalendarMonth,
+            accounting_month: selectedAccountingMonth,
           },
         });
       }
     }
     diagnostics.push({
       kind: "sort_applied",
-      message: "Rows sorted ascending by maturity date for current-month payoff review.",
+      message: "Rows sorted ascending by maturity date for selected-month payoff review.",
       source_row_number: null,
-      details: { sort: "maturity_date_asc", calendar_month: currentCalendarMonth },
+      details: { sort: "maturity_date_asc", accounting_month: selectedAccountingMonth },
     });
   }
 
@@ -526,8 +548,16 @@ export function preprocessBoa(
   const summary: PreprocessingSummary = {
     source_kind: "boa",
     preprocessing_version: PREPROCESSING_VERSION,
-    parser_version: "boa-html-xls-v1",
-    parser_format: "html_table_xls",
+    parser_name: options.parserIdentity.name,
+    parser_version: options.parserIdentity.version,
+    parser_format: options.parserIdentity.format,
+    preprocessor_name: options.preprocessorIdentity.name,
+    preprocessor_version: options.preprocessorIdentity.version,
+    period_evidence: deriveBoaPeriodEvidence(
+      parsed,
+      null,
+      options.accountingMonth,
+    ).evidence,
     rows_scanned: rowsScanned,
     rows_accepted: transactions.length,
     rows_removed_zero_balance: rowsRemovedZero,
@@ -751,12 +781,6 @@ function compareByMaturityDate(a: BoaWorkingRow, b: BoaWorkingRow): number {
     return maturityA < maturityB ? -1 : 1;
   }
   return a.sourceRowNumber - b.sourceRowNumber;
-}
-
-function monthKey(value: Date): string {
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, "0");
-  return `${year}-${month}`;
 }
 
 function normalizeIsoDate(value: string): string | null {

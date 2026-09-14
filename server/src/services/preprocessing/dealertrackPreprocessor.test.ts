@@ -1,8 +1,36 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, test } from "vitest";
 
+import { ROOFTOP_PROFILES } from "../../config/storeWorkflowConfig.js";
+import { type AccountingMonth, parseAccountingMonth } from "../../domain/accountingMonth.js";
+import { ACURA_SANITIZED_FIXTURE_PATHS } from "../../testFixtures/acura/index.js";
+import { parseCsvToTable } from "../parsers/csvTableParser.js";
 import type { ParsedTable } from "../parsers/types.js";
-import { preprocessDealertrack } from "./dealertrackPreprocessor.js";
+import {
+  preprocessDealertrack as runPreprocessDealertrack,
+  type DealertrackPreprocessOptions,
+} from "./dealertrackPreprocessor.js";
 import { LINEAGE_RAW_DATA_KEY, type RawDataLineage } from "./types.js";
+
+function accountingMonth(value: string): AccountingMonth {
+  const parsed = parseAccountingMonth(value);
+  if (!parsed) throw new Error(`Invalid accounting month in test: ${value}`);
+  return parsed;
+}
+
+const DEFAULT_OPTIONS: DealertrackPreprocessOptions = {
+  accountingMonth: accountingMonth("2026-04"),
+  parserIdentity: ROOFTOP_PROFILES.hurst.parserIdentities.dealertrack[0],
+  preprocessorIdentity: ROOFTOP_PROFILES.hurst.preprocessorIdentities.dealertrack,
+};
+
+function preprocessDealertrack(
+  parsed: ParsedTable,
+  overrides: Partial<DealertrackPreprocessOptions> = {},
+) {
+  return runPreprocessDealertrack(parsed, { ...DEFAULT_OPTIONS, ...overrides });
+}
 
 function table(header: string[] | null, rows: string[][]): ParsedTable {
   return { header, rows, warnings: [] };
@@ -219,5 +247,69 @@ describe("preprocessDealertrack", () => {
       b.transactions.map((t) => t.amount_cents),
     );
     expect(a.summary.rows_accepted).toBe(b.summary.rows_accepted);
+  });
+
+  test("preprocesses sanitized Acura account 324 rows with exact provenance and sorting", () => {
+    const parsed = parseCsvToTable(
+      readFileSync(ACURA_SANITIZED_FIXTURE_PATHS.dealertrackCsv),
+      "with_header",
+    );
+    const result = runPreprocessDealertrack(parsed, {
+      accountingMonth: accountingMonth("2026-04"),
+      parserIdentity: ROOFTOP_PROFILES.acura.parserIdentities.dealertrack[0],
+      preprocessorIdentity: ROOFTOP_PROFILES.acura.preprocessorIdentities.dealertrack,
+      amountColumns: ROOFTOP_PROFILES.acura.dealertrackAmountColumns,
+      accountColumn: ROOFTOP_PROFILES.acura.dealertrackAccountColumn,
+      accountLabel: ROOFTOP_PROFILES.acura.dealertrackAccountLabel,
+      excludedAccountColumns: ROOFTOP_PROFILES.acura.dealertrackExcludedAccountColumns,
+    });
+
+    expect(result.summary).toMatchObject({
+      parser_name: "dealertrack-csv",
+      parser_version: "1",
+      preprocessor_name: "dealertrack-floorplan",
+      preprocessor_version: "preprocessing-v1",
+      rows_scanned: 7,
+      rows_accepted: 6,
+      rows_removed_zero_balance: 1,
+      rows_requiring_manual_enrichment: 1,
+      period_evidence: {
+        source: "dealertrack",
+        selectedMonth: "2026-04",
+        explicitMonths: [],
+        status: "compatible_incomplete",
+      },
+    });
+    expect(result.transactions.map((transaction) => transaction.amount_cents)).toEqual([
+      -60_000,
+      -50_000,
+      -40_000,
+      -35_000,
+      -10_000,
+      -10_000,
+    ]);
+    expect(result.transactions.every((transaction) => transaction.account === "324")).toBe(true);
+    expect(result.transactions.every((transaction) => !("999" in transaction.raw_data))).toBe(true);
+    expect(result.transactions.map((transaction) => transaction.vin)).not.toContain(
+      "SYNTHETC000000010",
+    );
+    expect(result.diagnostics.filter((diagnostic) => diagnostic.kind === "manual_enrichment_required"))
+      .toHaveLength(1);
+  });
+
+  test("rejects a malformed short row with an exact diagnostic", () => {
+    const result = preprocessDealertrack(
+      table(["Control", "Description", "2100"], [["M50001"]]),
+    );
+
+    expect(result.transactions).toEqual([]);
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "row_skipped_malformed",
+          source_row_number: 2,
+        }),
+      ]),
+    );
   });
 });
