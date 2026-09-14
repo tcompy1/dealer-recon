@@ -41,3 +41,6 @@ docs/discovery/floorplan/**/recordings/*.webm
 
 # Windows/WSL downloaded-file metadata
 *:Zone.Identifier
+
+# Local Hiley rooftop evidence contains client data and recordings.
+docs/discovery/hiley-artifacts/
