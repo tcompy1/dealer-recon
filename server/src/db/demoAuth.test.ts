@@ -74,6 +74,7 @@ describeIfDatabase("explicit local demo auth seed", () => {
           .post("/upload")
           .field("source_type", "boa")
           .field("store_id", "1")
+          .field("accounting_month", "2026-04")
           .attach("file", Buffer.from(csv), `demo-auth-${unique}.csv`);
         expect(uploadResponse.status).toBe(200);
         expect(uploadResponse.body).toMatchObject({

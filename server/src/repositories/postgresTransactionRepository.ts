@@ -39,6 +39,7 @@ import type {
   ScheduledReconciliationJob,
   ScheduledReconciliationJobUpdate,
   SourceFile,
+  SourceProcessingIdentity,
   SourceFileUploadContent,
   SourceFileSummary,
   SourceType,
@@ -63,6 +64,14 @@ type SourceFileRow = {
   file_hash: string;
   row_count: number;
   validation_error_count: number;
+  accounting_month: SourceFile["accounting_month"];
+  rooftop_profile_id: SourceFile["rooftop_profile_id"];
+  rooftop_profile_version: string | null;
+  parser_name: string | null;
+  parser_version: string | null;
+  preprocessor_name: string | null;
+  preprocessor_version: string | null;
+  preprocessing_metadata: SourceFile["preprocessing_metadata"];
   created_at: Date | string;
 };
 
@@ -120,6 +129,9 @@ type ReconciliationRunRow = {
   exception_count: number;
   duplicate_count: number;
   status: string;
+  accounting_month: ReconciliationRun["accounting_month"];
+  rooftop_profile_id: ReconciliationRun["rooftop_profile_id"];
+  rooftop_profile_version: string | null;
   created_at: Date | string;
 };
 
@@ -334,7 +346,15 @@ export class PostgresTransactionRepository implements TransactionRepository {
              stored_filename = $6,
              file_hash = $7,
              row_count = $8,
-             validation_error_count = $9
+             validation_error_count = $9,
+             accounting_month = $10,
+             rooftop_profile_id = $11,
+             rooftop_profile_version = $12,
+             parser_name = $13,
+             parser_version = $14,
+             preprocessor_name = $15,
+             preprocessor_version = $16,
+             preprocessing_metadata = $17
          WHERE dealership_id = $1
            AND id = $2
          RETURNING *`,
@@ -348,6 +368,14 @@ export class PostgresTransactionRepository implements TransactionRepository {
           sourceFileInput.file_hash,
           sourceFileInput.row_count,
           sourceFileInput.validation_error_count,
+          sourceFileInput.accounting_month ?? null,
+          sourceFileInput.rooftop_profile_id ?? null,
+          sourceFileInput.rooftop_profile_version ?? null,
+          sourceFileInput.parser_name ?? null,
+          sourceFileInput.parser_version ?? null,
+          sourceFileInput.preprocessor_name ?? null,
+          sourceFileInput.preprocessor_version ?? null,
+          sourceFileInput.preprocessing_metadata ?? null,
         ],
       );
       const sourceFile = toSourceFile(updated.rows[0]);
@@ -405,6 +433,45 @@ export class PostgresTransactionRepository implements TransactionRepository {
     const result = await this.pool.query<SourceFileRow>(
       "SELECT sf.*, ds.name AS store_name FROM source_files sf LEFT JOIN dealership_stores ds ON ds.id = sf.dealership_store_id WHERE sf.dealership_id = $1 AND sf.dealership_store_id IS NOT DISTINCT FROM $2 AND sf.source_type = $3 AND sf.file_hash = $4",
       [dealershipId, dealershipStoreId, sourceType, fileHash],
+    );
+    return result.rows[0] ? toSourceFile(result.rows[0]) : null;
+  }
+
+  async getReusableSourceFile(
+    dealershipId: number,
+    dealershipStoreId: number,
+    sourceType: SourceType,
+    fileHash: string,
+    identity: SourceProcessingIdentity,
+  ): Promise<SourceFile | null> {
+    const result = await this.pool.query<SourceFileRow>(
+      `SELECT sf.*, ds.name AS store_name
+       FROM source_files sf
+       LEFT JOIN dealership_stores ds ON ds.id = sf.dealership_store_id
+       WHERE sf.dealership_id = $1
+         AND sf.dealership_store_id = $2
+         AND sf.source_type = $3
+         AND sf.file_hash = $4
+         AND sf.accounting_month = $5
+         AND sf.rooftop_profile_id = $6
+         AND sf.rooftop_profile_version = $7
+         AND sf.parser_name = $8
+         AND sf.parser_version = $9
+         AND sf.preprocessor_name = $10
+         AND sf.preprocessor_version = $11`,
+      [
+        dealershipId,
+        dealershipStoreId,
+        sourceType,
+        fileHash,
+        identity.accounting_month,
+        identity.rooftop_profile_id,
+        identity.rooftop_profile_version,
+        identity.parser_name,
+        identity.parser_version,
+        identity.preprocessor_name,
+        identity.preprocessor_version,
+      ],
     );
     return result.rows[0] ? toSourceFile(result.rows[0]) : null;
   }
@@ -1314,12 +1381,28 @@ export class PostgresTransactionRepository implements TransactionRepository {
         boa_stored_filename: string | null;
         boa_row_count: number;
         boa_validation_error_count: number;
+        boa_accounting_month: SourceFile["accounting_month"];
+        boa_rooftop_profile_id: SourceFile["rooftop_profile_id"];
+        boa_rooftop_profile_version: string | null;
+        boa_parser_name: string | null;
+        boa_parser_version: string | null;
+        boa_preprocessor_name: string | null;
+        boa_preprocessor_version: string | null;
+        boa_preprocessing_metadata: SourceFile["preprocessing_metadata"];
         boa_created_at: Date | string;
         dealertrack_source_type: SourceType;
         dealertrack_original_filename: string;
         dealertrack_stored_filename: string | null;
         dealertrack_row_count: number;
         dealertrack_validation_error_count: number;
+        dealertrack_accounting_month: SourceFile["accounting_month"];
+        dealertrack_rooftop_profile_id: SourceFile["rooftop_profile_id"];
+        dealertrack_rooftop_profile_version: string | null;
+        dealertrack_parser_name: string | null;
+        dealertrack_parser_version: string | null;
+        dealertrack_preprocessor_name: string | null;
+        dealertrack_preprocessor_version: string | null;
+        dealertrack_preprocessing_metadata: SourceFile["preprocessing_metadata"];
         dealertrack_created_at: Date | string;
       }
     >(
@@ -1335,12 +1418,28 @@ export class PostgresTransactionRepository implements TransactionRepository {
         boa.stored_filename AS boa_stored_filename,
         boa.row_count AS boa_row_count,
         boa.validation_error_count AS boa_validation_error_count,
+        boa.accounting_month AS boa_accounting_month,
+        boa.rooftop_profile_id AS boa_rooftop_profile_id,
+        boa.rooftop_profile_version AS boa_rooftop_profile_version,
+        boa.parser_name AS boa_parser_name,
+        boa.parser_version AS boa_parser_version,
+        boa.preprocessor_name AS boa_preprocessor_name,
+        boa.preprocessor_version AS boa_preprocessor_version,
+        boa.preprocessing_metadata AS boa_preprocessing_metadata,
         boa.created_at AS boa_created_at,
         dealertrack.source_type AS dealertrack_source_type,
         dealertrack.original_filename AS dealertrack_original_filename,
         dealertrack.stored_filename AS dealertrack_stored_filename,
         dealertrack.row_count AS dealertrack_row_count,
         dealertrack.validation_error_count AS dealertrack_validation_error_count,
+        dealertrack.accounting_month AS dealertrack_accounting_month,
+        dealertrack.rooftop_profile_id AS dealertrack_rooftop_profile_id,
+        dealertrack.rooftop_profile_version AS dealertrack_rooftop_profile_version,
+        dealertrack.parser_name AS dealertrack_parser_name,
+        dealertrack.parser_version AS dealertrack_parser_version,
+        dealertrack.preprocessor_name AS dealertrack_preprocessor_name,
+        dealertrack.preprocessor_version AS dealertrack_preprocessor_version,
+        dealertrack.preprocessing_metadata AS dealertrack_preprocessing_metadata,
         dealertrack.created_at AS dealertrack_created_at
       FROM reconciliation_runs rr
       JOIN source_files boa ON boa.id = rr.boa_source_file_id
@@ -1466,6 +1565,14 @@ export class PostgresTransactionRepository implements TransactionRepository {
         file_hash: "",
         row_count: Number(runRow.boa_row_count),
         validation_error_count: Number(runRow.boa_validation_error_count),
+        accounting_month: runRow.boa_accounting_month,
+        rooftop_profile_id: runRow.boa_rooftop_profile_id,
+        rooftop_profile_version: runRow.boa_rooftop_profile_version,
+        parser_name: runRow.boa_parser_name,
+        parser_version: runRow.boa_parser_version,
+        preprocessor_name: runRow.boa_preprocessor_name,
+        preprocessor_version: runRow.boa_preprocessor_version,
+        preprocessing_metadata: runRow.boa_preprocessing_metadata,
         created_at: toDateTimeString(runRow.boa_created_at),
       }),
       dealertrack_source_file: toSourceFileSummary({
@@ -1479,6 +1586,14 @@ export class PostgresTransactionRepository implements TransactionRepository {
         file_hash: "",
         row_count: Number(runRow.dealertrack_row_count),
         validation_error_count: Number(runRow.dealertrack_validation_error_count),
+        accounting_month: runRow.dealertrack_accounting_month,
+        rooftop_profile_id: runRow.dealertrack_rooftop_profile_id,
+        rooftop_profile_version: runRow.dealertrack_rooftop_profile_version,
+        parser_name: runRow.dealertrack_parser_name,
+        parser_version: runRow.dealertrack_parser_version,
+        preprocessor_name: runRow.dealertrack_preprocessor_name,
+        preprocessor_version: runRow.dealertrack_preprocessor_version,
+        preprocessing_metadata: runRow.dealertrack_preprocessing_metadata,
         created_at: toDateTimeString(runRow.dealertrack_created_at),
       }),
       match_groups: matchGroups,
@@ -1836,8 +1951,16 @@ async function insertSourceFile(
       stored_filename,
       file_hash,
       row_count,
-      validation_error_count
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      validation_error_count,
+      accounting_month,
+      rooftop_profile_id,
+      rooftop_profile_version,
+      parser_name,
+      parser_version,
+      preprocessor_name,
+      preprocessor_version,
+      preprocessing_metadata
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
     RETURNING *`,
     [
       dealershipId,
@@ -1848,6 +1971,14 @@ async function insertSourceFile(
       sourceFile.file_hash,
       sourceFile.row_count,
       sourceFile.validation_error_count,
+      sourceFile.accounting_month ?? null,
+      sourceFile.rooftop_profile_id ?? null,
+      sourceFile.rooftop_profile_version ?? null,
+      sourceFile.parser_name ?? null,
+      sourceFile.parser_version ?? null,
+      sourceFile.preprocessor_name ?? null,
+      sourceFile.preprocessor_version ?? null,
+      sourceFile.preprocessing_metadata ?? null,
     ],
   );
   return toSourceFile(result.rows[0]);
@@ -1952,8 +2083,11 @@ async function insertReconciliationRun(
       matched_count,
       exception_count,
       duplicate_count,
-      status
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      status,
+      accounting_month,
+      rooftop_profile_id,
+      rooftop_profile_version
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     RETURNING *`,
     [
       input.dealership_id,
@@ -1964,6 +2098,9 @@ async function insertReconciliationRun(
       input.result.exception_count,
       input.result.duplicate_count,
       input.status ?? "completed",
+      input.accounting_month ?? null,
+      input.rooftop_profile_id ?? null,
+      input.rooftop_profile_version ?? null,
     ],
   );
   return toReconciliationRun(result.rows[0]);
@@ -1981,6 +2118,14 @@ function toSourceFile(row: SourceFileRow): SourceFile {
     file_hash: row.file_hash,
     row_count: Number(row.row_count),
     validation_error_count: Number(row.validation_error_count),
+    accounting_month: row.accounting_month,
+    rooftop_profile_id: row.rooftop_profile_id,
+    rooftop_profile_version: row.rooftop_profile_version,
+    parser_name: row.parser_name,
+    parser_version: row.parser_version,
+    preprocessor_name: row.preprocessor_name,
+    preprocessor_version: row.preprocessor_version,
+    preprocessing_metadata: row.preprocessing_metadata,
     created_at: toDateTimeString(row.created_at),
   };
 }
@@ -2033,6 +2178,14 @@ function toSourceFileSummary(sourceFile: SourceFile): SourceFileSummary {
     filename: sourceFile.original_filename,
     row_count: sourceFile.row_count,
     validation_error_count: sourceFile.validation_error_count,
+    accounting_month: sourceFile.accounting_month,
+    rooftop_profile_id: sourceFile.rooftop_profile_id,
+    rooftop_profile_version: sourceFile.rooftop_profile_version,
+    parser_name: sourceFile.parser_name,
+    parser_version: sourceFile.parser_version,
+    preprocessor_name: sourceFile.preprocessor_name,
+    preprocessor_version: sourceFile.preprocessor_version,
+    preprocessing_metadata: sourceFile.preprocessing_metadata,
     created_at: sourceFile.created_at,
   };
 }
@@ -2131,6 +2284,9 @@ function toReconciliationRun(row: ReconciliationRunRow): ReconciliationRun {
     exception_count: Number(row.exception_count),
     duplicate_count: Number(row.duplicate_count),
     status: row.status,
+    accounting_month: row.accounting_month,
+    rooftop_profile_id: row.rooftop_profile_id,
+    rooftop_profile_version: row.rooftop_profile_version,
     created_at: toDateTimeString(row.created_at),
   };
 }
@@ -2151,6 +2307,9 @@ function toReconciliationRunListItem(row: ReconciliationRunListRow): Reconciliat
     exception_count: Number(row.exception_count),
     duplicate_count: Number(row.duplicate_count),
     status: row.status,
+    accounting_month: row.accounting_month,
+    rooftop_profile_id: row.rooftop_profile_id,
+    rooftop_profile_version: row.rooftop_profile_version,
     created_at: toDateTimeString(row.created_at),
   };
 }
@@ -2226,7 +2385,8 @@ function isDuplicateSourceFileError(error: unknown): boolean {
     error.code === "23505" &&
     "constraint" in error &&
     (error.constraint === "ux_source_files_source_type_file_hash" ||
-      error.constraint === "ux_source_files_dealership_source_type_file_hash")
+      error.constraint === "ux_source_files_dealership_source_type_file_hash" ||
+      error.constraint === "ux_source_files_reusable_identity")
   );
 }
 

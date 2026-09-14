@@ -2,13 +2,24 @@ import request from "supertest";
 import { describe, expect, test, vi } from "vitest";
 
 import { createApp } from "../app.js";
-import type { ReconciliationResponse, TransactionSummary } from "../domain/types.js";
+import { parseAccountingMonth, type AccountingMonth } from "../domain/accountingMonth.js";
+import type {
+  ProfiledNewSourceFile,
+  ReconciliationResponse,
+  SourceProcessingIdentity,
+  TransactionSummary,
+} from "../domain/types.js";
+import type { UploadPreprocessingMetadata } from "../services/preprocessing/types.js";
 import { migrate } from "../db/migrate.js";
 import { withDatabaseTestLock } from "../testUtils/databaseTestLock.js";
 import {
   createPool,
   PostgresTransactionRepository,
 } from "./postgresTransactionRepository.js";
+import {
+  MemoryTransactionRepository,
+  type TransactionRepository,
+} from "./transactionRepository.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeIfDatabase = databaseUrl ? describe : describe.skip;
@@ -18,6 +29,35 @@ const boaUploadCsv = (stockNumber: string, vin: string, amount: string, referenc
 
 const _dealertrackUploadCsv = (stockNumber: string, amount: string) =>
   `${stockNumber},"BOA FLOORPLAN",${amount},0`;
+
+describe("reusable source identity persistence", () => {
+  test("memory repository round-trips profiled and legacy receipts by exact identity", async () => {
+    await assertReusableSourceIdentityRoundTrip(new MemoryTransactionRepository(), "memory");
+  });
+});
+
+describeIfDatabase("reusable source identity persistence in PostgreSQL", () => {
+  test("round-trips profiled and legacy receipts by exact identity", async () => {
+    if (!databaseUrl) {
+      throw new Error("DATABASE_URL is required for reconciliation persistence tests.");
+    }
+
+    await withDatabaseTestLock(databaseUrl, async () => {
+      await migrate(databaseUrl);
+      const pool = createPool(databaseUrl);
+      const repository = new PostgresTransactionRepository(pool);
+      const namespace = `postgres-${Date.now()}-${Math.random()}`;
+      try {
+        await assertReusableSourceIdentityRoundTrip(repository, namespace);
+      } finally {
+        await pool.query("DELETE FROM source_files WHERE file_hash LIKE $1", [
+          `task5-${namespace}-%`,
+        ]);
+        await pool.end();
+      }
+    });
+  });
+});
 
 describeIfDatabase("reconciliation persistence", () => {
   test("POST /reconcile persists run counts, match groups, transactions, and exceptions", async () => {
@@ -382,6 +422,9 @@ async function uploadCsv(
   const uploadRequest = request(app)
     .post("/upload")
     .field("source_type", sourceType);
+  if (sourceType === "boa" || sourceType === "dealertrack") {
+    uploadRequest.field("accounting_month", "2026-04");
+  }
   if (storeId) {
     uploadRequest.field("store_id", String(storeId));
   }
@@ -434,5 +477,330 @@ function toSummary(transaction: {
     account_identifier: transaction.account_identifier ?? transaction.account ?? "floorplan",
     stock_number: transaction.stock_number,
     vin: transaction.vin,
+  };
+}
+
+async function assertReusableSourceIdentityRoundTrip(
+  repository: TransactionRepository,
+  namespace: string,
+): Promise<void> {
+  const april = accountingMonth("2026-04");
+  const may = accountingMonth("2026-05");
+  const sharedHash = `task5-${namespace}-shared`;
+  const legacyHash = `task5-${namespace}-legacy`;
+  const dealertrackHash = `task5-${namespace}-dealertrack`;
+  const aprilIdentity: SourceProcessingIdentity = {
+    accounting_month: april,
+    rooftop_profile_id: "acura-v1",
+    rooftop_profile_version: "1",
+    parser_name: "boa-csv",
+    parser_version: "1",
+    preprocessor_name: "boa-floorplan",
+    preprocessor_version: "preprocessing-v1",
+  };
+  const mayIdentity: SourceProcessingIdentity = {
+    ...aprilIdentity,
+    accounting_month: may,
+  };
+  const newerProcessingIdentity: SourceProcessingIdentity = {
+    ...aprilIdentity,
+    parser_version: "2",
+    preprocessor_version: "preprocessing-v2",
+  };
+
+  const legacy = await repository.createSourceFileWithTransactions(
+    1,
+    {
+      dealership_store_id: 1,
+      source_type: "boa",
+      original_filename: "legacy.csv",
+      stored_filename: null,
+      file_hash: legacyHash,
+      row_count: 0,
+      validation_error_count: 0,
+    },
+    [],
+  );
+  expect(legacy.sourceFile).toMatchObject({
+    accounting_month: null,
+    rooftop_profile_id: null,
+    rooftop_profile_version: null,
+    parser_name: null,
+    parser_version: null,
+    preprocessor_name: null,
+    preprocessor_version: null,
+    preprocessing_metadata: null,
+  });
+  await expect(repository.getSourceFile(legacy.sourceFile.id)).resolves.toMatchObject({
+    id: legacy.sourceFile.id,
+    accounting_month: null,
+    rooftop_profile_id: null,
+    rooftop_profile_version: null,
+    parser_name: null,
+    parser_version: null,
+    preprocessor_name: null,
+    preprocessor_version: null,
+    preprocessing_metadata: null,
+  });
+  await expect(
+    repository.getReusableSourceFile(1, 1, "boa", legacyHash, aprilIdentity),
+  ).resolves.toBeNull();
+
+  const aprilMetadata = preprocessingMetadata(april, aprilIdentity, 2);
+  const aprilReceipt = await repository.createSourceFileWithTransactions(
+    1,
+    profiledSourceFile("april.csv", sharedHash, aprilIdentity, aprilMetadata),
+    [],
+  );
+  const mayReceipt = await repository.createSourceFileWithTransactions(
+    1,
+    profiledSourceFile(
+      "may.csv",
+      sharedHash,
+      mayIdentity,
+      preprocessingMetadata(may, mayIdentity, 3),
+    ),
+    [],
+  );
+  const newerProcessingReceipt = await repository.createSourceFileWithTransactions(
+    1,
+    profiledSourceFile(
+      "april-reprocessed.csv",
+      sharedHash,
+      newerProcessingIdentity,
+      preprocessingMetadata(april, newerProcessingIdentity, 4),
+    ),
+    [],
+  );
+
+  expect(new Set([
+    aprilReceipt.sourceFile.id,
+    mayReceipt.sourceFile.id,
+    newerProcessingReceipt.sourceFile.id,
+  ]).size).toBe(3);
+  expect(aprilReceipt.sourceFile).toMatchObject({
+    ...aprilIdentity,
+    preprocessing_metadata: aprilMetadata,
+  });
+  expect(mayReceipt.sourceFile).toMatchObject(mayIdentity);
+  expect(newerProcessingReceipt.sourceFile).toMatchObject(newerProcessingIdentity);
+
+  const reusableApril = await repository.getReusableSourceFile(
+    1,
+    1,
+    "boa",
+    sharedHash,
+    aprilIdentity,
+  );
+  expect(reusableApril).toMatchObject({
+    id: aprilReceipt.sourceFile.id,
+    ...aprilIdentity,
+    preprocessing_metadata: aprilMetadata,
+  });
+  expect(reusableApril?.preprocessing_metadata?.removed_rows).toEqual([
+    {
+      source: "boa",
+      source_row_number: 2,
+      removal_reason: "zero_balance",
+      key_values: { stock_number: "A100" },
+    },
+  ]);
+  await expect(
+    repository.getReusableSourceFile(1, 1, "boa", sharedHash, mayIdentity),
+  ).resolves.toMatchObject({ id: mayReceipt.sourceFile.id, ...mayIdentity });
+  await expect(
+    repository.getReusableSourceFile(1, 1, "boa", sharedHash, newerProcessingIdentity),
+  ).resolves.toMatchObject({
+    id: newerProcessingReceipt.sourceFile.id,
+    ...newerProcessingIdentity,
+  });
+
+  const sourceSummaries = await repository.listSourceFiles(1, "boa", 1);
+  expect(sourceSummaries).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        source_file_id: aprilReceipt.sourceFile.id,
+        ...aprilIdentity,
+        preprocessing_metadata: aprilMetadata,
+      }),
+      expect.objectContaining({
+        source_file_id: legacy.sourceFile.id,
+        accounting_month: null,
+        rooftop_profile_id: null,
+        rooftop_profile_version: null,
+        parser_name: null,
+        parser_version: null,
+        preprocessor_name: null,
+        preprocessor_version: null,
+        preprocessing_metadata: null,
+      }),
+    ]),
+  );
+
+  const dealertrackIdentity: SourceProcessingIdentity = {
+    accounting_month: april,
+    rooftop_profile_id: "acura-v1",
+    rooftop_profile_version: "1",
+    parser_name: "dealertrack-csv",
+    parser_version: "1",
+    preprocessor_name: "dealertrack-floorplan",
+    preprocessor_version: "preprocessing-v1",
+  };
+  const dealertrackReceipt = await repository.createSourceFileWithTransactions(
+    1,
+    profiledSourceFile(
+      "dealertrack.csv",
+      dealertrackHash,
+      dealertrackIdentity,
+      preprocessingMetadata(april, dealertrackIdentity, 5, "dealertrack"),
+      "dealertrack",
+    ),
+    [],
+  );
+  const run = await repository.createReconciliationRun({
+    dealership_id: 1,
+    dealership_store_id: 1,
+    boa_source_file_id: aprilReceipt.sourceFile.id,
+    dealertrack_source_file_id: dealertrackReceipt.sourceFile.id,
+    accounting_month: april,
+    rooftop_profile_id: "acura-v1",
+    rooftop_profile_version: "1",
+    result: emptyReconciliationResult(),
+  });
+  expect(run).toMatchObject({
+    accounting_month: april,
+    rooftop_profile_id: "acura-v1",
+    rooftop_profile_version: "1",
+  });
+  await expect(repository.listReconciliationRuns(1, { dealershipStoreId: 1 })).resolves.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        reconciliation_run_id: run.id,
+        accounting_month: april,
+        rooftop_profile_id: "acura-v1",
+        rooftop_profile_version: "1",
+      }),
+    ]),
+  );
+  await expect(repository.getReconciliationRunDetail(1, run.id)).resolves.toMatchObject({
+    reconciliation_run_id: run.id,
+    accounting_month: april,
+    rooftop_profile_id: "acura-v1",
+    rooftop_profile_version: "1",
+    boa_source_file: expect.objectContaining({
+      source_file_id: aprilReceipt.sourceFile.id,
+      ...aprilIdentity,
+      preprocessing_metadata: aprilMetadata,
+    }),
+    dealertrack_source_file: expect.objectContaining({
+      source_file_id: dealertrackReceipt.sourceFile.id,
+      ...dealertrackIdentity,
+    }),
+  });
+}
+
+function accountingMonth(value: string): AccountingMonth {
+  const month = parseAccountingMonth(value);
+  if (!month) {
+    throw new Error(`Invalid accounting month fixture: ${value}`);
+  }
+  return month;
+}
+
+function profiledSourceFile(
+  filename: string,
+  fileHash: string,
+  identity: SourceProcessingIdentity,
+  metadata: UploadPreprocessingMetadata,
+  sourceType: ProfiledNewSourceFile["source_type"] = "boa",
+): ProfiledNewSourceFile {
+  return {
+    dealership_store_id: 1,
+    source_type: sourceType,
+    original_filename: filename,
+    stored_filename: null,
+    file_hash: fileHash,
+    row_count: 1,
+    validation_error_count: 0,
+    ...identity,
+    preprocessing_metadata: metadata,
+  };
+}
+
+function preprocessingMetadata(
+  month: AccountingMonth,
+  identity: SourceProcessingIdentity,
+  removedRowNumber: number,
+  source: "boa" | "dealertrack" = "boa",
+): UploadPreprocessingMetadata {
+  return {
+    detected_format: "csv",
+    detection_confidence: "high",
+    detection_reason: "csv fixture",
+    parser_route: source === "boa" ? "boa_csv" : "dealertrack_csv",
+    preprocessing_version: identity.preprocessor_version,
+    summary: {
+      source_kind: source,
+      preprocessing_version: identity.preprocessor_version,
+      parser_name: source === "boa" ? "boa-csv" : "dealertrack-csv",
+      parser_version: identity.parser_version,
+      parser_format: "csv",
+      preprocessor_name: source === "boa" ? "boa-floorplan" : "dealertrack-floorplan",
+      preprocessor_version: identity.preprocessor_version,
+      period_evidence: {
+        source,
+        selectedMonth: month,
+        explicitMonths: [month],
+        observedDateRange: { min: `${month}-01`, max: `${month}-30` },
+        filenameHint: month,
+        status: "confirmed",
+        safeEvidence: { fixture: true },
+      },
+      rows_scanned: 2,
+      rows_accepted: 1,
+      rows_removed_zero_balance: 1,
+      rows_removed_straightline: 0,
+      rows_removed_banner: 0,
+      rows_skipped_unknown: 0,
+      rows_requiring_manual_enrichment: 0,
+      duplicate_vin6_count: 0,
+      preprocessed_at: "2026-09-14T12:00:00.000Z",
+    },
+    diagnostics: [
+      {
+        kind: "zero_balance_row_removed",
+        message: "Removed zero-balance fixture row.",
+        source_row_number: removedRowNumber,
+        stock_number: "A100",
+      },
+    ],
+    removed_rows: [
+      {
+        source,
+        source_row_number: removedRowNumber,
+        removal_reason: "zero_balance",
+        key_values: { stock_number: "A100" },
+      },
+    ],
+    legacy_csv_path: false,
+    unsupported_reason: null,
+  };
+}
+
+function emptyReconciliationResult(): ReconciliationResponse {
+  return {
+    matched_count: 0,
+    exception_count: 0,
+    duplicate_count: 0,
+    match_groups: [],
+    exceptions: [],
+    vin_presence_diagnostics: {
+      extracted_vin_sets: { boa: [], dealertrack: [] },
+      vin_presence_exceptions: {
+        dealertrack_not_in_boa: [],
+        boa_not_in_dealertrack: [],
+      },
+      transaction_unmatched_shared_vins: [],
+    },
   };
 }

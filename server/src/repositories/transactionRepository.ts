@@ -33,6 +33,7 @@ import type {
   ScheduledReconciliationJob,
   ScheduledReconciliationJobUpdate,
   SourceFile,
+  SourceProcessingIdentity,
   SourceFileUploadContent,
   SourceFileSummary,
   SourceType,
@@ -75,6 +76,13 @@ export interface TransactionRepository {
     dealershipStoreId: number | null,
     sourceType: SourceType,
     fileHash: string,
+  ): Promise<SourceFile | null>;
+  getReusableSourceFile(
+    dealershipId: number,
+    dealershipStoreId: number,
+    sourceType: SourceType,
+    fileHash: string,
+    identity: SourceProcessingIdentity,
   ): Promise<SourceFile | null>;
   listSourceFiles(
     dealershipId: number,
@@ -290,6 +298,14 @@ export class MemoryTransactionRepository implements TransactionRepository {
       id: this.nextSourceFileId++,
       dealership_id: dealershipId,
       dealership_store_id: sourceFileInput.dealership_store_id ?? this.getDefaultStoreId(dealershipId),
+      accounting_month: sourceFileInput.accounting_month ?? null,
+      rooftop_profile_id: sourceFileInput.rooftop_profile_id ?? null,
+      rooftop_profile_version: sourceFileInput.rooftop_profile_version ?? null,
+      parser_name: sourceFileInput.parser_name ?? null,
+      parser_version: sourceFileInput.parser_version ?? null,
+      preprocessor_name: sourceFileInput.preprocessor_name ?? null,
+      preprocessor_version: sourceFileInput.preprocessor_version ?? null,
+      preprocessing_metadata: sourceFileInput.preprocessing_metadata ?? null,
       created_at: new Date().toISOString(),
     };
     this.sourceFiles.push(sourceFile);
@@ -329,6 +345,14 @@ export class MemoryTransactionRepository implements TransactionRepository {
       file_hash: sourceFileInput.file_hash,
       row_count: sourceFileInput.row_count,
       validation_error_count: sourceFileInput.validation_error_count,
+      accounting_month: sourceFileInput.accounting_month ?? null,
+      rooftop_profile_id: sourceFileInput.rooftop_profile_id ?? null,
+      rooftop_profile_version: sourceFileInput.rooftop_profile_version ?? null,
+      parser_name: sourceFileInput.parser_name ?? null,
+      parser_version: sourceFileInput.parser_version ?? null,
+      preprocessor_name: sourceFileInput.preprocessor_name ?? null,
+      preprocessor_version: sourceFileInput.preprocessor_version ?? null,
+      preprocessing_metadata: sourceFileInput.preprocessing_metadata ?? null,
     });
     if (uploadContent) {
       this.upsertSourceFileUploadContent(sourceFile, uploadContent);
@@ -380,6 +404,31 @@ export class MemoryTransactionRepository implements TransactionRepository {
           sourceFile.dealership_store_id === dealershipStoreId &&
           sourceFile.source_type === sourceType &&
           sourceFile.file_hash === fileHash,
+      ) ?? null
+    );
+  }
+
+  async getReusableSourceFile(
+    dealershipId: number,
+    dealershipStoreId: number,
+    sourceType: SourceType,
+    fileHash: string,
+    identity: SourceProcessingIdentity,
+  ): Promise<SourceFile | null> {
+    return (
+      this.sourceFiles.find(
+        (sourceFile) =>
+          sourceFile.dealership_id === dealershipId &&
+          sourceFile.dealership_store_id === dealershipStoreId &&
+          sourceFile.source_type === sourceType &&
+          sourceFile.file_hash === fileHash &&
+          sourceFile.accounting_month === identity.accounting_month &&
+          sourceFile.rooftop_profile_id === identity.rooftop_profile_id &&
+          sourceFile.rooftop_profile_version === identity.rooftop_profile_version &&
+          sourceFile.parser_name === identity.parser_name &&
+          sourceFile.parser_version === identity.parser_version &&
+          sourceFile.preprocessor_name === identity.preprocessor_name &&
+          sourceFile.preprocessor_version === identity.preprocessor_version,
       ) ?? null
     );
   }
@@ -731,6 +780,9 @@ export class MemoryTransactionRepository implements TransactionRepository {
       exception_count: input.result.exception_count,
       duplicate_count: input.result.duplicate_count,
       status: input.status ?? "completed",
+      accounting_month: input.accounting_month ?? null,
+      rooftop_profile_id: input.rooftop_profile_id ?? null,
+      rooftop_profile_version: input.rooftop_profile_version ?? null,
       created_at: createdAt,
     };
     this.reconciliationRuns.push(run);
@@ -1199,6 +1251,9 @@ export class MemoryTransactionRepository implements TransactionRepository {
       exception_count: run.exception_count,
       duplicate_count: run.duplicate_count,
       status: run.status,
+      accounting_month: run.accounting_month,
+      rooftop_profile_id: run.rooftop_profile_id,
+      rooftop_profile_version: run.rooftop_profile_version,
       created_at: run.created_at,
     };
   }
@@ -1213,6 +1268,14 @@ export class MemoryTransactionRepository implements TransactionRepository {
       filename: sourceFile.original_filename,
       row_count: sourceFile.row_count,
       validation_error_count: sourceFile.validation_error_count,
+      accounting_month: sourceFile.accounting_month,
+      rooftop_profile_id: sourceFile.rooftop_profile_id,
+      rooftop_profile_version: sourceFile.rooftop_profile_version,
+      parser_name: sourceFile.parser_name,
+      parser_version: sourceFile.parser_version,
+      preprocessor_name: sourceFile.preprocessor_name,
+      preprocessor_version: sourceFile.preprocessor_version,
+      preprocessing_metadata: sourceFile.preprocessing_metadata,
       created_at: sourceFile.created_at,
     };
   }
@@ -1307,6 +1370,14 @@ function _toSourceFileSummary(sourceFile: SourceFile): SourceFileSummary {
     filename: sourceFile.original_filename,
     row_count: sourceFile.row_count,
     validation_error_count: sourceFile.validation_error_count,
+    accounting_month: sourceFile.accounting_month,
+    rooftop_profile_id: sourceFile.rooftop_profile_id,
+    rooftop_profile_version: sourceFile.rooftop_profile_version,
+    parser_name: sourceFile.parser_name,
+    parser_version: sourceFile.parser_version,
+    preprocessor_name: sourceFile.preprocessor_name,
+    preprocessor_version: sourceFile.preprocessor_version,
+    preprocessing_metadata: sourceFile.preprocessing_metadata,
     created_at: sourceFile.created_at,
   };
 }

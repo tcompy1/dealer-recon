@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+
 import { describe, expect, test } from "vitest";
 
 import { createPool } from "../repositories/postgresTransactionRepository.js";
@@ -5,18 +7,30 @@ import { withDatabaseTestLock } from "../testUtils/databaseTestLock.js";
 import { migrate } from "./migrate.js";
 
 const DEMO_EMAIL = "demo@dealer-recon.local";
+const ROLLBACK_COLLISION_ERROR =
+  "Cannot roll back 1789344000000_add_rooftop_run_identity: source_files contains identities that the legacy uniqueness constraint cannot represent.";
+
+class MigrationCommandError extends Error {
+  stderr: string;
+
+  constructor(message: string, stderr: string) {
+    super(message);
+    this.name = "MigrationCommandError";
+    this.stderr = stderr;
+  }
+}
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeIfDatabase = databaseUrl ? describe : describe.skip;
 
 describeIfDatabase("migrate", () => {
-  test("can run twice and leaves import scoping columns in place", async () => {
+  test("can run twice and leaves import scoping and reconciliation identity columns in place", async () => {
     if (!databaseUrl) {
       throw new Error("DATABASE_URL is required for migration tests.");
     }
 
     await withDatabaseTestLock(databaseUrl, async () => {
-      await deleteDemoUserIfPresent(databaseUrl);
+      const demoUserCountBefore = await countDemoUsers(databaseUrl);
       await migrate(databaseUrl);
       await migrate(databaseUrl);
 
@@ -76,13 +90,13 @@ describeIfDatabase("migrate", () => {
              AND is_nullable = 'NO'`,
         );
         expect(userPasswordColumnResult.rows).toHaveLength(1);
-        const demoUserResult = await pool.query<{ email: string }>(
-          `SELECT email
+        const demoUserResult = await pool.query<{ count: string }>(
+          `SELECT COUNT(*)::text AS count
            FROM users
            WHERE lower(email) = lower($1)`,
           [DEMO_EMAIL],
         );
-        expect(demoUserResult.rows).toHaveLength(0);
+        expect(Number(demoUserResult.rows[0].count)).toBe(demoUserCountBefore);
         const amountColumnResult = await pool.query<{ data_type: string }>(
           `SELECT data_type
            FROM information_schema.columns
@@ -147,8 +161,358 @@ describeIfDatabase("migrate", () => {
              )`,
         );
         expect(exceptionColumnResult.rows).toHaveLength(7);
+
+        const identityColumnResult = await pool.query<{
+          table_name: string;
+          column_name: string;
+          data_type: string;
+          is_nullable: string;
+        }>(
+          `SELECT table_name, column_name, data_type, is_nullable
+           FROM information_schema.columns
+           WHERE table_schema = 'public'
+             AND (
+               (table_name = 'source_files' AND column_name IN (
+                 'accounting_month',
+                 'rooftop_profile_id',
+                 'rooftop_profile_version',
+                 'parser_name',
+                 'parser_version',
+                 'preprocessor_name',
+                 'preprocessor_version',
+                 'preprocessing_metadata'
+               ))
+               OR
+               (table_name = 'reconciliation_runs' AND column_name IN (
+                 'accounting_month',
+                 'rooftop_profile_id',
+                 'rooftop_profile_version'
+               ))
+             )
+           ORDER BY table_name, column_name`,
+        );
+        expect(identityColumnResult.rows).toEqual([
+          {
+            table_name: "reconciliation_runs",
+            column_name: "accounting_month",
+            data_type: "text",
+            is_nullable: "YES",
+          },
+          {
+            table_name: "reconciliation_runs",
+            column_name: "rooftop_profile_id",
+            data_type: "text",
+            is_nullable: "YES",
+          },
+          {
+            table_name: "reconciliation_runs",
+            column_name: "rooftop_profile_version",
+            data_type: "text",
+            is_nullable: "YES",
+          },
+          {
+            table_name: "source_files",
+            column_name: "accounting_month",
+            data_type: "text",
+            is_nullable: "YES",
+          },
+          {
+            table_name: "source_files",
+            column_name: "parser_name",
+            data_type: "text",
+            is_nullable: "YES",
+          },
+          {
+            table_name: "source_files",
+            column_name: "parser_version",
+            data_type: "text",
+            is_nullable: "YES",
+          },
+          {
+            table_name: "source_files",
+            column_name: "preprocessing_metadata",
+            data_type: "jsonb",
+            is_nullable: "YES",
+          },
+          {
+            table_name: "source_files",
+            column_name: "preprocessor_name",
+            data_type: "text",
+            is_nullable: "YES",
+          },
+          {
+            table_name: "source_files",
+            column_name: "preprocessor_version",
+            data_type: "text",
+            is_nullable: "YES",
+          },
+          {
+            table_name: "source_files",
+            column_name: "rooftop_profile_id",
+            data_type: "text",
+            is_nullable: "YES",
+          },
+          {
+            table_name: "source_files",
+            column_name: "rooftop_profile_version",
+            data_type: "text",
+            is_nullable: "YES",
+          },
+        ]);
+
+        const indexResult = await pool.query<{ indexname: string; indexdef: string }>(
+          `SELECT indexname, indexdef
+           FROM pg_indexes
+           WHERE schemaname = 'public'
+             AND indexname IN (
+               'ux_source_files_dealership_source_type_file_hash',
+               'ux_source_files_reusable_identity'
+             )
+           ORDER BY indexname`,
+        );
+        expect(indexResult.rows).toEqual([
+          {
+            indexname: "ux_source_files_reusable_identity",
+            indexdef: expect.stringMatching(
+              /UNIQUE INDEX ux_source_files_reusable_identity ON public\.source_files USING btree \(dealership_id, dealership_store_id, source_type, accounting_month, file_hash, parser_name, parser_version, preprocessor_name, preprocessor_version\)$/,
+            ),
+          },
+        ]);
+
+        const monthConstraintResult = await pool.query<{ conname: string }>(
+          `SELECT conname
+           FROM pg_constraint
+           WHERE conname IN (
+             'source_files_accounting_month_check',
+             'reconciliation_runs_accounting_month_check'
+           )
+           ORDER BY conname`,
+        );
+        expect(monthConstraintResult.rows).toEqual([
+          { conname: "reconciliation_runs_accounting_month_check" },
+          { conname: "source_files_accounting_month_check" },
+        ]);
       } finally {
         await pool.end();
+      }
+    });
+  });
+
+  test("keeps legacy identity nullable and enforces exact accounting month format", async () => {
+    if (!databaseUrl) {
+      throw new Error("DATABASE_URL is required for migration tests.");
+    }
+
+    await withDatabaseTestLock(databaseUrl, async () => {
+      await migrate(databaseUrl);
+
+      const pool = createPool(databaseUrl);
+      const unique = `${Date.now()}-${Math.random()}`;
+      try {
+        const legacyRow = await pool.query<{
+          accounting_month: string | null;
+          rooftop_profile_id: string | null;
+          rooftop_profile_version: string | null;
+          parser_name: string | null;
+          parser_version: string | null;
+          preprocessor_name: string | null;
+          preprocessor_version: string | null;
+          preprocessing_metadata: Record<string, unknown> | null;
+        }>(
+          `INSERT INTO source_files (
+             dealership_id,
+             dealership_store_id,
+             source_type,
+             original_filename,
+             stored_filename,
+             file_hash,
+             row_count,
+             validation_error_count,
+             created_at
+           ) VALUES (1, 1, 'boa', 'legacy.csv', NULL, $1, 0, 0, '2026-04-30T23:59:59Z')
+           RETURNING
+             accounting_month,
+             rooftop_profile_id,
+             rooftop_profile_version,
+             parser_name,
+             parser_version,
+             preprocessor_name,
+             preprocessor_version,
+             preprocessing_metadata`,
+          [`legacy-identity-${unique}`],
+        );
+        expect(legacyRow.rows[0]).toEqual({
+          accounting_month: null,
+          rooftop_profile_id: null,
+          rooftop_profile_version: null,
+          parser_name: null,
+          parser_version: null,
+          preprocessor_name: null,
+          preprocessor_version: null,
+          preprocessing_metadata: null,
+        });
+
+        await expect(
+          pool.query(
+            `UPDATE source_files SET accounting_month = '2026-4' WHERE file_hash = $1`,
+            [`legacy-identity-${unique}`],
+          ),
+        ).rejects.toThrow();
+        await expect(
+          pool.query(
+            `UPDATE source_files SET accounting_month = '2026-13' WHERE file_hash = $1`,
+            [`legacy-identity-${unique}`],
+          ),
+        ).rejects.toThrow();
+
+        const runSourceFiles = await pool.query<{ id: number }>(
+          `INSERT INTO source_files (
+             dealership_id,
+             dealership_store_id,
+             source_type,
+             original_filename,
+             stored_filename,
+             file_hash,
+             row_count,
+             validation_error_count
+           ) VALUES
+             (1, 1, 'boa', 'run-boa.csv', NULL, $1, 0, 0),
+             (1, 1, 'dealertrack', 'run-dealertrack.csv', NULL, $2, 0, 0)
+           RETURNING id`,
+          [`run-boa-${unique}`, `run-dealertrack-${unique}`],
+        );
+        await expect(
+          pool.query(
+            `INSERT INTO reconciliation_runs (
+               dealership_id,
+               dealership_store_id,
+               boa_source_file_id,
+               dealertrack_source_file_id,
+               status,
+               accounting_month
+             ) VALUES (1, 1, $1, $2, 'completed', '2026-00')`,
+            [runSourceFiles.rows[0].id, runSourceFiles.rows[1].id],
+          ),
+        ).rejects.toThrow();
+      } finally {
+        await pool.query("DELETE FROM source_files WHERE file_hash LIKE $1", [`%${unique}`]);
+        await pool.end();
+      }
+    });
+  });
+
+  test("refuses rollback without losing differentiated reusable source identities", async () => {
+    if (!databaseUrl) {
+      throw new Error("DATABASE_URL is required for migration tests.");
+    }
+
+    await withDatabaseTestLock(databaseUrl, async () => {
+      await migrate(databaseUrl);
+
+      const pool = createPool(databaseUrl);
+      const unique = `${Date.now()}-${Math.random()}`;
+      let migrationApplied = true;
+      try {
+        await pool.query(
+          `INSERT INTO source_files (
+             dealership_id,
+             dealership_store_id,
+             source_type,
+             original_filename,
+             stored_filename,
+             file_hash,
+             row_count,
+             validation_error_count,
+             accounting_month,
+             rooftop_profile_id,
+             rooftop_profile_version,
+             parser_name,
+             parser_version,
+             preprocessor_name,
+             preprocessor_version,
+             preprocessing_metadata
+           ) VALUES
+             (1, 1, 'boa', 'april.csv', NULL, $1, 1, 0, '2026-04', 'acura-v1', '1', 'boa-csv', '1', 'boa-floorplan', '1', '{"removed_rows": [{"row": 2}]}'::jsonb),
+             (1, 1, 'boa', 'may.csv', NULL, $1, 1, 0, '2026-05', 'acura-v1', '1', 'boa-csv', '2', 'boa-floorplan', '2', '{"removed_rows": [{"row": 3}]}'::jsonb)`,
+          [`rollback-collision-${unique}`],
+        );
+
+        await expect(runMigrationDownCapturingOutput(databaseUrl)).rejects.toMatchObject({
+          stderr: expect.stringContaining(ROLLBACK_COLLISION_ERROR),
+        });
+
+        const preservedRows = await pool.query<{
+          accounting_month: string;
+          parser_version: string;
+          preprocessor_version: string;
+          preprocessing_metadata: { removed_rows: Array<{ row: number }> };
+        }>(
+          `SELECT
+             accounting_month,
+             parser_version,
+             preprocessor_version,
+             preprocessing_metadata
+           FROM source_files
+           WHERE file_hash = $1
+           ORDER BY accounting_month`,
+          [`rollback-collision-${unique}`],
+        );
+        expect(preservedRows.rows).toEqual([
+          {
+            accounting_month: "2026-04",
+            parser_version: "1",
+            preprocessor_version: "1",
+            preprocessing_metadata: { removed_rows: [{ row: 2 }] },
+          },
+          {
+            accounting_month: "2026-05",
+            parser_version: "2",
+            preprocessor_version: "2",
+            preprocessing_metadata: { removed_rows: [{ row: 3 }] },
+          },
+        ]);
+
+        const appliedState = await pool.query<{
+          reusable_index: string;
+          accounting_month_column_count: string;
+          migration_count: string;
+        }>(
+          `SELECT
+             to_regclass('public.ux_source_files_reusable_identity')::text AS reusable_index,
+             (
+               SELECT COUNT(*)::text
+               FROM information_schema.columns
+               WHERE table_schema = 'public'
+                 AND table_name IN ('source_files', 'reconciliation_runs')
+                 AND column_name = 'accounting_month'
+             ) AS accounting_month_column_count,
+             (
+               SELECT COUNT(*)::text
+               FROM pgmigrations
+               WHERE name = '1789344000000_add_rooftop_run_identity'
+             ) AS migration_count`,
+        );
+        expect(appliedState.rows[0]).toEqual({
+          reusable_index: "ux_source_files_reusable_identity",
+          accounting_month_column_count: "2",
+          migration_count: "1",
+        });
+      } finally {
+        const state = await pool.query<{ migration_count: string }>(
+          `SELECT COUNT(*)::text AS migration_count
+           FROM pgmigrations
+           WHERE name = '1789344000000_add_rooftop_run_identity'`,
+        );
+        migrationApplied = state.rows[0].migration_count === "1";
+        await pool.query("DELETE FROM source_files WHERE file_hash = $1", [
+          `rollback-collision-${unique}`,
+        ]);
+        await pool.end();
+
+        if (migrationApplied) {
+          await runMigrationDownCapturingOutput(databaseUrl);
+        }
+        await migrate(databaseUrl);
       }
     });
   });
@@ -235,24 +599,38 @@ describeIfDatabase("migrate", () => {
   });
 });
 
-async function deleteDemoUserIfPresent(databaseUrl: string): Promise<void> {
+async function countDemoUsers(databaseUrl: string): Promise<number> {
   const pool = createPool(databaseUrl);
   try {
-    await pool.query(
-      `DO $$
-       BEGIN
-         IF to_regclass('public.users') IS NOT NULL THEN
-           IF to_regclass('public.user_store_assignments') IS NOT NULL THEN
-             DELETE FROM user_store_assignments
-             WHERE user_id IN (
-               SELECT id FROM users WHERE lower(email) = lower('${DEMO_EMAIL}')
-             );
-           END IF;
-           DELETE FROM users WHERE lower(email) = lower('${DEMO_EMAIL}');
-         END IF;
-       END $$;`,
+    const result = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM users
+       WHERE lower(email) = lower($1)`,
+      [DEMO_EMAIL],
     );
+    return Number(result.rows[0].count);
   } finally {
     await pool.end();
   }
+}
+
+function runMigrationDownCapturingOutput(databaseUrl: string): Promise<void> {
+  const command = process.platform === "win32" ? "npm.cmd" : "npm";
+  return new Promise((resolve, reject) => {
+    execFile(
+      command,
+      ["run", "migrate:down"],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, DATABASE_URL: databaseUrl },
+      },
+      (error, _stdout, stderr) => {
+        if (!error) {
+          resolve();
+          return;
+        }
+        reject(new MigrationCommandError(error.message, stderr));
+      },
+    );
+  });
 }
