@@ -463,6 +463,32 @@ export class PostgresTransactionRepository implements TransactionRepository {
     return result.rows[0] ? toSourceFile(result.rows[0]) : null;
   }
 
+  async getReusableLegacySourceFile(
+    dealershipId: number,
+    dealershipStoreId: number | null,
+    sourceType: SourceType,
+    fileHash: string,
+  ): Promise<SourceFile | null> {
+    const result = await this.pool.query<SourceFileRow>(
+      `SELECT sf.*, ds.name AS store_name
+       FROM source_files sf
+       LEFT JOIN dealership_stores ds ON ds.id = sf.dealership_store_id
+       WHERE sf.dealership_id = $1
+         AND sf.dealership_store_id IS NOT DISTINCT FROM $2
+         AND sf.source_type = $3
+         AND sf.file_hash = $4
+         AND sf.accounting_month IS NULL
+         AND sf.rooftop_profile_id IS NULL
+         AND sf.rooftop_profile_version IS NULL
+         AND sf.parser_name IS NULL
+         AND sf.parser_version IS NULL
+         AND sf.preprocessor_name IS NULL
+         AND sf.preprocessor_version IS NULL`,
+      [dealershipId, dealershipStoreId, sourceType, fileHash],
+    );
+    return result.rows[0] ? toSourceFile(result.rows[0]) : null;
+  }
+
   async listSourceFiles(
     dealershipId: number,
     sourceType?: SourceType,

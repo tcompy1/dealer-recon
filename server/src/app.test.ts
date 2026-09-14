@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import request from "supertest";
-import { describe, expect, test } from "vitest";
+import { describe, expect, expectTypeOf, test } from "vitest";
 
 import { createApp } from "./app.js";
 import { MemoryAuthRepository } from "./auth.js";
@@ -12,8 +12,13 @@ import {
 } from "./domain/accountingMonth.js";
 import type {
   NewTransaction,
+  FloorplanUploadResponse,
+  LegacyUploadResponse,
   ProfiledNewSourceFile,
+  SourceFile,
   SourceProcessingIdentity,
+  SourceType,
+  UploadResponse,
 } from "./domain/types.js";
 import { MemoryTransactionRepository } from "./repositories/transactionRepository.js";
 import { MAX_CSV_ROWS } from "./services/transactionNormalizer.js";
@@ -30,6 +35,47 @@ const BOA_CSV_HEADER =
 
 const DEALERTRACK_CSV_HEADER = "Control,Description,2100,2110";
 const APRIL_2026 = accountingMonth("2026-04");
+
+expectTypeOf<UploadResponse>().toEqualTypeOf<
+  FloorplanUploadResponse | LegacyUploadResponse
+>();
+expectTypeOf<FloorplanUploadResponse["accounting_month"]>().toEqualTypeOf<AccountingMonth>();
+expectTypeOf<FloorplanUploadResponse["preprocessing"]>().toEqualTypeOf<
+  UploadPreprocessingMetadata
+>();
+expectTypeOf<LegacyUploadResponse["accounting_month"]>().toEqualTypeOf<undefined>();
+
+class ConcurrentUploadRepository extends MemoryTransactionRepository {
+  private initialLookupCount = 0;
+  private releaseInitialLookups: (() => void) | null = null;
+  private readonly initialLookupsReady = new Promise<void>((resolve) => {
+    this.releaseInitialLookups = resolve;
+  });
+
+  override async getReusableSourceFile(
+    dealershipId: number,
+    dealershipStoreId: number,
+    sourceType: SourceType,
+    fileHash: string,
+    identity: SourceProcessingIdentity,
+  ): Promise<SourceFile | null> {
+    this.initialLookupCount += 1;
+    if (this.initialLookupCount <= 2) {
+      if (this.initialLookupCount === 2) {
+        this.releaseInitialLookups?.();
+      }
+      await this.initialLookupsReady;
+      return null;
+    }
+    return super.getReusableSourceFile(
+      dealershipId,
+      dealershipStoreId,
+      sourceType,
+      fileHash,
+      identity,
+    );
+  }
+}
 
 function createFallbackApp(
   repository: Parameters<typeof createApp>[0] = new MemoryTransactionRepository(),
@@ -873,6 +919,9 @@ describe("app", () => {
   test("POST /upload rejects an unsupported rooftop before creating persisted work", async () => {
     const repository = new MemoryTransactionRepository();
     const app = createFallbackApp(repository);
+    const source = Buffer.from(
+      boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"),
+    );
     const sourceFilesBefore = await repository.listSourceFiles(1);
     const transactionsBefore = await repository.listBySource(1, "boa");
     const runsBefore = await repository.listReconciliationRuns(1);
@@ -882,11 +931,7 @@ describe("app", () => {
       .field("source_type", "boa")
       .field("store_id", "2")
       .field("accounting_month", "2026-04")
-      .attach(
-        "file",
-        Buffer.from(boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101")),
-        "boa.csv",
-      );
+      .attach("file", source, "boa.csv");
 
     expect(response.status).toBe(422);
     expect(response.body).toEqual({
@@ -906,6 +951,22 @@ describe("app", () => {
     await expect(repository.listBySource(1, "boa")).resolves.toEqual(transactionsBefore);
     await expect(repository.listReconciliationRuns(1)).resolves.toEqual(runsBefore);
     await expect(repository.listReconciliationArtifacts(1, 1)).resolves.toEqual([]);
+    const events = await repository.listIngestionEvents(1, 2);
+    expect(events).toEqual([
+      expect.objectContaining({
+        dealership_store_id: 2,
+        source_file_id: null,
+        source_type: "boa",
+        state: "failed",
+        metadata: {
+          code: "ROOFTOP_PROFILE_UNSUPPORTED",
+          file_hash: createHash("sha256").update(source).digest("hex"),
+          accounting_month: "2026-04",
+          rooftop_profile_id: null,
+        },
+      }),
+    ]);
+    expectSafeScalarMetadata(events[0]?.metadata);
   });
 
   test("POST /upload returns preprocessing diagnostics summary for BOA HTML XLS uploads", async () => {
@@ -1043,52 +1104,92 @@ describe("app", () => {
   test("POST /upload rejects a malformed accounting month for a floorplan source", async () => {
     const repository = new MemoryTransactionRepository();
     const app = createFallbackApp(repository);
+    const source = Buffer.from(
+      boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"),
+    );
 
     const response = await request(app)
       .post("/upload")
       .field("source_type", "boa")
       .field("accounting_month", "2026-4")
-      .attach(
-        "file",
-        Buffer.from(boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101")),
-        "boa.csv",
-      );
+      .attach("file", source, "boa.csv");
 
     expect(response.status).toBe(422);
-    expect(response.body.error).toMatchObject({
-      code: "INVALID_ACCOUNTING_MONTH",
-      details: {
-        source: "boa",
-        accounting_month: "2026-4",
-        rooftop_profile_id: "hurst-v1",
+    expect(response.body).toEqual({
+      error: {
+        code: "INVALID_ACCOUNTING_MONTH",
+        message: "Accounting month must use YYYY-MM format.",
+        details: {
+          source: "boa",
+          accounting_month: "2026-4",
+          rooftop_profile_id: "hurst-v1",
+          recovery: "Select the accounting month in YYYY-MM format and upload the source again.",
+        },
+        request_id: expect.any(String),
       },
     });
     await expect(repository.listSourceFiles(1)).resolves.toEqual([]);
+    const events = await repository.listIngestionEvents(1, 1);
+    expect(events).toEqual([
+      expect.objectContaining({
+        dealership_store_id: 1,
+        source_file_id: null,
+        source_type: "boa",
+        state: "failed",
+        metadata: {
+          code: "INVALID_ACCOUNTING_MONTH",
+          file_hash: createHash("sha256").update(source).digest("hex"),
+          accounting_month: "2026-4",
+          rooftop_profile_id: "hurst-v1",
+        },
+      }),
+    ]);
+    expectSafeScalarMetadata(events[0]?.metadata);
   });
 
   test("POST /upload requires an accounting month for a floorplan source", async () => {
     const repository = new MemoryTransactionRepository();
     const app = createFallbackApp(repository);
+    const source = Buffer.from(
+      dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352"),
+    );
 
     const response = await request(app)
       .post("/upload")
       .field("source_type", "dealertrack")
-      .attach(
-        "file",
-        Buffer.from(dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352")),
-        "dealertrack.csv",
-      );
+      .attach("file", source, "dealertrack.csv");
 
     expect(response.status).toBe(422);
-    expect(response.body.error).toMatchObject({
-      code: "ACCOUNTING_MONTH_REQUIRED",
-      details: {
-        source: "dealertrack",
-        accounting_month: null,
-        rooftop_profile_id: "hurst-v1",
+    expect(response.body).toEqual({
+      error: {
+        code: "ACCOUNTING_MONTH_REQUIRED",
+        message: "Accounting month is required for floorplan uploads.",
+        details: {
+          source: "dealertrack",
+          accounting_month: null,
+          rooftop_profile_id: "hurst-v1",
+          recovery: "Select the accounting month in YYYY-MM format and upload the source again.",
+        },
+        request_id: expect.any(String),
       },
     });
     await expect(repository.listSourceFiles(1)).resolves.toEqual([]);
+    const events = await repository.listIngestionEvents(1, 1);
+    expect(events).toEqual([
+      expect.objectContaining({
+        dealership_store_id: 1,
+        source_file_id: null,
+        source_type: "dealertrack",
+        state: "failed",
+        metadata: {
+          code: "ACCOUNTING_MONTH_REQUIRED",
+          file_hash: createHash("sha256").update(source).digest("hex"),
+          accounting_month: null,
+          rooftop_profile_id: "hurst-v1",
+        },
+      }),
+    ]);
+    expectSafeScalarMetadata(events[0]?.metadata);
   });
 
   test("POST /upload routes Dealertrack CSV uploads through source-specific preprocessing (not legacy)", async () => {
@@ -1248,14 +1349,13 @@ describe("app", () => {
           rooftop_profile_id: "acura-v1",
           detected_format: "csv",
           parser_route: "boa_csv",
-          evidence: expect.objectContaining({
-            banner_month_mentions: 1,
-            distinct_banner_months: 1,
-          }),
+          banner_month_mentions: 1,
+          distinct_banner_months: 1,
         }),
       }),
     ]);
     expect(events[0]?.metadata).not.toHaveProperty("preprocessing");
+    expectSafeScalarMetadata(events[0]?.metadata);
   });
 
   test.each([
@@ -1335,6 +1435,112 @@ describe("app", () => {
     });
     await expect(repository.listSourceFiles(1, sourceType, acuraStore.id)).resolves.toEqual([]);
     await expect(repository.listBySource(1, sourceType)).resolves.toEqual([]);
+  });
+
+  test("POST /upload rejects Hurst BOA rows with valid headers but invalid amounts", async () => {
+    const repository = new MemoryTransactionRepository();
+    const app = createFallbackApp(repository);
+    const source = Buffer.from(
+      [
+        "Serial No/VIN,Stock/Lease No,Original Amount,Ending Balance,Invoice Date",
+        "1HGCM82633A004352,M50001,not-an-amount,not-an-amount,4/1/2026",
+      ].join("\n"),
+    );
+
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .field("store_id", "1")
+      .field("accounting_month", "2026-04")
+      .attach("file", source, "hurst-invalid-amount.csv");
+
+    expect(response.status).toBe(422);
+    expect(response.body).toEqual({
+      error: {
+        code: "STRUCTURALLY_INVALID_TRANSACTIONS",
+        message: "The uploaded source did not produce any structurally valid transactions.",
+        details: {
+          source: "boa",
+          accounting_month: "2026-04",
+          rooftop_profile_id: "hurst-v1",
+          evidence: {
+            detected_format: "csv",
+            detection_confidence: "high",
+            parser_route: "boa_csv",
+            rows_scanned: 1,
+            rows_accepted: 0,
+            rows_skipped_unknown: 1,
+            validation_error_count: 1,
+          },
+          recovery: "Correct the malformed or empty transaction rows and upload the source again.",
+        },
+        request_id: expect.any(String),
+      },
+    });
+    await expect(repository.listSourceFiles(1, "boa", 1)).resolves.toEqual([]);
+    await expect(repository.listBySource(1, "boa")).resolves.toEqual([]);
+  });
+
+  test("POST /upload translates profiled CSV parser failures into a safe rooftop rejection", async () => {
+    const repository = new MemoryTransactionRepository();
+    const app = createFallbackApp(repository);
+    const source = Buffer.from(
+      [
+        BOA_CSV_HEADER,
+        ...Array.from({ length: MAX_CSV_ROWS }, () => "too,many,rows,for,the,parser"),
+      ].join("\n"),
+    );
+    const fileHash = createHash("sha256").update(source).digest("hex");
+
+    const response = await request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .field("store_id", "1")
+      .field("accounting_month", "2026-04")
+      .attach("file", source, "hurst-parser-limit.csv");
+
+    expect(response.status).toBe(422);
+    expect(response.body).toEqual({
+      error: {
+        code: "STRUCTURALLY_INVALID_TRANSACTIONS",
+        message: "The uploaded source could not be parsed into structurally valid transactions.",
+        details: {
+          source: "boa",
+          accounting_month: "2026-04",
+          rooftop_profile_id: "hurst-v1",
+          evidence: {
+            detected_format: "csv",
+            detection_confidence: "high",
+            parser_route: "boa_csv",
+            parser_error_kind: "csv_normalization_error",
+          },
+          recovery: "Correct the malformed source export and upload it again.",
+        },
+        request_id: expect.any(String),
+      },
+    });
+    await expect(repository.listSourceFiles(1, "boa", 1)).resolves.toEqual([]);
+    await expect(repository.listBySource(1, "boa")).resolves.toEqual([]);
+    const events = await repository.listIngestionEvents(1, 1);
+    expect(events).toEqual([
+      expect.objectContaining({
+        dealership_store_id: 1,
+        source_file_id: null,
+        source_type: "boa",
+        state: "failed",
+        metadata: {
+          code: "STRUCTURALLY_INVALID_TRANSACTIONS",
+          file_hash: fileHash,
+          accounting_month: "2026-04",
+          rooftop_profile_id: "hurst-v1",
+          detected_format: "csv",
+          detection_confidence: "high",
+          parser_route: "boa_csv",
+          parser_error_kind: "csv_normalization_error",
+        },
+      }),
+    ]);
+    expectSafeScalarMetadata(events[0]?.metadata);
   });
 
   test.each([
@@ -1535,6 +1741,34 @@ describe("app", () => {
         created_at: expect.any(String),
       },
     });
+    expect(response.body).not.toHaveProperty("accounting_month");
+    expect(response.body).not.toHaveProperty("rooftop_profile_id");
+    expect(response.body).not.toHaveProperty("parser_name");
+  });
+
+  test("POST /upload resolves a concurrent exact-identity insert race as normal reuse", async () => {
+    const repository = new ConcurrentUploadRepository();
+    const app = createFallbackApp(repository);
+    const source = Buffer.from(
+      boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"),
+    );
+    const upload = (filename: string) => request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .field("store_id", "1")
+      .field("accounting_month", "2026-04")
+      .attach("file", source, filename);
+
+    const responses = await Promise.all([upload("concurrent-a.csv"), upload("concurrent-b.csv")]);
+
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    expect(responses[0]?.body.source_file_id).toBe(responses[1]?.body.source_file_id);
+    expect(
+      responses.map((response) => response.body.reused_existing_file).sort(),
+    ).toEqual([false, true]);
+    expect(responses[0]?.body.preprocessing).toEqual(responses[1]?.body.preprocessing);
+    expect(responses[0]?.body.preprocessing).not.toBeNull();
+    await expect(repository.listSourceFiles(1, "boa", 1)).resolves.toHaveLength(1);
   });
 
   test("POST /upload reprocesses unhealthy duplicate Dealertrack source files", async () => {
@@ -3668,6 +3902,15 @@ describe("app", () => {
     expect(row).not.toHaveProperty("review_status");
   });
 });
+
+function expectSafeScalarMetadata(metadata: Record<string, unknown> | undefined): void {
+  expect(metadata).toBeDefined();
+  expect(
+    Object.values(metadata ?? {}).every(
+      (value) => value === null || ["string", "number", "boolean"].includes(typeof value),
+    ),
+  ).toBe(true);
+}
 
 function accountingMonth(value: string): AccountingMonth {
   const month = parseAccountingMonth(value);

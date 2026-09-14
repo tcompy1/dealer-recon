@@ -18,6 +18,7 @@
 
 import type { ParserIdentity } from "../../config/storeWorkflowConfig.js";
 import type { NewTransaction, SourceType, ValidationError } from "../../domain/types.js";
+import { CsvNormalizationError } from "../transactionNormalizer.js";
 import {
   type FileFormatDetection,
   detectFileFormat,
@@ -120,7 +121,29 @@ export function preprocessUpload(
     };
   }
 
-  const parsed = parseWithRoute(route, buffer);
+  let parsed: ParsedTable | null;
+  try {
+    parsed = parseWithRoute(route, buffer);
+  } catch (error) {
+    return {
+      kind: "unsupported",
+      detection,
+      route,
+      reason: "The uploaded source could not be parsed into structurally valid transactions.",
+      validationFailure: {
+        code: "STRUCTURALLY_INVALID_TRANSACTIONS",
+        message: "The uploaded source could not be parsed into structurally valid transactions.",
+        evidence: {
+          ...detectionEvidence(detection, route),
+          parser_error_kind:
+            error instanceof CsvNormalizationError
+              ? "csv_normalization_error"
+              : "parser_error",
+        },
+        recovery: "Correct the malformed source export and upload it again.",
+      },
+    };
+  }
   if (!parsed) {
     return {
       kind: "unsupported",
@@ -240,7 +263,14 @@ function validateProfiledPreprocessing(
   }
 
   if (preprocessing.transactions.length === 0) {
-    if (options.rooftopProfile.profileId === "hurst-v1") {
+    if (
+      isKnownLegacyHeaderlessHurstDealertrack(
+        parsed,
+        sourceType,
+        options,
+        preprocessing,
+      )
+    ) {
       return null;
     }
     const evidence = {
@@ -269,6 +299,37 @@ function validateProfiledPreprocessing(
   }
 
   return null;
+}
+
+function isKnownLegacyHeaderlessHurstDealertrack(
+  parsed: ParsedTable,
+  sourceType: "boa" | "dealertrack",
+  options: PreprocessUploadOptions,
+  preprocessing: PreprocessingResult,
+): boolean {
+  if (
+    sourceType !== "dealertrack" ||
+    options.rooftopProfile.profileId !== "hurst-v1" ||
+    preprocessing.summary.parser_format !== "csv" ||
+    !parsed.header ||
+    parsed.header.length !== 4 ||
+    parsed.rows.length === 0
+  ) {
+    return false;
+  }
+  return [parsed.header, ...parsed.rows].every(
+    (row) =>
+      row.length === 4 &&
+      /^M\d{3,6}$/i.test(row[0]?.trim() ?? "") &&
+      /\bBOA\s+FLOORPLAN\b/i.test(row[1] ?? "") &&
+      isLegacyDealertrackAmount(row[2]) &&
+      isLegacyDealertrackAmount(row[3]),
+  );
+}
+
+function isLegacyDealertrackAmount(value: string | undefined): boolean {
+  const normalized = (value ?? "").trim().replace(/^\((.*)\)$/, "-$1").replace(/[$,\s]/g, "");
+  return /^[-+]?\d+(?:\.\d+)?$/.test(normalized);
 }
 
 function findMissingRequiredColumns(

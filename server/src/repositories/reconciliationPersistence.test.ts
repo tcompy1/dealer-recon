@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import request from "supertest";
 import { describe, expect, expectTypeOf, test, vi } from "vitest";
 
@@ -8,7 +10,9 @@ import type {
   ProfiledNewSourceFile,
   PersistReconciliationRunInput,
   ReconciliationResponse,
+  SourceFile,
   SourceProcessingIdentity,
+  SourceType,
   TransactionSummary,
 } from "../domain/types.js";
 import type { UploadPreprocessingMetadata } from "../services/preprocessing/types.js";
@@ -29,9 +33,43 @@ const describeIfDatabase = databaseUrl ? describe : describe.skip;
 
 const boaUploadCsv = (stockNumber: string, vin: string, amount: string, reference: string) =>
   `,,,9/26/2025,${reference},,${stockNumber},,${vin},,"${amount}",`;
+const BOA_PERSISTENCE_HEADER =
+  "Location,Manufacturer,Plant,Invoice Date,Invoice Number,Interest Start Date,Stock/Lease No,Description,Serial No/VIN,Type,Ending Balance,Other";
 
 const _dealertrackUploadCsv = (stockNumber: string, amount: string) =>
   `${stockNumber},"BOA FLOORPLAN",${amount},0`;
+
+class ConcurrentPostgresUploadRepository extends PostgresTransactionRepository {
+  private initialLookupCount = 0;
+  private releaseInitialLookups: (() => void) | null = null;
+  private readonly initialLookupsReady = new Promise<void>((resolve) => {
+    this.releaseInitialLookups = resolve;
+  });
+
+  override async getReusableSourceFile(
+    dealershipId: number,
+    dealershipStoreId: number,
+    sourceType: SourceType,
+    fileHash: string,
+    identity: SourceProcessingIdentity,
+  ): Promise<SourceFile | null> {
+    this.initialLookupCount += 1;
+    if (this.initialLookupCount <= 2) {
+      if (this.initialLookupCount === 2) {
+        this.releaseInitialLookups?.();
+      }
+      await this.initialLookupsReady;
+      return null;
+    }
+    return super.getReusableSourceFile(
+      dealershipId,
+      dealershipStoreId,
+      sourceType,
+      fileHash,
+      identity,
+    );
+  }
+}
 
 expectTypeOf<
   Pick<
@@ -60,6 +98,14 @@ describe("reusable source identity persistence", () => {
   test("memory repository protects preprocessing receipts from caller mutation", async () => {
     await assertPreprocessingReceiptImmutability(new MemoryTransactionRepository(), "memory");
   });
+
+  test("memory repository finds only exact legacy source identities", async () => {
+    await assertReusableLegacySourceLookup(new MemoryTransactionRepository(), "memory");
+  });
+
+  test("memory repository exposes the winner after concurrent exact-identity inserts", async () => {
+    await assertConcurrentExactIdentityInsert(new MemoryTransactionRepository(), "memory");
+  });
 });
 
 describeIfDatabase("reusable source identity persistence in PostgreSQL", () => {
@@ -77,6 +123,18 @@ describeIfDatabase("reusable source identity persistence in PostgreSQL", () => {
 
   test("protects preprocessing receipts from caller mutation", async () => {
     await withPostgresIdentityRepository(assertPreprocessingReceiptImmutability);
+  });
+
+  test("finds only exact legacy source identities", async () => {
+    await withPostgresIdentityRepository(assertReusableLegacySourceLookup);
+  });
+
+  test("exposes the winner after concurrent exact-identity inserts", async () => {
+    await withPostgresIdentityRepository(assertConcurrentExactIdentityInsert);
+  });
+
+  test("upload route resolves a forced concurrent exact-identity insert race as reuse", async () => {
+    await assertPostgresConcurrentUploadRoute();
   });
 });
 
@@ -102,6 +160,7 @@ describeIfDatabase("reconciliation persistence", () => {
           app,
           "boa",
           [
+            BOA_PERSISTENCE_HEADER,
             boaUploadCsv("M50101", "1HGCM82633A004352", "$100.00", `50101${unique}`),
             boaUploadCsv("M50202", "2HGCM82633A004352", "$222.00", `50202${unique}`),
           ].join("\n"),
@@ -748,6 +807,98 @@ async function assertDuplicateLegacyReceiptRejected(
   ).rejects.toBeInstanceOf(DuplicateSourceFileError);
 }
 
+async function assertReusableLegacySourceLookup(
+  repository: TransactionRepository,
+  namespace: string,
+): Promise<void> {
+  const legacyHash = `task5-${namespace}-legacy-lookup`;
+  const profiledHash = `task5-${namespace}-profiled-only`;
+  const legacy = await repository.createSourceFileWithTransactions(
+    1,
+    {
+      dealership_store_id: 1,
+      source_type: "bank",
+      original_filename: "legacy-bank.csv",
+      stored_filename: null,
+      file_hash: legacyHash,
+      row_count: 1,
+      validation_error_count: 0,
+    },
+    [],
+  );
+  const identity: SourceProcessingIdentity = {
+    accounting_month: accountingMonth("2026-04"),
+    rooftop_profile_id: "acura-v1",
+    rooftop_profile_version: "1",
+    parser_name: "boa-csv",
+    parser_version: "1",
+    preprocessor_name: "boa-floorplan",
+    preprocessor_version: "preprocessing-v1",
+  };
+  await repository.createSourceFileWithTransactions(
+    1,
+    profiledSourceFile(
+      "profiled.csv",
+      profiledHash,
+      identity,
+      preprocessingMetadata(identity.accounting_month, identity, 12),
+    ),
+    [],
+  );
+
+  await expect(
+    repository.getReusableLegacySourceFile(1, 1, "bank", legacyHash),
+  ).resolves.toMatchObject({ id: legacy.sourceFile.id, file_hash: legacyHash });
+  await expect(
+    repository.getReusableLegacySourceFile(1, 1, "boa", profiledHash),
+  ).resolves.toBeNull();
+  await expect(
+    repository.getReusableLegacySourceFile(1, 2, "bank", legacyHash),
+  ).resolves.toBeNull();
+}
+
+async function assertConcurrentExactIdentityInsert(
+  repository: TransactionRepository,
+  namespace: string,
+): Promise<void> {
+  const month = accountingMonth("2026-04");
+  const fileHash = `task5-${namespace}-concurrent`;
+  const identity: SourceProcessingIdentity = {
+    accounting_month: month,
+    rooftop_profile_id: "acura-v1",
+    rooftop_profile_version: "1",
+    parser_name: "boa-csv",
+    parser_version: "1",
+    preprocessor_name: "boa-floorplan",
+    preprocessor_version: "preprocessing-v1",
+  };
+  const metadata = preprocessingMetadata(month, identity, 13);
+  const insert = (filename: string) => repository.createSourceFileWithTransactions(
+    1,
+    profiledSourceFile(filename, fileHash, identity, metadata),
+    [],
+  );
+
+  const results = await Promise.allSettled([insert("concurrent-a.csv"), insert("concurrent-b.csv")]);
+  const fulfilled = results.filter(
+    (result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof insert>>> =>
+      result.status === "fulfilled",
+  );
+  const rejected = results.filter(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+
+  expect(fulfilled).toHaveLength(1);
+  expect(rejected).toHaveLength(1);
+  expect(rejected[0]?.reason).toBeInstanceOf(DuplicateSourceFileError);
+  await expect(
+    repository.getReusableSourceFile(1, 1, "boa", fileHash, identity),
+  ).resolves.toMatchObject({
+    id: fulfilled[0]?.value.sourceFile.id,
+    preprocessing_metadata: metadata,
+  });
+}
+
 async function assertProfileVersionDifferentiation(
   repository: TransactionRepository,
   namespace: string,
@@ -929,6 +1080,55 @@ async function withPostgresIdentityRepository(
       await pool.query("DELETE FROM source_files WHERE file_hash LIKE $1", [
         `task5-${namespace}-%`,
       ]);
+      await pool.end();
+    }
+  });
+}
+
+async function assertPostgresConcurrentUploadRoute(): Promise<void> {
+  if (!databaseUrl) {
+    throw new Error("DATABASE_URL is required for PostgreSQL upload race tests.");
+  }
+
+  await withDatabaseTestLock(databaseUrl, async () => {
+    await migrate(databaseUrl);
+    const pool = createPool(databaseUrl);
+    const repository = new ConcurrentPostgresUploadRepository(pool);
+    const app = createApp(repository, [], 1, async () => undefined, {
+      nodeEnv: "test",
+      allowDevDealershipFallback: true,
+    });
+    const source = Buffer.from(
+      [
+        "Serial No/VIN,Stock/Lease No,Original Amount,Ending Balance,Invoice Date",
+        "1HGCM82633A004352,M50001,500.00,500.00,4/1/2026",
+      ].join("\n"),
+    );
+    const fileHash = createHash("sha256").update(source).digest("hex");
+    const upload = (filename: string) => request(app)
+      .post("/upload")
+      .field("source_type", "boa")
+      .field("store_id", "1")
+      .field("accounting_month", "2026-04")
+      .attach("file", source, filename);
+
+    try {
+      const responses = await Promise.all([upload("postgres-a.csv"), upload("postgres-b.csv")]);
+      expect(responses.map((response) => response.status)).toEqual([200, 200]);
+      expect(responses[0]?.body.source_file_id).toBe(responses[1]?.body.source_file_id);
+      expect(
+        responses.map((response) => response.body.reused_existing_file).sort(),
+      ).toEqual([false, true]);
+      expect(responses[0]?.body.preprocessing).toEqual(responses[1]?.body.preprocessing);
+      expect(responses[0]?.body.preprocessing).not.toBeNull();
+    } finally {
+      await pool.query("DELETE FROM ingestion_events WHERE metadata ->> 'file_hash' = $1", [
+        fileHash,
+      ]);
+      await pool.query("DELETE FROM operational_events WHERE metadata ->> 'file_hash' = $1", [
+        fileHash,
+      ]);
+      await pool.query("DELETE FROM source_files WHERE file_hash = $1", [fileHash]);
       await pool.end();
     }
   });

@@ -192,23 +192,15 @@ export type SourceFileSummary = {
   created_at: string;
 };
 
-export type UploadResponse = {
+type UploadResponseBase = {
   source_file_id: number;
   dealership_store_id: number | null;
   store_name: string | null;
-  source_type: SourceType;
   filename: string;
   transaction_count: number;
   stored_row_count: number;
   stored_validation_error_count: number;
   validation_errors: ValidationError[];
-  accounting_month: AccountingMonth;
-  rooftop_profile_id: RooftopProfileId;
-  rooftop_profile_version: string;
-  parser_name: string;
-  parser_version: string;
-  preprocessor_name: string;
-  preprocessor_version: string;
   preprocessing: UploadPreprocessingMetadata;
   automated_reconciliation_run_id?: number | null;
   reused_existing_file: boolean;
@@ -229,6 +221,23 @@ export type UploadResponse = {
     created_at: string;
   };
 };
+
+export type FloorplanUploadResponse = UploadResponseBase & SourceProcessingIdentity & {
+  source_type: "boa" | "dealertrack";
+};
+
+export type LegacyUploadResponse = UploadResponseBase & {
+  source_type: Exclude<SourceType, "boa" | "dealertrack">;
+  accounting_month?: never;
+  rooftop_profile_id?: never;
+  rooftop_profile_version?: never;
+  parser_name?: never;
+  parser_version?: never;
+  preprocessor_name?: never;
+  preprocessor_version?: never;
+};
+
+export type UploadResponse = FloorplanUploadResponse | LegacyUploadResponse;
 
 export const scheduledReconciliationCadences = ["daily", "weekly", "monthly"] as const;
 

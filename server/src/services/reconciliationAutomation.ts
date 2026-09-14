@@ -157,6 +157,15 @@ export async function evaluateAutoRunAfterUpload(
   sourceFile: SourceFile,
   uploadedByUserId: number | null = null,
 ): Promise<ReconciliationRun | null> {
+  const processingIdentity = sourceFile.accounting_month !== null &&
+    sourceFile.rooftop_profile_id !== null &&
+    sourceFile.rooftop_profile_version !== null
+    ? {
+        accountingMonth: sourceFile.accounting_month,
+        rooftopProfileId: sourceFile.rooftop_profile_id,
+        rooftopProfileVersion: sourceFile.rooftop_profile_version,
+      }
+    : null;
   const jobs = await repository.listScheduledReconciliationJobs(
     dealershipId,
     sourceFile.dealership_store_id ?? undefined,
@@ -169,7 +178,12 @@ export async function evaluateAutoRunAfterUpload(
       job.expected_source_types.includes("dealertrack"),
   );
   if (!autoRunEnabled) {
-    await recordMissingExpectedFiles(repository, dealershipId, sourceFile.dealership_store_id);
+    await recordMissingExpectedFiles(
+      repository,
+      dealershipId,
+      sourceFile.dealership_store_id,
+      processingIdentity,
+    );
     return null;
   }
 
@@ -190,7 +204,12 @@ export async function evaluateAutoRunAfterUpload(
     sourceFile.rooftop_profile_version,
   );
   if (!pair || pair.boa.source_file_id === pair.dealertrack.source_file_id) {
-    await recordMissingExpectedFiles(repository, dealershipId, sourceFile.dealership_store_id);
+    await recordMissingExpectedFiles(
+      repository,
+      dealershipId,
+      sourceFile.dealership_store_id,
+      processingIdentity,
+    );
     return null;
   }
 
@@ -383,19 +402,50 @@ async function recordMissingExpectedFiles(
   repository: TransactionRepository,
   dealershipId: number,
   dealershipStoreId: number | null,
+  processingIdentity: {
+    accountingMonth: AccountingMonth;
+    rooftopProfileId: RooftopProfileId;
+    rooftopProfileVersion: string;
+  } | null = null,
 ): Promise<void> {
   const files = await repository.listSourceFiles(dealershipId, undefined, dealershipStoreId ?? undefined);
-  const missing = expectedFloorplanSourceTypes.filter(
-    (sourceType) => !files.some((file) => file.source_type === sourceType),
+  const missing = expectedFloorplanSourceTypes.filter((sourceType) =>
+    !files.some(
+      (file) =>
+        file.source_type === sourceType &&
+        (processingIdentity === null ||
+          (file.dealership_store_id === dealershipStoreId &&
+            file.accounting_month === processingIdentity.accountingMonth &&
+            file.rooftop_profile_id === processingIdentity.rooftopProfileId &&
+            file.rooftop_profile_version === processingIdentity.rooftopProfileVersion)),
+    ),
   );
   for (const sourceType of missing) {
+    const available = files.find((file) => file.source_type === sourceType);
+    const identityMetadata = processingIdentity === null
+      ? {}
+      : {
+          reason: available ? "identity_mismatch" : "not_uploaded",
+          expected_accounting_month: processingIdentity.accountingMonth,
+          expected_rooftop_profile_id: processingIdentity.rooftopProfileId,
+          expected_rooftop_profile_version: processingIdentity.rooftopProfileVersion,
+          ...(available
+            ? {
+                available_accounting_month: available.accounting_month,
+                available_rooftop_profile_id: available.rooftop_profile_id,
+                available_rooftop_profile_version: available.rooftop_profile_version,
+              }
+            : {}),
+        };
     await repository.createOperationalEvent(dealershipId, {
       dealership_store_id: dealershipStoreId,
       reconciliation_run_id: null,
       event_type: "missing_expected_file",
       severity: "warning",
-      message: `Missing expected ${sourceType.toUpperCase()} file for reconciliation automation.`,
-      metadata: { source_type: sourceType },
+      message: processingIdentity
+        ? `No ${sourceType.toUpperCase()} file matches the uploaded source processing identity.`
+        : `Missing expected ${sourceType.toUpperCase()} file for reconciliation automation.`,
+      metadata: { source_type: sourceType, ...identityMetadata },
     });
   }
 }

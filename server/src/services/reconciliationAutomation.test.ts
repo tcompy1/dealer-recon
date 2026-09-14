@@ -14,6 +14,7 @@ import type {
 import { MemoryTransactionRepository } from "../repositories/transactionRepository.js";
 import {
   createReconciliationRunFromSourceFiles,
+  evaluateAutoRunAfterUpload,
   findLatestSourceFilePair,
 } from "./reconciliationAutomation.js";
 import type { UploadPreprocessingMetadata } from "./preprocessing/types.js";
@@ -126,6 +127,76 @@ describe("findLatestSourceFilePair", () => {
         rooftop_profile_version: "1",
       }),
     });
+  });
+});
+
+describe("evaluateAutoRunAfterUpload", () => {
+  test.each([
+    {
+      name: "accounting period",
+      month: "2026-05",
+      profileId: "hurst-v1",
+      profileVersion: "1",
+    },
+    {
+      name: "rooftop profile",
+      month: "2026-04",
+      profileId: "acura-v1",
+      profileVersion: "1",
+    },
+    {
+      name: "rooftop profile version",
+      month: "2026-04",
+      profileId: "hurst-v1",
+      profileVersion: "2",
+    },
+  ] as const)("records identity-aware diagnostics for a mismatched $name", async ({
+    month,
+    profileId,
+    profileVersion,
+  }) => {
+    const repository = new MemoryTransactionRepository();
+    await repository.createScheduledReconciliationJob(1, {
+      dealership_store_id: 1,
+      cadence: "daily",
+      expected_source_types: ["boa", "dealertrack"],
+      enabled: true,
+      auto_run_on_pair: true,
+    });
+    const trigger = await seedProfiledSource(
+      repository,
+      "boa",
+      accountingMonth("2026-04"),
+      "hurst-v1",
+      "1",
+    );
+    await seedProfiledSource(
+      repository,
+      "dealertrack",
+      accountingMonth(month),
+      profileId,
+      profileVersion,
+    );
+
+    await expect(evaluateAutoRunAfterUpload(repository, 1, trigger)).resolves.toBeNull();
+
+    await expect(repository.listOperationalEvents(1, 1)).resolves.toEqual([
+      expect.objectContaining({
+        event_type: "missing_expected_file",
+        severity: "warning",
+        message: "No DEALERTRACK file matches the uploaded source processing identity.",
+        metadata: {
+          source_type: "dealertrack",
+          reason: "identity_mismatch",
+          expected_accounting_month: "2026-04",
+          expected_rooftop_profile_id: "hurst-v1",
+          expected_rooftop_profile_version: "1",
+          available_accounting_month: month,
+          available_rooftop_profile_id: profileId,
+          available_rooftop_profile_version: profileVersion,
+        },
+      }),
+    ]);
   });
 });
 

@@ -78,6 +78,12 @@ export interface TransactionRepository {
     fileHash: string,
     identity: SourceProcessingIdentity,
   ): Promise<SourceFile | null>;
+  getReusableLegacySourceFile(
+    dealershipId: number,
+    dealershipStoreId: number | null,
+    sourceType: SourceType,
+    fileHash: string,
+  ): Promise<SourceFile | null>;
   listSourceFiles(
     dealershipId: number,
     sourceType?: SourceType,
@@ -431,6 +437,29 @@ export class MemoryTransactionRepository implements TransactionRepository {
         sourceFile.parser_version === identity.parser_version &&
         sourceFile.preprocessor_name === identity.preprocessor_name &&
         sourceFile.preprocessor_version === identity.preprocessor_version,
+    );
+    return sourceFile ? cloneSourceFile(sourceFile) : null;
+  }
+
+  async getReusableLegacySourceFile(
+    dealershipId: number,
+    dealershipStoreId: number | null,
+    sourceType: SourceType,
+    fileHash: string,
+  ): Promise<SourceFile | null> {
+    const sourceFile = this.sourceFiles.find(
+      (candidate) =>
+        candidate.dealership_id === dealershipId &&
+        candidate.dealership_store_id === dealershipStoreId &&
+        candidate.source_type === sourceType &&
+        candidate.file_hash === fileHash &&
+        candidate.accounting_month === null &&
+        candidate.rooftop_profile_id === null &&
+        candidate.rooftop_profile_version === null &&
+        candidate.parser_name === null &&
+        candidate.parser_version === null &&
+        candidate.preprocessor_name === null &&
+        candidate.preprocessor_version === null,
     );
     return sourceFile ? cloneSourceFile(sourceFile) : null;
   }
