@@ -53,6 +53,11 @@ export type HurstFpRecSummary = {
   difference_amount_cents: number;
 };
 
+export type FpRecPresentationMetadata = {
+  presenter_id: RooftopProfile["presenterId"];
+  accounting_month: AccountingMonth | null;
+};
+
 export type HurstFpRecWorkbook = {
   store_config: StoreWorkflowConfig;
   store_name: string;
@@ -72,6 +77,7 @@ export type HurstFpRecWorkbook = {
   // the accepted clerk worksheet shape.
   schedule_not_on_statement: HurstFpRecSection;
   statement_not_on_gl: HurstFpRecSection;
+  presentation?: FpRecPresentationMetadata;
 };
 
 export type FpRecWorkbook = HurstFpRecWorkbook;
@@ -123,9 +129,6 @@ const FP_REC_PRESENTER_POLICIES: Record<
   },
 };
 
-const workbookPolicies = new WeakMap<FpRecWorkbook, FpRecPresenterPolicy>();
-const workbookAccountingMonths = new WeakMap<FpRecWorkbook, AccountingMonth>();
-
 export function buildFpRecWorkbook(
   detail: ReconciliationRunDetail,
   profile: RooftopProfile,
@@ -138,7 +141,7 @@ export function buildFpRecWorkbook(
   return buildWorkbookFromClerkRows({
     storeConfig: profile,
     storeName: detail.store_name ?? profile.displayName,
-    periodDate: resolvePeriodAnchorDate(detail),
+    periodDate: resolvePeriodAnchorDate(detail, profile.presenterId),
     rows,
     policy: FP_REC_PRESENTER_POLICIES[profile.presenterId],
     accountingMonth: detail.accounting_month,
@@ -220,11 +223,15 @@ function buildWorkbookFromClerkRows(input: {
     },
     schedule_not_on_statement: scheduleSection,
     statement_not_on_gl: statementSection,
+    ...(input.policy.presenterId === "acura-fp-rec-v1"
+      ? {
+        presentation: {
+          presenter_id: input.policy.presenterId,
+          accounting_month: input.accountingMonth,
+        },
+      }
+      : {}),
   };
-  workbookPolicies.set(workbook, input.policy);
-  if (input.accountingMonth) {
-    workbookAccountingMonths.set(workbook, input.accountingMonth);
-  }
   return workbook;
 }
 
@@ -305,13 +312,15 @@ export function toFpRecFilename(workbook: FpRecWorkbook): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "") || "store";
   const period = policy.presenterId === "acura-fp-rec-v1"
-    ? workbookAccountingMonths.get(workbook) ?? accountingMonthFromPeriodDate(workbook.period_date) ?? "period"
+    ? workbook.presentation?.accounting_month ?? accountingMonthFromPeriodDate(workbook.period_date) ?? "period"
     : workbook.period_date?.replace(/[^0-9]/g, "-").replace(/^-|-$/g, "") || "period";
   return `floorplan-reconciliation-${store}-${period}.xls`;
 }
 
 function requireWorkbookPolicy(workbook: FpRecWorkbook): FpRecPresenterPolicy {
-  return workbookPolicies.get(workbook) ?? FP_REC_PRESENTER_POLICIES["hurst-fp-rec-v1"];
+  return workbook.presentation
+    ? FP_REC_PRESENTER_POLICIES[workbook.presentation.presenter_id]
+    : FP_REC_PRESENTER_POLICIES["hurst-fp-rec-v1"];
 }
 
 function toWorksheetMetadata(workbook: FpRecWorkbook, rowCount: number): string {
@@ -337,7 +346,7 @@ function toWorksheetMetadata(workbook: FpRecWorkbook, rowCount: number): string 
 }
 
 function worksheetNameForWorkbook(workbook: FpRecWorkbook): string {
-  const accountingMonth = workbookAccountingMonths.get(workbook) ??
+  const accountingMonth = workbook.presentation?.accounting_month ??
     accountingMonthFromPeriodDate(workbook.period_date);
   if (!accountingMonth) {
     return "FP REC";
@@ -783,8 +792,11 @@ function buildLegacySection(title: string, rows: HurstFpRecRow[]): HurstFpRecSec
   };
 }
 
-function resolvePeriodAnchorDate(detail: ReconciliationRunDetail): string | null {
-  if (detail.accounting_month) {
+function resolvePeriodAnchorDate(
+  detail: ReconciliationRunDetail,
+  presenterId: RooftopProfile["presenterId"],
+): string | null {
+  if (presenterId === "acura-fp-rec-v1" && detail.accounting_month) {
     return formatDateMmDdYy(accountingMonthEndDate(detail.accounting_month));
   }
   let latestIso: string | null = null;

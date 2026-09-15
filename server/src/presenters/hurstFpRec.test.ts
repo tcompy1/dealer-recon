@@ -809,6 +809,44 @@ describe("buildHurstFpRecWorkbook", () => {
     expect(toFpRecFilename(workbook)).toContain("2026-04");
   });
 
+  test("preserves Acura presentation behavior after structured cloning", () => {
+    const detail = buildDetail({
+      store_name: "Hiley Acura",
+      accounting_month: "2026-04" as ReconciliationRunDetail["accounting_month"],
+      rooftop_profile_id: "acura-v1",
+      rooftop_profile_version: "1",
+      match_groups: [matchGroup(1_000_000, 1_000_000)],
+    });
+    const workbook = buildFpRecWorkbook(detail, ROOFTOP_PROFILES.acura);
+    const clone = structuredClone(workbook);
+
+    expect(toFpRecXlsHtml(clone)).toBe(toFpRecXlsHtml(workbook));
+    expect(toFpRecFilename(clone)).toBe(toFpRecFilename(workbook));
+  });
+
+  test("keeps profiled Hurst period, filename, and bytes on the legacy transaction date", () => {
+    const detail = buildDetail({
+      accounting_month: "2026-04" as ReconciliationRunDetail["accounting_month"],
+      match_groups: [matchGroup(1_000_000, 1_000_000)],
+    });
+    const legacyDetail = { ...detail, accounting_month: null };
+    const legacyWorkbook = buildHurstFpRecWorkbook(legacyDetail);
+    const compatibilityWorkbook = buildHurstFpRecWorkbook(detail);
+    const profiledWorkbook = buildFpRecWorkbook(detail, ROOFTOP_PROFILES.hurst);
+
+    expect(legacyWorkbook.period_date).toBe("05-01-26");
+    expect(compatibilityWorkbook.period_date).toBe(legacyWorkbook.period_date);
+    expect(profiledWorkbook.period_date).toBe(legacyWorkbook.period_date);
+    expect(toHurstFpRecFilename(compatibilityWorkbook)).toBe(
+      toHurstFpRecFilename(legacyWorkbook),
+    );
+    expect(toFpRecFilename(profiledWorkbook)).toBe(toHurstFpRecFilename(legacyWorkbook));
+    expect(toHurstFpRecXlsHtml(compatibilityWorkbook)).toBe(
+      toHurstFpRecXlsHtml(legacyWorkbook),
+    );
+    expect(toFpRecXlsHtml(profiledWorkbook)).toBe(toHurstFpRecXlsHtml(legacyWorkbook));
+  });
+
   test("builds side-aware clerk rows from matches and exceptions", () => {
     const workbook = buildHurstFpRecWorkbook(clerkContractDetail());
 

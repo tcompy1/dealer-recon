@@ -56,9 +56,17 @@ export type ExpectedFpRecSemantics = {
   scheduleOnly: Array<{ unitReference: string; amountCents: number }>;
   statementOnly: Array<{ unitReference: string; amountCents: number }>;
   formulas: {
+    totalGl: "account_range";
     difference: "statement_plus_gl";
+    scheduleSubtotal: "section_range";
+    statementSubtotal: "section_range";
     netAdjustments: "schedule_only_plus_statement_only";
     variance: "net_adjustments_minus_difference";
+  };
+  workpaper: {
+    labelOrder: string[];
+    scheduleHeaders: [string, string, string, string];
+    statementHeaders: [string, string, string, string];
   };
 };
 
@@ -84,6 +92,18 @@ const REQUIRED_FP_REC_LABELS = [
   "On statement-not on GL",
   "GL FLOORED",
   "BOA FLOORED",
+  "Net adjustments",
+  "Variance",
+] as const;
+const ORDERED_WORKPAPER_LABELS = [
+  "Floorplan Reconciliation-Hiley Acura",
+  "Outstanding STMT",
+  "GL Balances",
+  "324",
+  "Total GL",
+  "Difference",
+  "On schedule-not on statement",
+  "On statement-not on GL",
   "Net adjustments",
   "Variance",
 ] as const;
@@ -173,6 +193,13 @@ export async function readExpectedFpRecSemantics(
     "statement-only",
   );
 
+  assertRangeFormula(
+    worksheet.getCell(totalGlRow, 2),
+    accountRow,
+    accountRow,
+    "Total GL",
+  );
+
   assertFormulaMeaning(
     worksheet.getCell(differenceRow, 2),
     [outstandingRow, totalGlRow],
@@ -190,6 +217,18 @@ export async function readExpectedFpRecSemantics(
     [netAdjustmentsRow, differenceRow],
     "subtract",
     "Variance",
+  );
+  assertRangeFormula(
+    worksheet.getCell(scheduleSubtotalRow, 2),
+    scheduleHeaderRow + 1,
+    scheduleSubtotalRow - 1,
+    "schedule-only subtotal",
+  );
+  assertRangeFormula(
+    worksheet.getCell(statementSubtotalRow, 2),
+    statementHeaderRow + 1,
+    statementSubtotalRow - 1,
+    "statement-only subtotal",
   );
   const outstandingStatementCents = requiredWorkbookAmount(
     worksheet.getCell(outstandingRow, 2),
@@ -226,9 +265,18 @@ export async function readExpectedFpRecSemantics(
     scheduleOnly,
     statementOnly,
     formulas: {
+      totalGl: "account_range",
       difference: "statement_plus_gl",
+      scheduleSubtotal: "section_range",
+      statementSubtotal: "section_range",
       netAdjustments: "schedule_only_plus_statement_only",
       variance: "net_adjustments_minus_difference",
+    },
+    workpaper: {
+      labelOrder: [...ORDERED_WORKPAPER_LABELS]
+        .sort((left, right) => requiredLabelRow(rowByLabel, left) - requiredLabelRow(rowByLabel, right)),
+      scheduleHeaders: worksheetHeaderCells(worksheet, scheduleHeaderRow),
+      statementHeaders: worksheetHeaderCells(worksheet, statementHeaderRow),
     },
   };
 }
@@ -351,14 +399,41 @@ export function compareMergedSemantics(
 export function compareFpRecSemantics(
   actual: FpRecWorkbook,
   expected: ExpectedFpRecSemantics,
+  renderedHtml: string = toFpRecXlsHtml(actual),
 ): string[] {
   const errors: string[] = [];
-  const html = toFpRecXlsHtml(actual);
-  const actualSheetName = sheetNameFromPeriod(actual.period_date);
-  const actualPrintArea = printAreaFromHtml(html);
+  const renderedRows = parseRenderedFpRecRows(renderedHtml);
+  const actualSheetName = worksheetNameFromHtml(renderedHtml);
+  const actualPrintArea = printAreaFromHtml(renderedHtml, actualSheetName);
   compareString(errors, "fp_rec.sheet_name", actualSheetName, expected.sheetName);
-  compareNumber(errors, "fp_rec.visible_column_count", countHtmlColumns(html), expected.visibleColumnCount);
+  compareNumber(
+    errors,
+    "fp_rec.visible_column_count",
+    countHtmlColumns(renderedHtml),
+    expected.visibleColumnCount,
+  );
   compareString(errors, "fp_rec.print_area", actualPrintArea, expected.printArea);
+  compareStringArray(
+    errors,
+    "fp_rec.schedule_headers",
+    renderedHeaderCells(renderedRows, expected.workpaper.scheduleHeaders[0]),
+    expected.workpaper.scheduleHeaders,
+  );
+  compareStringArray(
+    errors,
+    "fp_rec.statement_headers",
+    renderedHeaderCells(renderedRows, expected.workpaper.statementHeaders[0]),
+    expected.workpaper.statementHeaders,
+  );
+  const expectedLabels = new Set(expected.workpaper.labelOrder);
+  compareStringArray(
+    errors,
+    "fp_rec.label_order",
+    renderedRows
+      .map((row) => row.cells[0] ?? "")
+      .filter((label) => expectedLabels.has(label)),
+    expected.workpaper.labelOrder,
+  );
   compareNumber(
     errors,
     "fp_rec.outstanding_statement_cents",
@@ -406,11 +481,11 @@ export function compareFpRecSemantics(
     expected.statementOnly,
   );
   for (const label of REQUIRED_FP_REC_LABELS) {
-    if (!html.includes(`>${escapeHtml(label)}<`)) {
+    if (!renderedHtml.includes(`>${escapeHtml(label)}<`)) {
       errors.push(`fp_rec.required_label: missing ${label}`);
     }
   }
-  compareFormulaSemantics(errors, html, expected.formulas);
+  compareFormulaSemantics(errors, renderedRows, actual, expected.formulas);
   return errors;
 }
 
@@ -626,6 +701,19 @@ function assertFormulaMeaning(
   }
 }
 
+function assertRangeFormula(
+  cell: ExcelJS.Cell,
+  firstRow: number,
+  lastRow: number,
+  label: string,
+): void {
+  const formula = workbookFormula(cell);
+  const normalized = normalizeFormula(formula);
+  if (normalized !== `SUM(B${firstRow}:B${lastRow})`) {
+    throw safeEvidenceError("FP REC", `${label} formula has unexpected structure`);
+  }
+}
+
 function workbookFormula(cell: ExcelJS.Cell): string | null {
   const value = cell.value;
   if (!value || typeof value !== "object") return null;
@@ -660,6 +748,18 @@ function workbookCellText(cell: ExcelJS.Cell): string {
   }
   if ("text" in value && typeof value.text === "string") return value.text.trim();
   return "";
+}
+
+function worksheetHeaderCells(
+  worksheet: ExcelJS.Worksheet,
+  row: number,
+): [string, string, string, string] {
+  return [1, 2, 3, 4].map((column) => workbookCellText(worksheet.getCell(row, column))) as [
+    string,
+    string,
+    string,
+    string,
+  ];
 }
 
 function populatedColumnCount(worksheet: ExcelJS.Worksheet): 4 {
@@ -744,50 +844,197 @@ function compareWorkpaperSection(
 
 function compareFormulaSemantics(
   errors: string[],
-  html: string,
+  rows: RenderedFpRecRow[],
+  workbook: FpRecWorkbook,
   expected: ExpectedFpRecSemantics["formulas"],
 ): void {
-  const formulas = formulaByLabelFromHtml(html);
-  const expectedFormulas = {
-    Difference: expected.difference,
-    "Net adjustments": expected.netAdjustments,
-    Variance: expected.variance,
-  } as const;
-  for (const [label, meaning] of Object.entries(expectedFormulas)) {
-    const formula = formulas.get(label);
-    if (!formula || !formulaHasMeaning(formula, meaning, formulas)) {
-      errors.push(`fp_rec.formula.${label.toLowerCase().replace(/\s+/g, "_")}: semantic mismatch`);
-    }
+  const statementRow = renderedRowNumber(rows, "Outstanding STMT");
+  const accountRow = renderedRowNumber(rows, workbook.store_config.dealertrackAccountLabel);
+  const totalGlRow = renderedRowNumber(rows, "Total GL");
+  const differenceRow = renderedRowNumber(rows, "Difference");
+  const scheduleHeaderRow = renderedRowNumber(rows, "On schedule-not on statement");
+  const statementHeaderRow = renderedRowNumber(rows, "On statement-not on GL");
+  const netAdjustmentsRow = renderedRowNumber(rows, "Net adjustments");
+  const varianceRow = renderedRowNumber(rows, "Variance");
+  const scheduleSubtotalRow = renderedSubtotalRow(
+    rows,
+    scheduleHeaderRow,
+    statementHeaderRow,
+  );
+  const statementSubtotalRow = renderedSubtotalRow(
+    rows,
+    statementHeaderRow,
+    netAdjustmentsRow,
+  );
+
+  if (
+    expected.totalGl !== "account_range" ||
+    !formulaEqualsRange(formulaForRenderedRow(rows, totalGlRow), accountRow, accountRow)
+  ) {
+    errors.push("fp_rec.formula.total_gl: semantic mismatch");
+  }
+  if (
+    expected.difference !== "statement_plus_gl" ||
+    !formulaEqualsAddition(
+      formulaForRenderedRow(rows, differenceRow),
+      statementRow,
+      totalGlRow,
+    )
+  ) {
+    errors.push("fp_rec.formula.difference: semantic mismatch");
+  }
+  if (
+    expected.scheduleSubtotal !== "section_range" ||
+    !formulaEqualsRange(
+      formulaForRenderedRow(rows, scheduleSubtotalRow),
+      nextRow(scheduleHeaderRow),
+      previousRow(scheduleSubtotalRow),
+    )
+  ) {
+    errors.push("fp_rec.formula.schedule_subtotal: semantic mismatch");
+  }
+  if (
+    expected.statementSubtotal !== "section_range" ||
+    !formulaEqualsRange(
+      formulaForRenderedRow(rows, statementSubtotalRow),
+      nextRow(statementHeaderRow),
+      previousRow(statementSubtotalRow),
+    )
+  ) {
+    errors.push("fp_rec.formula.statement_subtotal: semantic mismatch");
+  }
+  if (
+    expected.netAdjustments !== "schedule_only_plus_statement_only" ||
+    !formulaEqualsAddition(
+      formulaForRenderedRow(rows, netAdjustmentsRow),
+      scheduleSubtotalRow,
+      statementSubtotalRow,
+    )
+  ) {
+    errors.push("fp_rec.formula.net_adjustments: semantic mismatch");
+  }
+  if (
+    expected.variance !== "net_adjustments_minus_difference" ||
+    !formulaEqualsSubtraction(
+      formulaForRenderedRow(rows, varianceRow),
+      netAdjustmentsRow,
+      differenceRow,
+    )
+  ) {
+    errors.push("fp_rec.formula.variance: semantic mismatch");
   }
 }
 
-function formulaHasMeaning(
-  formula: string,
-  meaning: ExpectedFpRecSemantics["formulas"][keyof ExpectedFpRecSemantics["formulas"]],
-  formulas: Map<string, string>,
+type RenderedFpRecRow = {
+  rowNumber: number;
+  cells: string[];
+  formulas: Array<string | null>;
+};
+
+function parseRenderedFpRecRows(html: string): RenderedFpRecRow[] {
+  return [...html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map((rowMatch, index) => {
+    const cells = [...rowMatch[1].matchAll(/<td\b([^>]*)>([\s\S]*?)<\/td>/gi)];
+    return {
+      rowNumber: index + 1,
+      cells: cells.map((cell) => decodeHtml(stripTags(cell[2])).trim()),
+      formulas: cells.map((cell) => {
+        const formula = cell[1].match(/\bx:fmla="([^"]+)"/i)?.[1];
+        return formula ? decodeHtml(formula) : null;
+      }),
+    };
+  });
+}
+
+function renderedHeaderCells(rows: RenderedFpRecRow[], label: string): string[] {
+  return rows.find((row) => row.cells[0] === label)?.cells ?? [];
+}
+
+function renderedRowNumber(rows: RenderedFpRecRow[], label: string): number | null {
+  return rows.find((row) => row.cells[0] === label)?.rowNumber ?? null;
+}
+
+function renderedSubtotalRow(
+  rows: RenderedFpRecRow[],
+  headerRow: number | null,
+  nextSectionRow: number | null,
+): number | null {
+  if (headerRow === null || nextSectionRow === null) return null;
+  return rows
+    .filter(
+      (row) =>
+        row.rowNumber > headerRow &&
+        row.rowNumber < nextSectionRow &&
+        !row.cells[0] &&
+        Boolean(row.formulas[1]),
+    )
+    .at(-1)?.rowNumber ?? null;
+}
+
+function formulaForRenderedRow(
+  rows: RenderedFpRecRow[],
+  rowNumber: number | null,
+): string | null {
+  if (rowNumber === null) return null;
+  return rows.find((row) => row.rowNumber === rowNumber)?.formulas[1] ?? null;
+}
+
+function formulaEqualsRange(
+  formula: string | null,
+  firstRow: number | null,
+  lastRow: number | null,
 ): boolean {
-  const normalized = formula.toUpperCase().replace(/^=/, "").replace(/\$/g, "").replace(/\s+/g, "");
-  if (meaning === "statement_plus_gl") return /^SUM\(B\d+\+B\d+\)$/.test(normalized);
-  if (meaning === "schedule_only_plus_statement_only") return /^B\d+\+B\d+$/.test(normalized);
-  if (meaning === "net_adjustments_minus_difference") return /^B\d+-B\d+$/.test(normalized);
-  return formulas.size < 0;
+  if (firstRow === null || lastRow === null) return false;
+  return normalizeFormula(formula) === `SUM(B${firstRow}:B${lastRow})`;
 }
 
-function formulaByLabelFromHtml(html: string): Map<string, string> {
-  const result = new Map<string, string>();
-  for (const rowMatch of html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
-    const rowHtml = rowMatch[1];
-    const cells = [...rowHtml.matchAll(/<td\b([^>]*)>([\s\S]*?)<\/td>/gi)];
-    const label = cells[0] ? decodeHtml(stripTags(cells[0][2])).trim() : "";
-    const formula = cells[1]?.[1].match(/\bx:fmla="([^"]+)"/i)?.[1];
-    if (label && formula) result.set(label, decodeHtml(formula));
-  }
-  return result;
+function formulaEqualsAddition(
+  formula: string | null,
+  firstRow: number | null,
+  secondRow: number | null,
+): boolean {
+  if (firstRow === null || secondRow === null) return false;
+  const normalized = normalizeFormula(formula);
+  const direct = `B${firstRow}+B${secondRow}`;
+  const reverse = `B${secondRow}+B${firstRow}`;
+  return new Set([direct, reverse, `SUM(${direct})`, `SUM(${reverse})`]).has(normalized);
 }
 
-function printAreaFromHtml(html: string): string {
-  const formula = /<x:Name>Print_Area<\/x:Name>[\s\S]*?<x:Formula>[^<]*\$A(?:\$?\d+)?\s*:\s*\$D(?:\$?\d+)?<\/x:Formula>/i.exec(html);
-  return formula ? "A:D" : "";
+function formulaEqualsSubtraction(
+  formula: string | null,
+  minuendRow: number | null,
+  subtrahendRow: number | null,
+): boolean {
+  if (minuendRow === null || subtrahendRow === null) return false;
+  const direct = `B${minuendRow}-B${subtrahendRow}`;
+  return new Set([direct, `SUM(${direct})`]).has(normalizeFormula(formula));
+}
+
+function normalizeFormula(formula: string | null): string {
+  return formula?.toUpperCase().replace(/^=/, "").replace(/\$/g, "").replace(/\s+/g, "") ?? "";
+}
+
+function nextRow(row: number | null): number | null {
+  return row === null ? null : row + 1;
+}
+
+function previousRow(row: number | null): number | null {
+  return row === null ? null : row - 1;
+}
+
+function worksheetNameFromHtml(html: string): string {
+  const worksheet = /<x:ExcelWorksheet>([\s\S]*?)<\/x:ExcelWorksheet>/i.exec(html)?.[1] ?? "";
+  const name = /<x:Name>([^<]*)<\/x:Name>/i.exec(worksheet)?.[1] ?? "";
+  return decodeHtml(name).trim();
+}
+
+function printAreaFromHtml(html: string, worksheetName: string): string {
+  const block = /<x:ExcelName>[\s\S]*?<x:Name>Print_Area<\/x:Name>([\s\S]*?)<\/x:ExcelName>/i.exec(html)?.[1] ?? "";
+  const formula = decodeHtml(/<x:Formula>([^<]*)<\/x:Formula>/i.exec(block)?.[1] ?? "")
+    .replace(/&apos;/g, "'");
+  const match = /^='([^']+)'!\$?([A-Z]+)\$?\d+:\$?([A-Z]+)\$?\d+$/i.exec(formula.trim());
+  return match && match[1] === worksheetName && match[2].toUpperCase() === "A" && match[3].toUpperCase() === "D"
+    ? "A:D"
+    : "";
 }
 
 function countHtmlColumns(html: string): number {
@@ -795,13 +1042,18 @@ function countHtmlColumns(html: string): number {
   return [...colgroup.matchAll(/<col\b/gi)].length;
 }
 
-function sheetNameFromPeriod(periodDate: string | null): string {
-  if (!periodDate) return "";
-  const match = /^(\d{2})[-/](\d{2})[-/](\d{2})$/.exec(periodDate);
-  if (!match) return "";
-  const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-  const month = monthNames[Number(match[1]) - 1];
-  return month ? `${month}${match[3]}` : "";
+function compareStringArray(
+  errors: string[],
+  label: string,
+  actual: readonly string[],
+  expected: readonly string[],
+): void {
+  if (
+    actual.length !== expected.length ||
+    actual.some((value, index) => value !== expected[index])
+  ) {
+    errors.push(`${label}: semantic mismatch`);
+  }
 }
 
 function compareStringSequence(
