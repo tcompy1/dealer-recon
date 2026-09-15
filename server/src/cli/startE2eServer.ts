@@ -6,6 +6,7 @@ import { MemoryTransactionRepository } from "../repositories/transactionReposito
 
 const E2E_HOST = "127.0.0.1";
 const E2E_PORT = 8001;
+const E2E_WEB_ORIGINS = ["http://127.0.0.1:5174"];
 
 export async function startE2eServer(): Promise<Server> {
   const repository = new MemoryTransactionRepository();
@@ -13,7 +14,7 @@ export async function startE2eServer(): Promise<Server> {
     name: "Hiley Acura",
     dealer_group_id: 1,
   });
-  const app = createApp(repository, [], 1, async () => undefined, {
+  const app = createApp(repository, E2E_WEB_ORIGINS, 1, async () => undefined, {
     nodeEnv: "test",
     allowDevDealershipFallback: true,
   });

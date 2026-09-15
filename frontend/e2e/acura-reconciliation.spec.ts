@@ -39,8 +39,29 @@ test("completes the Acura April workflow and explains a March period mismatch", 
   await runWorkflow.click();
   await expect(page.getByText(/ACURA · Apr 2026 · Run #\d+/).first()).toBeVisible();
 
-  await expectNonEmptyDownload(page, "Download Merged Export");
-  await expectNonEmptyDownload(page, "Download FP REC");
+  const mergedFilename = await expectArtifactDownload(page, {
+    accessibleName: "Download Merged Export",
+    suggestedFilename: /^acura-merged-floorplan-2026-04\.xls$/,
+    requiredContent: [
+      "<title>Merged Floorplan - Hiley Acura</title>",
+      "<th>ACURA</th><th>Serial No/VIN</th><th>VIN6</th><th>Ending Balance</th><th>324</th><th>VIN6</th><th>Description</th><th>Control</th>",
+    ],
+    forbiddenContent: ["<x:ExcelWorksheet>", "Outstanding STMT"],
+  });
+  const fpRecFilename = await expectArtifactDownload(page, {
+    accessibleName: "Download FP REC",
+    suggestedFilename: /^floorplan-reconciliation-hiley-acura-2026-04\.xls$/,
+    requiredContent: [
+      "<title>Floorplan Reconciliation - Hiley Acura</title>",
+      "<x:Name>APR26</x:Name>",
+      "<x:Name>Print_Area</x:Name>",
+      "Outstanding STMT",
+      "Net adjustments",
+      "Variance",
+    ],
+    forbiddenContent: ["Merged Floorplan - Hiley Acura", "<th>Serial No/VIN</th>"],
+  });
+  expect(mergedFilename).not.toBe(fpRecFilename);
 
   await accountingMonth.fill("2026-03");
   await expect(page.getByRole("link", { name: "Download Merged Export" })).toHaveCount(0);
@@ -59,15 +80,39 @@ test("completes the Acura April workflow and explains a March period mismatch", 
   await expect(page.getByRole("link", { name: "Download FP REC" })).toHaveCount(0);
 });
 
-async function expectNonEmptyDownload(page: Page, accessibleName: string): Promise<void> {
+type ArtifactDownloadExpectation = {
+  accessibleName: string;
+  suggestedFilename: RegExp;
+  requiredContent: string[];
+  forbiddenContent: string[];
+};
+
+async function expectArtifactDownload(
+  page: Page,
+  expectation: ArtifactDownloadExpectation,
+): Promise<string> {
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    page.getByRole("link", { name: accessibleName }).click(),
+    page.getByRole("link", { name: expectation.accessibleName }).click(),
   ]);
+  const suggestedFilename = download.suggestedFilename();
+  expect(suggestedFilename).toMatch(expectation.suggestedFilename);
+
   const stream = await download.createReadStream();
-  let downloadedBytes = 0;
+  const chunks: Buffer[] = [];
   for await (const chunk of stream) {
-    downloadedBytes += Buffer.byteLength(chunk);
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
-  expect(downloadedBytes).toBeGreaterThan(0);
+  const artifact = Buffer.concat(chunks);
+  expect(artifact.byteLength).toBeGreaterThan(0);
+
+  const artifactText = artifact.toString("utf8");
+  for (const marker of expectation.requiredContent) {
+    expect(artifactText).toContain(marker);
+  }
+  for (const marker of expectation.forbiddenContent) {
+    expect(artifactText).not.toContain(marker);
+  }
+
+  return suggestedFilename;
 }
