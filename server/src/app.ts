@@ -121,7 +121,6 @@ import {
   ValidationError,
   ConflictError,
   ServiceUnavailableError,
-  BadRequestError,
   TooManyRequestsError,
 } from "./errors/HttpError.js";
 
@@ -1082,8 +1081,54 @@ export function createApp(
     ]);
 
     const requestDealershipId = getRequestDealershipId(response);
+    const stores = await repository.listDealershipStores(requestDealershipId);
+    const reconciliationStoreId = requestedStoreId ??
+      boaSourceFile?.dealership_store_id ??
+      dealertrackSourceFile?.dealership_store_id ??
+      stores[0]?.id ??
+      null;
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), reconciliationStoreId))) {
+      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
+    }
+    const selectedStoreName = reconciliationStoreId === null
+      ? null
+      : stores.find(
+          (store) => store.id === reconciliationStoreId,
+        )?.name ?? null;
+    const resolvedRooftopProfile = resolveRooftopProfileFromStoreName(selectedStoreName);
+    if (!resolvedRooftopProfile?.enabled) {
+      throw unsupportedRooftopError(body.accounting_month, resolvedRooftopProfile);
+    }
+    const accountingMonth = body.accounting_month === undefined
+      ? boaSourceFile?.accounting_month ?? dealertrackSourceFile?.accounting_month ?? null
+      : parseAccountingMonth(body.accounting_month);
+    if (!accountingMonth) {
+      throw rooftopValidationError(
+        body.accounting_month === undefined ? "ACCOUNTING_MONTH_REQUIRED" : "INVALID_ACCOUNTING_MONTH",
+        body.accounting_month === undefined
+          ? "accounting_month is required for floorplan reconciliation."
+          : "accounting_month must use YYYY-MM format.",
+        {
+          source: null,
+          accounting_month: nonEmptyStringOrNull(body.accounting_month),
+          rooftop_profile_id: resolvedRooftopProfile.profileId,
+          recovery: "Select the accounting month in YYYY-MM format before reconciling the source files.",
+        },
+      );
+    }
     if (!boaSourceFile || !dealertrackSourceFile) {
-      throw new NotFoundError("Source file");
+      throw rooftopValidationError(
+        "RECONCILIATION_SOURCE_MISSING",
+        "A selected reconciliation source file was not found.",
+        {
+          source: !boaSourceFile ? "boa" : "dealertrack",
+          accounting_month: accountingMonth,
+          rooftop_profile_id: resolvedRooftopProfile.profileId,
+          recovery: !boaSourceFile
+            ? "Select an existing BOA source file for the selected store and accounting month."
+            : "Select an existing Dealertrack source file for the selected store and accounting month.",
+        },
+      );
     }
     if (
       boaSourceFile.dealership_id !== requestDealershipId ||
@@ -1091,34 +1136,37 @@ export function createApp(
     ) {
       throw new ForbiddenError("Source file belongs to another dealership.", "DEALERSHIP_MISMATCH");
     }
-    const reconciliationStoreId = requestedStoreId ?? boaSourceFile.dealership_store_id;
-    if (!(await canAccessStore(repository, getAuthenticatedUser(response), reconciliationStoreId))) {
-      throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
-    }
-    const selectedStoreName = reconciliationStoreId === null
-      ? null
-      : (await repository.listDealershipStores(requestDealershipId)).find(
-          (store) => store.id === reconciliationStoreId,
-        )?.name ?? null;
-    const rooftopProfile = resolveEnabledRooftopProfileFromStoreName(selectedStoreName);
-    if (!rooftopProfile) {
-      throw unsupportedRooftopError(request.body.accounting_month);
-    }
     if (
       boaSourceFile.dealership_store_id !== dealertrackSourceFile.dealership_store_id ||
       (reconciliationStoreId !== null &&
         (boaSourceFile.dealership_store_id !== reconciliationStoreId ||
           dealertrackSourceFile.dealership_store_id !== reconciliationStoreId))
     ) {
-      throw new BadRequestError("BOA and Dealertrack uploads must belong to the selected store.");
+      throw rooftopValidationError(
+        "RECONCILIATION_STORE_MISMATCH",
+        "BOA and Dealertrack source files must belong to the selected store.",
+        {
+          source: null,
+          accounting_month: accountingMonth,
+          rooftop_profile_id: resolvedRooftopProfile.profileId,
+          recovery: "Select source files that both belong to the selected store.",
+        },
+      );
     }
 
     if (
       boaSourceFile.source_type !== "boa" ||
       dealertrackSourceFile.source_type !== "dealertrack"
     ) {
-      throw new BadRequestError(
-        "boa_source_file_id must reference a BOA upload and dealertrack_source_file_id must reference a Dealertrack upload."
+      throw rooftopValidationError(
+        "RECONCILIATION_SOURCE_TYPE_MISMATCH",
+        "Source files do not match the required BOA and Dealertrack types.",
+        {
+          source: boaSourceFile.source_type !== "boa" ? "boa" : "dealertrack",
+          accounting_month: accountingMonth,
+          rooftop_profile_id: resolvedRooftopProfile.profileId,
+          recovery: "Select a BOA upload for boa_source_file_id and a Dealertrack upload for dealertrack_source_file_id.",
+        },
       );
     }
 
@@ -1127,6 +1175,8 @@ export function createApp(
       dealershipId: requestDealershipId,
       boaSourceFile,
       dealertrackSourceFile,
+      accountingMonth,
+      rooftopProfile: resolvedRooftopProfile,
       automated: false,
       uploadedByUserId: getAuthenticatedUser(response).id === 0
         ? null
@@ -1152,6 +1202,9 @@ export function createApp(
     response.json({
       ...result,
       reconciliation_run_id: run.id,
+      accounting_month: run.accounting_month,
+      rooftop_profile_id: run.rooftop_profile_id,
+      rooftop_profile_version: run.rooftop_profile_version,
     });
   }));
 
@@ -2121,14 +2174,17 @@ function nonEmptyStringOrNull(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-function unsupportedRooftopError(accountingMonth: unknown): ValidationError {
+function unsupportedRooftopError(
+  accountingMonth: unknown,
+  rooftopProfile: RooftopProfile | null = null,
+): ValidationError {
   return rooftopValidationError(
     "ROOFTOP_PROFILE_UNSUPPORTED",
     UNSUPPORTED_ROOFTOP_MESSAGE,
     {
       source: null,
       accounting_month: nonEmptyStringOrNull(accountingMonth),
-      rooftop_profile_id: null,
+      rooftop_profile_id: rooftopProfile?.profileId ?? null,
       recovery: UNSUPPORTED_ROOFTOP_RECOVERY,
     },
   );

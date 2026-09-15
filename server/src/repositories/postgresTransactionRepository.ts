@@ -1252,6 +1252,54 @@ export class PostgresTransactionRepository implements TransactionRepository {
     return toReconciliationArtifactMetadata(result.rows[0]);
   }
 
+  async createReconciliationArtifactBatch(
+    dealershipId: number,
+    artifacts: NewReconciliationArtifact[],
+  ): Promise<ReconciliationArtifactMetadata[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const created: ReconciliationArtifactMetadata[] = [];
+      for (const artifact of artifacts) {
+        const result = await client.query<ReconciliationArtifactRow>(
+          `INSERT INTO reconciliation_artifacts (
+            reconciliation_run_id,
+            dealership_id,
+            dealership_store_id,
+            accounting_month,
+            uploaded_by_user_id,
+            artifact_type,
+            filename,
+            content_type,
+            file_size_bytes,
+            content
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          RETURNING *`,
+          [
+            artifact.reconciliation_run_id,
+            dealershipId,
+            artifact.store_id,
+            artifact.accounting_month,
+            artifact.uploaded_by,
+            artifact.artifact_type,
+            artifact.filename,
+            artifact.content_type,
+            artifact.file_size ?? artifact.content.byteLength,
+            artifact.content,
+          ],
+        );
+        created.push(toReconciliationArtifactMetadata(result.rows[0]));
+      }
+      await client.query("COMMIT");
+      return created;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async listReconciliationArtifacts(
     dealershipId: number,
     reconciliationRunId: number,

@@ -7,8 +7,10 @@ import { createApp } from "../app.js";
 import type { RooftopProfileId } from "../config/storeWorkflowConfig.js";
 import { parseAccountingMonth, type AccountingMonth } from "../domain/accountingMonth.js";
 import type {
+  NewReconciliationArtifact,
   ProfiledNewSourceFile,
   PersistReconciliationRunInput,
+  ReconciliationResult,
   ReconciliationResponse,
   SourceFile,
   SourceProcessingIdentity,
@@ -82,6 +84,18 @@ expectTypeOf<
   rooftop_profile_version: string | null;
 }>();
 
+expectTypeOf<
+  Pick<
+    ReconciliationResponse,
+    "reconciliation_run_id" | "accounting_month" | "rooftop_profile_id" | "rooftop_profile_version"
+  >
+>().toEqualTypeOf<{
+  reconciliation_run_id: number;
+  accounting_month: AccountingMonth;
+  rooftop_profile_id: RooftopProfileId;
+  rooftop_profile_version: string;
+}>();
+
 describe("reusable source identity persistence", () => {
   test("memory repository round-trips profiled and legacy receipts by exact identity", async () => {
     await assertReusableSourceIdentityRoundTrip(new MemoryTransactionRepository(), "memory");
@@ -135,6 +149,18 @@ describeIfDatabase("reusable source identity persistence in PostgreSQL", () => {
 
   test("upload route resolves a forced concurrent exact-identity insert race as reuse", async () => {
     await assertPostgresConcurrentUploadRoute();
+  });
+});
+
+describe("reconciliation artifact batch persistence", () => {
+  test("memory repository inserts complete batches and rejects a duplicate type without partial persistence", async () => {
+    await assertArtifactBatchAtomicity(new MemoryTransactionRepository(), "memory");
+  });
+});
+
+describeIfDatabase("reconciliation artifact batch persistence in PostgreSQL", () => {
+  test("inserts complete batches and rolls back a duplicate type without partial persistence", async () => {
+    await withPostgresArtifactRepository(assertArtifactBatchAtomicity);
   });
 });
 
@@ -440,7 +466,7 @@ describeIfDatabase("reconciliation persistence", () => {
 
         const invalidTransactionId =
           Math.max(boaImport.transactions[0].id, dealertrackImport.transactions[0].id) + 1_000_000;
-        const failedResult: ReconciliationResponse = {
+        const failedResult: ReconciliationResult = {
           matched_count: 1,
           exception_count: 0,
           duplicate_count: 0,
@@ -1085,6 +1111,153 @@ async function withPostgresIdentityRepository(
   });
 }
 
+async function withPostgresArtifactRepository(
+  assertion: (repository: TransactionRepository, namespace: string) => Promise<void>,
+): Promise<void> {
+  if (!databaseUrl) {
+    throw new Error("DATABASE_URL is required for PostgreSQL artifact batch tests.");
+  }
+
+  await withDatabaseTestLock(databaseUrl, async () => {
+    await migrate(databaseUrl);
+    const pool = createPool(databaseUrl);
+    const repository = new PostgresTransactionRepository(pool);
+    const namespace = `task7-postgres-${Date.now()}-${Math.random()}`;
+    try {
+      await assertion(repository, namespace);
+    } finally {
+      await pool.query(
+        `DELETE FROM reconciliation_artifacts
+         WHERE reconciliation_run_id IN (
+           SELECT id
+           FROM reconciliation_runs
+           WHERE boa_source_file_id IN (SELECT id FROM source_files WHERE file_hash LIKE $1)
+         )`,
+        [`${namespace}-%`],
+      );
+      await pool.query(
+        `DELETE FROM reconciliation_runs
+         WHERE boa_source_file_id IN (SELECT id FROM source_files WHERE file_hash LIKE $1)`,
+        [`${namespace}-%`],
+      );
+      await pool.query("DELETE FROM source_files WHERE file_hash LIKE $1", [`${namespace}-%`]);
+      await pool.end();
+    }
+  });
+}
+
+async function assertArtifactBatchAtomicity(
+  repository: TransactionRepository,
+  namespace: string,
+): Promise<void> {
+  const month = accountingMonth("2026-04");
+  const firstRun = await createArtifactBatchRun(repository, namespace, "first", month);
+  const completeBatch = artifactBatch(firstRun.id, month);
+
+  await expect(repository.createReconciliationArtifactBatch(1, completeBatch)).resolves.toEqual(
+    completeBatch.map((artifact) =>
+      expect.objectContaining({
+        reconciliation_run_id: firstRun.id,
+        artifact_type: artifact.artifact_type,
+      }),
+    ),
+  );
+  await expect(repository.listReconciliationArtifacts(1, firstRun.id)).resolves.toEqual(
+    completeBatch.map((artifact) => expect.objectContaining({ artifact_type: artifact.artifact_type })),
+  );
+
+  const duplicateRun = await createArtifactBatchRun(repository, namespace, "duplicate", month);
+  const attemptedBatch = artifactBatch(duplicateRun.id, month);
+  attemptedBatch.push({
+    ...attemptedBatch[0],
+    filename: "duplicate-raw-boa.csv",
+    content: Buffer.from("duplicate"),
+  });
+
+  await expect(
+    repository.createReconciliationArtifactBatch(1, attemptedBatch),
+  ).rejects.toThrow();
+  await expect(repository.listReconciliationArtifacts(1, duplicateRun.id)).resolves.toEqual([]);
+}
+
+async function createArtifactBatchRun(
+  repository: TransactionRepository,
+  namespace: string,
+  suffix: string,
+  month: AccountingMonth,
+) {
+  const boaIdentity: SourceProcessingIdentity = {
+    accounting_month: month,
+    rooftop_profile_id: "hurst-v1",
+    rooftop_profile_version: "1",
+    parser_name: "boa-csv",
+    parser_version: "1",
+    preprocessor_name: "boa-floorplan",
+    preprocessor_version: "preprocessing-v1",
+  };
+  const dealertrackIdentity: SourceProcessingIdentity = {
+    ...boaIdentity,
+    parser_name: "dealertrack-csv",
+    preprocessor_name: "dealertrack-floorplan",
+  };
+  const boa = await repository.createSourceFileWithTransactions(
+    1,
+    profiledSourceFile(
+      `${namespace}-${suffix}-boa.csv`,
+      `${namespace}-${suffix}-boa`,
+      boaIdentity,
+      preprocessingMetadata(month, boaIdentity, 1),
+    ),
+    [],
+  );
+  const dealertrack = await repository.createSourceFileWithTransactions(
+    1,
+    profiledSourceFile(
+      `${namespace}-${suffix}-dealertrack.csv`,
+      `${namespace}-${suffix}-dealertrack`,
+      dealertrackIdentity,
+      preprocessingMetadata(month, dealertrackIdentity, 1, "dealertrack"),
+      "dealertrack",
+    ),
+    [],
+  );
+  return repository.createReconciliationRun({
+    dealership_id: 1,
+    dealership_store_id: 1,
+    boa_source_file_id: boa.sourceFile.id,
+    dealertrack_source_file_id: dealertrack.sourceFile.id,
+    accounting_month: month,
+    rooftop_profile_id: "hurst-v1",
+    rooftop_profile_version: "1",
+    status: "artifact_pending",
+    result: emptyReconciliationResult(),
+  });
+}
+
+function artifactBatch(
+  reconciliationRunId: number,
+  month: AccountingMonth,
+): NewReconciliationArtifact[] {
+  const artifactTypes = [
+    "RAW_BOA",
+    "RAW_DEALERTRACK",
+    "CLEANED_BOA",
+    "CLEANED_DEALERTRACK",
+    "MERGED_FLOORPLAN",
+    "FP_REC",
+  ] as const satisfies readonly NewReconciliationArtifact["artifact_type"][];
+  return artifactTypes.map((artifact_type) => ({
+    reconciliation_run_id: reconciliationRunId,
+    store_id: 1,
+    accounting_month: month,
+    uploaded_by: null,
+    artifact_type,
+    filename: `${artifact_type.toLowerCase()}-${month}.csv`,
+    content_type: "text/csv",
+    content: Buffer.from(artifact_type),
+  }));
+}
+
 async function assertPostgresConcurrentUploadRoute(): Promise<void> {
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is required for PostgreSQL upload race tests.");
@@ -1222,7 +1395,7 @@ function preprocessingMetadata(
   };
 }
 
-function emptyReconciliationResult(): ReconciliationResponse {
+function emptyReconciliationResult(): ReconciliationResult {
   return {
     matched_count: 0,
     exception_count: 0,

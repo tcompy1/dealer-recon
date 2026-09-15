@@ -364,6 +364,7 @@ export type ReconciliationRequest = {
   boa_source_file_id?: unknown;
   dealertrack_source_file_id?: unknown;
   dealership_store_id?: unknown;
+  accounting_month?: unknown;
 };
 
 export type TransactionSummary = {
@@ -482,14 +483,20 @@ export type VinPresenceDiagnostics = {
   transaction_unmatched_shared_vins: VinPresenceTransactionUnmatchedEntry[];
 };
 
-export type ReconciliationResponse = {
-  reconciliation_run_id?: number;
+export type ReconciliationResult = {
   matched_count: number;
   exception_count: number;
   duplicate_count: number;
   match_groups: MatchGroup[];
   exceptions: ReconciliationException[];
   vin_presence_diagnostics: VinPresenceDiagnostics;
+};
+
+export type ReconciliationResponse = ReconciliationResult & {
+  reconciliation_run_id: number;
+  accounting_month: AccountingMonth;
+  rooftop_profile_id: RooftopProfileId;
+  rooftop_profile_version: string;
 };
 
 export type ReconciliationRun = {
@@ -552,7 +559,7 @@ export type PersistReconciliationRunInput = {
   accounting_month: AccountingMonth | null;
   rooftop_profile_id: RooftopProfileId | null;
   rooftop_profile_version: string | null;
-  result: ReconciliationResponse;
+  result: ReconciliationResult;
   input_snapshot?: PersistReconciliationRunSnapshotInput;
   status?: string;
 };

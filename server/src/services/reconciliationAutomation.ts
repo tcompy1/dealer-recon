@@ -11,13 +11,17 @@ import type {
   ReconciliationResponse,
 } from "../domain/types.js";
 import type { AccountingMonth } from "../domain/accountingMonth.js";
-import type { RooftopProfileId } from "../config/storeWorkflowConfig.js";
+import {
+  ROOFTOP_PROFILES,
+  type RooftopProfile,
+  type RooftopProfileId,
+} from "../config/storeWorkflowConfig.js";
 import type { TransactionRepository } from "../repositories/transactionRepository.js";
+import { rooftopValidationError } from "./rooftopValidation.js";
 import {
   RECONCILIATION_ENGINE_VERSION,
   reconcileTransactionSets,
 } from "./reconciliationEngine.js";
-import { TRANSACTION_NORMALIZER_VERSION } from "./transactionNormalizer.js";
 import { persistReconciliationRunArtifacts } from "./reconciliationArtifacts.js";
 
 const expectedFloorplanSourceTypes: SourceType[] = ["boa", "dealertrack"];
@@ -31,27 +35,164 @@ export async function recordIngestionEvent(
   return repository.createIngestionEvent(dealershipId, event);
 }
 
-export async function createReconciliationRunFromSourceFiles({
-  repository,
+function validateReconciliationSourceIdentity({
   dealershipId,
   boaSourceFile,
   dealertrackSourceFile,
-  automated,
-  uploadedByUserId = null,
-}: {
+  accountingMonth,
+  rooftopProfile,
+}: CreateReconciliationRunFromSourceFilesInput): void {
+  const baseDetails = {
+    source: null,
+    accounting_month: accountingMonth,
+    rooftop_profile_id: rooftopProfile.profileId,
+  } as const;
+  if (!rooftopProfile.enabled) {
+    throw rooftopValidationError(
+      "ROOFTOP_PROFILE_UNSUPPORTED",
+      "The selected store is not enabled for floorplan reconciliation.",
+      {
+        ...baseDetails,
+        recovery: "Select an enabled rooftop or complete that rooftop's evidence onboarding.",
+      },
+    );
+  }
+  if (
+    boaSourceFile.dealership_id !== dealershipId ||
+    dealertrackSourceFile.dealership_id !== dealershipId
+  ) {
+    throw rooftopValidationError(
+      "DEALERSHIP_MISMATCH",
+      "Source files must belong to the reconciliation dealership.",
+      {
+        ...baseDetails,
+        recovery: "Select source files from the current dealership.",
+      },
+    );
+  }
+  if (boaSourceFile.source_type !== "boa" || dealertrackSourceFile.source_type !== "dealertrack") {
+    throw rooftopValidationError(
+      "RECONCILIATION_SOURCE_TYPE_MISMATCH",
+      "Source files do not match the required BOA and Dealertrack types.",
+      {
+        ...baseDetails,
+        source: boaSourceFile.source_type !== "boa" ? "boa" : "dealertrack",
+        recovery: "Select a BOA upload for boa_source_file_id and a Dealertrack upload for dealertrack_source_file_id.",
+      },
+    );
+  }
+  if (
+    boaSourceFile.dealership_store_id === null ||
+    dealertrackSourceFile.dealership_store_id === null ||
+    boaSourceFile.dealership_store_id !== dealertrackSourceFile.dealership_store_id
+  ) {
+    throw rooftopValidationError(
+      "RECONCILIATION_STORE_MISMATCH",
+      "BOA and Dealertrack source files must belong to the same store.",
+      {
+        ...baseDetails,
+        recovery: "Select source files that both belong to the selected store.",
+      },
+    );
+  }
+  if (
+    boaSourceFile.accounting_month !== accountingMonth ||
+    dealertrackSourceFile.accounting_month !== accountingMonth
+  ) {
+    throw rooftopValidationError(
+      "RECONCILIATION_SOURCE_IDENTITY_MISMATCH",
+      "The selected accounting month does not match both source files.",
+      {
+        ...baseDetails,
+        evidence: {
+          boa_accounting_month: boaSourceFile.accounting_month,
+          dealertrack_accounting_month: dealertrackSourceFile.accounting_month,
+        },
+        recovery: "Select source files processed for the selected accounting month.",
+      },
+    );
+  }
+  if (
+    boaSourceFile.rooftop_profile_id !== rooftopProfile.profileId ||
+    dealertrackSourceFile.rooftop_profile_id !== rooftopProfile.profileId ||
+    boaSourceFile.rooftop_profile_version !== rooftopProfile.profileVersion ||
+    dealertrackSourceFile.rooftop_profile_version !== rooftopProfile.profileVersion
+  ) {
+    throw rooftopValidationError(
+      "RECONCILIATION_SOURCE_IDENTITY_MISMATCH",
+      "Source files do not match the selected rooftop profile identity.",
+      {
+        ...baseDetails,
+        evidence: {
+          boa_rooftop_profile_id: boaSourceFile.rooftop_profile_id,
+          boa_rooftop_profile_version: boaSourceFile.rooftop_profile_version,
+          dealertrack_rooftop_profile_id: dealertrackSourceFile.rooftop_profile_id,
+          dealertrack_rooftop_profile_version: dealertrackSourceFile.rooftop_profile_version,
+        },
+        recovery: "Select BOA and Dealertrack source files with the same enabled rooftop profile.",
+      },
+    );
+  }
+  if (!hasStoredProcessingProvenance(boaSourceFile) || !hasStoredProcessingProvenance(dealertrackSourceFile)) {
+    throw rooftopValidationError(
+      "RECONCILIATION_SOURCE_IDENTITY_MISMATCH",
+      "Source files are missing the stored parser or preprocessor provenance required for reconciliation.",
+      {
+        ...baseDetails,
+        recovery: "Re-upload both source files with the selected rooftop profile and accounting month.",
+      },
+    );
+  }
+}
+
+function hasStoredProcessingProvenance(sourceFile: SourceFile): boolean {
+  return sourceFile.parser_name !== null &&
+    sourceFile.parser_version !== null &&
+    sourceFile.preprocessor_name !== null &&
+    sourceFile.preprocessor_version !== null &&
+    sourceFile.preprocessing_metadata !== null;
+}
+
+function resolvePersistedRooftopProfile(sourceFile: SourceFile): RooftopProfile | null {
+  return Object.values(ROOFTOP_PROFILES).find(
+    (profile) =>
+      profile.enabled &&
+      profile.profileId === sourceFile.rooftop_profile_id &&
+      profile.profileVersion === sourceFile.rooftop_profile_version,
+  ) ?? null;
+}
+
+export type CreateReconciliationRunFromSourceFilesInput = {
   repository: TransactionRepository;
   dealershipId: number;
   boaSourceFile: SourceFile;
   dealertrackSourceFile: SourceFile;
+  accountingMonth: AccountingMonth;
+  rooftopProfile: RooftopProfile;
   automated: boolean;
   uploadedByUserId?: number | null;
-}): Promise<{ run: ReconciliationRun; result: ReconciliationResponse; duration_ms: number }> {
+};
+
+export async function createReconciliationRunFromSourceFiles(
+  input: CreateReconciliationRunFromSourceFilesInput,
+): Promise<{ run: ReconciliationRun; result: ReconciliationResponse; duration_ms: number }> {
+  const {
+    repository,
+    dealershipId,
+    boaSourceFile,
+    dealertrackSourceFile,
+    accountingMonth,
+    rooftopProfile,
+    automated,
+    uploadedByUserId = null,
+  } = input;
+  validateReconciliationSourceIdentity(input);
   const startedAt = Date.now();
   const [boaTransactions, dealertrackTransactions] = await Promise.all([
     repository.listBySourceFile(dealershipId, boaSourceFile.id),
     repository.listBySourceFile(dealershipId, dealertrackSourceFile.id),
   ]);
-  const result = reconcileTransactionSets(
+  const reconciliationResult = reconcileTransactionSets(
     boaTransactions,
     dealertrackTransactions,
     "boa",
@@ -62,10 +203,10 @@ export async function createReconciliationRunFromSourceFiles({
     dealership_store_id: boaSourceFile.dealership_store_id,
     boa_source_file_id: boaSourceFile.id,
     dealertrack_source_file_id: dealertrackSourceFile.id,
-    accounting_month: null,
-    rooftop_profile_id: null,
-    rooftop_profile_version: null,
-    result,
+    accounting_month: accountingMonth,
+    rooftop_profile_id: rooftopProfile.profileId,
+    rooftop_profile_version: rooftopProfile.profileVersion,
+    result: reconciliationResult,
     status: "artifact_pending",
     input_snapshot: {
       engine_version: RECONCILIATION_ENGINE_VERSION,
@@ -74,11 +215,18 @@ export async function createReconciliationRunFromSourceFiles({
           side: "boa",
           source_type: "boa",
           source_file_id: boaSourceFile.id,
-          parser_version: TRANSACTION_NORMALIZER_VERSION,
+          parser_version: boaSourceFile.parser_version!,
           parser_metadata: {
             source_type: "boa",
             source_file_id: boaSourceFile.id,
-            normalizer: "normalizeTransactionsFromCsv",
+            parser_name: boaSourceFile.parser_name,
+            parser_version: boaSourceFile.parser_version,
+            preprocessor_name: boaSourceFile.preprocessor_name,
+            preprocessor_version: boaSourceFile.preprocessor_version,
+            accounting_month: boaSourceFile.accounting_month,
+            rooftop_profile_id: boaSourceFile.rooftop_profile_id,
+            rooftop_profile_version: boaSourceFile.rooftop_profile_version,
+            preprocessing_metadata: boaSourceFile.preprocessing_metadata,
           },
           transactions: boaTransactions,
         },
@@ -86,23 +234,38 @@ export async function createReconciliationRunFromSourceFiles({
           side: "dealertrack",
           source_type: "dealertrack",
           source_file_id: dealertrackSourceFile.id,
-          parser_version: TRANSACTION_NORMALIZER_VERSION,
+          parser_version: dealertrackSourceFile.parser_version!,
           parser_metadata: {
             source_type: "dealertrack",
             source_file_id: dealertrackSourceFile.id,
-            normalizer: "normalizeTransactionsFromCsv",
+            parser_name: dealertrackSourceFile.parser_name,
+            parser_version: dealertrackSourceFile.parser_version,
+            preprocessor_name: dealertrackSourceFile.preprocessor_name,
+            preprocessor_version: dealertrackSourceFile.preprocessor_version,
+            accounting_month: dealertrackSourceFile.accounting_month,
+            rooftop_profile_id: dealertrackSourceFile.rooftop_profile_id,
+            rooftop_profile_version: dealertrackSourceFile.rooftop_profile_version,
+            preprocessing_metadata: dealertrackSourceFile.preprocessing_metadata,
           },
           transactions: dealertrackTransactions,
         },
       ],
     },
   });
+  const result: ReconciliationResponse = {
+    ...reconciliationResult,
+    reconciliation_run_id: run.id,
+    accounting_month: accountingMonth,
+    rooftop_profile_id: rooftopProfile.profileId,
+    rooftop_profile_version: rooftopProfile.profileVersion,
+  };
   let completedRun: ReconciliationRun;
   try {
     await persistReconciliationRunArtifacts({
       repository,
       dealershipId,
       run,
+      rooftopProfile,
       boaSourceFile,
       dealertrackSourceFile,
       boaTransactions,
@@ -132,20 +295,20 @@ export async function createReconciliationRunFromSourceFiles({
     reconciliationCompletedEvent(
       boaSourceFile.dealership_store_id,
       completedRun.id,
-      result.exception_count,
+      reconciliationResult.exception_count,
       Date.now() - startedAt,
       automated,
     ),
   );
 
-  if (result.exception_count >= 10) {
+  if (reconciliationResult.exception_count >= 10) {
     await repository.createOperationalEvent(dealershipId, {
       dealership_store_id: boaSourceFile.dealership_store_id,
       reconciliation_run_id: completedRun.id,
       event_type: "new_unresolved_exception_spike",
       severity: "warning",
-      message: `Reconciliation created ${result.exception_count} unresolved exceptions.`,
-      metadata: { exception_count: result.exception_count },
+      message: `Reconciliation created ${reconciliationResult.exception_count} unresolved exceptions.`,
+      metadata: { exception_count: reconciliationResult.exception_count },
     });
   }
   return { run: completedRun, result, duration_ms: Date.now() - startedAt };
@@ -233,11 +396,17 @@ export async function evaluateAutoRunAfterUpload(
   if (!boaSourceFile || !dealertrackSourceFile) {
     return null;
   }
+  const rooftopProfile = resolvePersistedRooftopProfile(sourceFile);
+  if (!rooftopProfile) {
+    return null;
+  }
   const { run } = await createReconciliationRunFromSourceFiles({
     repository,
     dealershipId,
     boaSourceFile,
     dealertrackSourceFile,
+    accountingMonth: sourceFile.accounting_month,
+    rooftopProfile,
     automated: true,
     uploadedByUserId,
   });
@@ -280,11 +449,17 @@ export async function runDueScheduledJobs(
       continue;
     }
     try {
+      const rooftopProfile = resolvePersistedRooftopProfile(boaSourceFile);
+      if (!rooftopProfile) {
+        continue;
+      }
       const { run } = await createReconciliationRunFromSourceFiles({
         repository,
         dealershipId,
         boaSourceFile,
         dealertrackSourceFile,
+        accountingMonth: boaSourceFile.accounting_month!,
+        rooftopProfile,
         automated: true,
       });
       runs.push(run);

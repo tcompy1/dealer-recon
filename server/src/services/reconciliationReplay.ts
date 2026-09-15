@@ -82,13 +82,21 @@ export function replaySnapshot(
       current: RECONCILIATION_ENGINE_VERSION,
       differs: snapshot.engine_version !== RECONCILIATION_ENGINE_VERSION,
     },
-    parser_version_difference: snapshot.inputs.map((input) => ({
-      side: input.side,
-      original: input.parser_version,
-      current: TRANSACTION_NORMALIZER_VERSION,
-      differs: input.parser_version !== TRANSACTION_NORMALIZER_VERSION,
-    })),
+    parser_version_difference: snapshot.inputs.map((input) => {
+      const current = currentParserVersion(input);
+      return {
+        side: input.side,
+        original: input.parser_version,
+        current,
+        differs: input.parser_version !== current,
+      };
+    }),
   };
+}
+
+function currentParserVersion(input: ReconciliationRunInputSnapshot["inputs"][number]): string {
+  const parserVersion = input.parser_metadata.parser_version;
+  return typeof parserVersion === "string" ? parserVersion : TRANSACTION_NORMALIZER_VERSION;
 }
 
 function exceptionKey(transaction: TransactionSummary): string {

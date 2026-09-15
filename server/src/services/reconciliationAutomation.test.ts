@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 
-import type { RooftopProfileId } from "../config/storeWorkflowConfig.js";
+import {
+  getRooftopProfile,
+  type RooftopProfileId,
+} from "../config/storeWorkflowConfig.js";
 import {
   parseAccountingMonth,
   type AccountingMonth,
@@ -20,17 +23,30 @@ import {
 import type { UploadPreprocessingMetadata } from "./preprocessing/types.js";
 
 class FailingArtifactRepository extends MemoryTransactionRepository {
-  private artifactWrites = 0;
+  batchAttempts = 0;
 
-  override async createReconciliationArtifact(
+  override async createReconciliationArtifactBatch(
     dealershipId: number,
-    artifact: NewReconciliationArtifact,
+    artifacts: NewReconciliationArtifact[],
+  ): Promise<never> {
+    this.batchAttempts += 1;
+    throw new Error(`artifact batch write failed for dealership ${dealershipId} (${artifacts.length})`);
+  }
+}
+
+class ObservingArtifactBatchRepository extends MemoryTransactionRepository {
+  statusWhenBatchStarted: string | null = null;
+  createdArtifactTypes: string[] = [];
+
+  override async createReconciliationArtifactBatch(
+    dealershipId: number,
+    artifacts: NewReconciliationArtifact[],
   ) {
-    this.artifactWrites += 1;
-    if (this.artifactWrites === 2) {
-      throw new Error("artifact write failed");
-    }
-    return super.createReconciliationArtifact(dealershipId, artifact);
+    const runs = await this.listReconciliationRuns(dealershipId);
+    this.statusWhenBatchStarted = runs[0]?.status ?? null;
+    const created = await super.createReconciliationArtifactBatch(dealershipId, artifacts);
+    this.createdArtifactTypes = created.map((artifact) => artifact.artifact_type);
+    return created;
   }
 }
 
@@ -45,13 +61,19 @@ describe("createReconciliationRunFromSourceFiles", () => {
         dealershipId: 1,
         boaSourceFile,
         dealertrackSourceFile,
+        accountingMonth: accountingMonth("2026-04"),
+        rooftopProfile: getRooftopProfile("hurst"),
         automated: false,
       }),
-    ).rejects.toThrow("artifact write failed");
+    ).rejects.toThrow("artifact batch write failed");
 
     const runs = await repository.listReconciliationRuns(1);
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({ status: "artifact_failed" });
+    expect(repository.batchAttempts).toBe(1);
+    await expect(
+      repository.listReconciliationArtifacts(1, runs[0].reconciliation_run_id),
+    ).resolves.toEqual([]);
   });
 
   test("requires raw BOA and Dealertrack artifacts for Hurst v1 runs", async () => {
@@ -64,6 +86,8 @@ describe("createReconciliationRunFromSourceFiles", () => {
         dealershipId: 1,
         boaSourceFile,
         dealertrackSourceFile,
+        accountingMonth: accountingMonth("2026-04"),
+        rooftopProfile: getRooftopProfile("hurst"),
         automated: false,
       }),
     ).rejects.toThrow("RAW_BOA");
@@ -74,6 +98,101 @@ describe("createReconciliationRunFromSourceFiles", () => {
     await expect(
       repository.listReconciliationArtifacts(1, runs[0].reconciliation_run_id),
     ).resolves.toEqual([]);
+  });
+
+  test("persists the selected source identity and the stored preprocessing provenance", async () => {
+    const repository = new MemoryTransactionRepository();
+    const { boaSourceFile, dealertrackSourceFile } = await seedHurstSourcePair(repository, true);
+    const accountingMonthValue = accountingMonth("2026-04");
+    const rooftopProfile = getRooftopProfile("hurst");
+
+    const { run, result } = await createReconciliationRunFromSourceFiles({
+      repository,
+      dealershipId: 1,
+      boaSourceFile,
+      dealertrackSourceFile,
+      accountingMonth: accountingMonthValue,
+      rooftopProfile,
+      automated: false,
+    });
+
+    expect(run).toMatchObject({
+      accounting_month: accountingMonthValue,
+      rooftop_profile_id: "hurst-v1",
+      rooftop_profile_version: "1",
+    });
+    expect(result).toMatchObject({
+      reconciliation_run_id: run.id,
+      accounting_month: accountingMonthValue,
+      rooftop_profile_id: "hurst-v1",
+      rooftop_profile_version: "1",
+    });
+    await expect(repository.getReconciliationRunSnapshot(1, run.id)).resolves.toMatchObject({
+      inputs: [
+        expect.objectContaining({
+          side: "boa",
+          parser_version: boaSourceFile.parser_version,
+          parser_metadata: {
+            source_type: "boa",
+            source_file_id: boaSourceFile.id,
+            parser_name: boaSourceFile.parser_name,
+            parser_version: boaSourceFile.parser_version,
+            preprocessor_name: boaSourceFile.preprocessor_name,
+            preprocessor_version: boaSourceFile.preprocessor_version,
+            accounting_month: accountingMonthValue,
+            rooftop_profile_id: "hurst-v1",
+            rooftop_profile_version: "1",
+            preprocessing_metadata: boaSourceFile.preprocessing_metadata,
+          },
+        }),
+        expect.objectContaining({
+          side: "dealertrack",
+          parser_version: dealertrackSourceFile.parser_version,
+          parser_metadata: {
+            source_type: "dealertrack",
+            source_file_id: dealertrackSourceFile.id,
+            parser_name: dealertrackSourceFile.parser_name,
+            parser_version: dealertrackSourceFile.parser_version,
+            preprocessor_name: dealertrackSourceFile.preprocessor_name,
+            preprocessor_version: dealertrackSourceFile.preprocessor_version,
+            accounting_month: accountingMonthValue,
+            rooftop_profile_id: "hurst-v1",
+            rooftop_profile_version: "1",
+            preprocessing_metadata: dealertrackSourceFile.preprocessing_metadata,
+          },
+        }),
+      ],
+    });
+  });
+
+  test("keeps a run artifact_pending until its complete profile-required batch has been created", async () => {
+    const repository = new ObservingArtifactBatchRepository();
+    const { boaSourceFile, dealertrackSourceFile } = await seedHurstSourcePair(repository, true);
+    const rooftopProfile = getRooftopProfile("hurst");
+
+    const { run } = await createReconciliationRunFromSourceFiles({
+      repository,
+      dealershipId: 1,
+      boaSourceFile,
+      dealertrackSourceFile,
+      accountingMonth: accountingMonth("2026-04"),
+      rooftopProfile,
+      automated: false,
+    });
+
+    expect(repository.statusWhenBatchStarted).toBe("artifact_pending");
+    expect(repository.createdArtifactTypes).toEqual(rooftopProfile.requiredArtifactTypes);
+    await expect(repository.listReconciliationRuns(1)).resolves.toEqual([
+      expect.objectContaining({
+        reconciliation_run_id: run.id,
+        status: "completed",
+      }),
+    ]);
+    await expect(repository.listReconciliationArtifacts(1, run.id)).resolves.toEqual(
+      rooftopProfile.requiredArtifactTypes.map((artifact_type) =>
+        expect.objectContaining({ artifact_type }),
+      ),
+    );
   });
 });
 
@@ -214,6 +333,19 @@ async function seedHurstSourcePair(
       file_hash: "boa-hash",
       row_count: 1,
       validation_error_count: 0,
+      accounting_month: accountingMonth("2026-04"),
+      rooftop_profile_id: "hurst-v1",
+      rooftop_profile_version: "1",
+      parser_name: "boa-csv",
+      parser_version: "1",
+      preprocessor_name: "boa-floorplan",
+      preprocessor_version: "preprocessing-v1",
+      preprocessing_metadata: profiledReceipt(
+        "boa",
+        accountingMonth("2026-04"),
+        "boa-csv",
+        "boa-floorplan",
+      ),
     },
     [sourceTransaction("boa", 25_000_00)],
     includeRawUploads
@@ -234,6 +366,19 @@ async function seedHurstSourcePair(
       file_hash: "dealertrack-hash",
       row_count: 1,
       validation_error_count: 0,
+      accounting_month: accountingMonth("2026-04"),
+      rooftop_profile_id: "hurst-v1",
+      rooftop_profile_version: "1",
+      parser_name: "dealertrack-csv",
+      parser_version: "1",
+      preprocessor_name: "dealertrack-floorplan",
+      preprocessor_version: "preprocessing-v1",
+      preprocessing_metadata: profiledReceipt(
+        "dealertrack",
+        accountingMonth("2026-04"),
+        "dealertrack-csv",
+        "dealertrack-floorplan",
+      ),
     },
     [sourceTransaction("dealertrack", -25_000_00)],
     includeRawUploads

@@ -3,12 +3,19 @@ import { describe, expect, test } from "vitest";
 
 import { createApp } from "./app.js";
 import { MemoryAuthRepository } from "./auth.js";
+import { parseAccountingMonth } from "./domain/accountingMonth.js";
 import { MemoryTransactionRepository } from "./repositories/transactionRepository.js";
 import type { TransactionRepository } from "./repositories/transactionRepository.js";
-import type { NewTransaction, SourceType, Transaction } from "./domain/types.js";
+import type {
+  NewTransaction,
+  ProfiledNewSourceFile,
+  SourceType,
+  Transaction,
+} from "./domain/types.js";
 import {
   LINEAGE_RAW_DATA_KEY,
   type RawDataLineage,
+  type UploadPreprocessingMetadata,
 } from "./services/preprocessing/types.js";
 
 const VALID_VIN = "1HGCM82633A004352";
@@ -275,15 +282,7 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
     // match. After enrichment + re-run, they should match.
     const sourceFileBoa = await repository.createSourceFileWithTransactions(
       1,
-      {
-        source_type: "boa",
-        dealership_store_id: 1,
-        original_filename: "boa.csv",
-        stored_filename: null,
-        file_hash: "boa-hash",
-        row_count: 1,
-        validation_error_count: 0,
-      },
+      profiledReconciliationSourceFile("boa", "boa.csv", "boa-hash"),
       [
         {
           source_file_id: null,
@@ -308,15 +307,7 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
 
     const sourceFileDt = await repository.createSourceFileWithTransactions(
       1,
-      {
-        source_type: "dealertrack",
-        dealership_store_id: 1,
-        original_filename: "dt.csv",
-        stored_filename: null,
-        file_hash: "dt-hash",
-        row_count: 1,
-        validation_error_count: 0,
-      },
+      profiledReconciliationSourceFile("dealertrack", "dt.csv", "dt-hash"),
       [
         {
           source_file_id: null,
@@ -362,6 +353,7 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
     const firstRun = await request(app).post("/reconcile").send({
       boa_source_file_id: sourceFileBoa.sourceFile.id,
       dealertrack_source_file_id: sourceFileDt.sourceFile.id,
+      accounting_month: "2026-04",
     });
     expect(firstRun.status).toBe(200);
     const firstMatched = firstRun.body.matched_count as number;
@@ -381,6 +373,7 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
     const secondRun = await request(app).post("/reconcile").send({
       boa_source_file_id: sourceFileBoa.sourceFile.id,
       dealertrack_source_file_id: sourceFileDt.sourceFile.id,
+      accounting_month: "2026-04",
     });
     expect(secondRun.status).toBe(200);
     const secondMatched = secondRun.body.matched_count as number;
@@ -388,3 +381,45 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
     expect(secondMatched).toBeGreaterThan(firstMatched);
   });
 });
+
+function profiledReconciliationSourceFile(
+  sourceType: "boa" | "dealertrack",
+  filename: string,
+  fileHash: string,
+): ProfiledNewSourceFile {
+  const accountingMonth = parseAccountingMonth("2026-04");
+  if (!accountingMonth) {
+    throw new Error("Invalid reconciliation test accounting month.");
+  }
+  const parserName = sourceType === "boa" ? "boa-csv" : "dealertrack-csv";
+  const preprocessorName = sourceType === "boa" ? "boa-floorplan" : "dealertrack-floorplan";
+  const preprocessingMetadata: UploadPreprocessingMetadata = {
+    detected_format: "csv",
+    detection_confidence: "high",
+    detection_reason: "test fixture",
+    parser_route: sourceType === "boa" ? "boa_csv" : "dealertrack_csv",
+    preprocessing_version: "preprocessing-v1",
+    summary: null,
+    diagnostics: [],
+    removed_rows: [],
+    legacy_csv_path: false,
+    unsupported_reason: null,
+  };
+  return {
+    source_type: sourceType,
+    dealership_store_id: 1,
+    original_filename: filename,
+    stored_filename: null,
+    file_hash: fileHash,
+    row_count: 1,
+    validation_error_count: 0,
+    accounting_month: accountingMonth,
+    rooftop_profile_id: "hurst-v1",
+    rooftop_profile_version: "1",
+    parser_name: parserName,
+    parser_version: "1",
+    preprocessor_name: preprocessorName,
+    preprocessor_version: "preprocessing-v1",
+    preprocessing_metadata: preprocessingMetadata,
+  };
+}

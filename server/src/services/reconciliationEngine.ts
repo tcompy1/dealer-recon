@@ -1,7 +1,7 @@
 import type {
   MatchGroup,
   ReconciliationException,
-  ReconciliationResponse,
+  ReconciliationResult,
   SourceType,
   Transaction,
   TransactionSummary,
@@ -87,7 +87,7 @@ export async function reconcileTransactions(
   leftSourceType: SourceType = "boa",
   rightSourceType: SourceType = "dealertrack",
   scope: ReconciliationScope = {},
-): Promise<ReconciliationResponse> {
+): Promise<ReconciliationResult> {
   const dealershipId = scope.dealershipId ?? 1;
   const leftTransactions =
     scope.leftSourceFileId === undefined
@@ -106,7 +106,7 @@ export function reconcileTransactionSets(
   rightTransactions: Transaction[],
   leftSourceType: SourceType = "boa",
   rightSourceType: SourceType = "dealertrack",
-): ReconciliationResponse {
+): ReconciliationResult {
   const matchedRightIds = new Set<number>();
   const matchedLeftIds = new Set<number>();
   const duplicateRightIds = new Set<number>();
@@ -578,7 +578,7 @@ function toSummary(transaction: Transaction): TransactionSummary {
 
 export function assertReconciliationInvariants(
   transactions: Transaction[],
-  result: ReconciliationResponse,
+  result: ReconciliationResult,
 ): void {
   const expectedIds = new Set(transactions.map((transaction) => transaction.id));
   const bucketCounts = new Map<number, number>();

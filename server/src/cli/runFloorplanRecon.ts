@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 import type {
   ReconciliationException,
-  ReconciliationResponse,
+  ReconciliationResult,
   TransactionSummary,
 } from "../domain/types.js";
 import { MemoryTransactionRepository } from "../repositories/transactionRepository.js";
@@ -16,7 +16,7 @@ type CliArgs = {
   dealertrackFile: string;
 };
 
-export async function runLocalFloorplanRecon(args: CliArgs): Promise<ReconciliationResponse> {
+export async function runLocalFloorplanRecon(args: CliArgs): Promise<ReconciliationResult> {
   validateCsvPath(args.boaFile, "BOA");
   validateCsvPath(args.dealertrackFile, "Dealertrack");
 
@@ -26,7 +26,7 @@ export async function runLocalFloorplanRecon(args: CliArgs): Promise<Reconciliat
   return reconcileTransactions(repository);
 }
 
-export function formatReconciliationResult(result: ReconciliationResponse): string {
+export function formatReconciliationResult(result: ReconciliationResult): string {
   const statementNotOnGl = exceptionsByPlacement(result, "statement");
   const scheduleNotOnStatement = exceptionsByPlacement(result, "schedule");
   const manualReview = exceptionsByPlacement(result, "manual_review");
@@ -94,7 +94,7 @@ function validateCsvPath(filePath: string, label: string): void {
 }
 
 function exceptionsByPlacement(
-  result: ReconciliationResponse,
+  result: ReconciliationResult,
   placement: "statement" | "schedule" | "manual_review",
 ): ReconciliationException[] {
   return result.exceptions.filter((exception) => exceptionPlacement(exception) === placement);
@@ -144,7 +144,7 @@ function neutralExceptionPrompt(exception: ReconciliationException): string {
 
 function appendVinPresenceDiagnosticSection(
   lines: string[],
-  result: ReconciliationResponse,
+  result: ReconciliationResult,
 ): void {
   const diagnostics = result.vin_presence_diagnostics;
   lines.push("VIN presence diagnostics:");

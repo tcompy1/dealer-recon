@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 
 import { describe, expect, test } from "vitest";
 
-import type { ReconciliationResponse, Transaction } from "../domain/types.js";
+import type { ReconciliationResult, Transaction } from "../domain/types.js";
 import { parseAmountToCents } from "../domain/money.js";
 import { reconcileTransactionSets } from "./reconciliationEngine.js";
 
@@ -152,7 +152,7 @@ function buildSourcesForMonth(month: string): {
 // match with a differing amount to manual review (needs_review_vin6_only) rather
 // than auto-confirming - that is the "amount mismatch pair" treatment: both
 // sides survive as independent exceptions and are never merged onto one row.
-function summarize(result: ReconciliationResponse): {
+function summarize(result: ReconciliationResult): {
   matchedCount: number;
   boaOnlyCount: number;
   dealertrackOnlyCount: number;

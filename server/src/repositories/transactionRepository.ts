@@ -160,6 +160,10 @@ export interface TransactionRepository {
     dealershipId: number,
     artifact: NewReconciliationArtifact,
   ): Promise<ReconciliationArtifactMetadata>;
+  createReconciliationArtifactBatch(
+    dealershipId: number,
+    artifacts: NewReconciliationArtifact[],
+  ): Promise<ReconciliationArtifactMetadata[]>;
   listReconciliationArtifacts(
     dealershipId: number,
     reconciliationRunId: number,
@@ -920,6 +924,59 @@ export class MemoryTransactionRepository implements TransactionRepository {
     );
     this.reconciliationArtifacts.push(artifact);
     return toArtifactMetadata(artifact);
+  }
+
+  async createReconciliationArtifactBatch(
+    dealershipId: number,
+    artifactInputs: NewReconciliationArtifact[],
+  ): Promise<ReconciliationArtifactMetadata[]> {
+    const batchKeys = new Set<string>();
+    const artifacts = artifactInputs.map((artifactInput, index) => {
+      const run = this.reconciliationRuns.find(
+        (candidate) =>
+          candidate.id === artifactInput.reconciliation_run_id &&
+          candidate.dealership_id === dealershipId,
+      );
+      if (!run) {
+        throw new Error(
+          `Cannot persist reconciliation artifact batch: run ${artifactInput.reconciliation_run_id} does not belong to dealership ${dealershipId}.`,
+        );
+      }
+
+      const key = `${artifactInput.reconciliation_run_id}:${artifactInput.artifact_type}`;
+      if (batchKeys.has(key)) {
+        throw new Error(
+          `Cannot persist reconciliation artifact batch: duplicate artifact type ${artifactInput.artifact_type} for run ${artifactInput.reconciliation_run_id}.`,
+        );
+      }
+      batchKeys.add(key);
+
+      if (
+        this.reconciliationArtifacts.some(
+          (candidate) =>
+            candidate.dealership_id === dealershipId &&
+            candidate.reconciliation_run_id === artifactInput.reconciliation_run_id &&
+            candidate.artifact_type === artifactInput.artifact_type,
+        )
+      ) {
+        throw new Error(
+          `Cannot persist reconciliation artifact batch: artifact type ${artifactInput.artifact_type} already exists for run ${artifactInput.reconciliation_run_id}.`,
+        );
+      }
+
+      return {
+        ...artifactInput,
+        id: this.nextReconciliationArtifactId + index,
+        dealership_id: dealershipId,
+        file_size: artifactInput.file_size ?? artifactInput.content.byteLength,
+        content: Buffer.from(artifactInput.content),
+        created_at: new Date().toISOString(),
+      } satisfies ReconciliationArtifact;
+    });
+
+    this.nextReconciliationArtifactId += artifacts.length;
+    this.reconciliationArtifacts.push(...artifacts);
+    return artifacts.map(toArtifactMetadata);
   }
 
   async listReconciliationArtifacts(
