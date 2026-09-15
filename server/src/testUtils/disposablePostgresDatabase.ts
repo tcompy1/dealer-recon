@@ -4,7 +4,15 @@ import { createPool } from "../repositories/postgresTransactionRepository.js";
 
 const DISPOSABLE_DATABASE_PREFIX = "dealer_recon_task10_";
 const DISPOSABLE_DATABASE_NAME = /^dealer_recon_task10_[a-z0-9_]+$/;
-const LOCAL_DATABASE_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "db"]);
+const LOCAL_DATABASE_TARGETS = new Map([
+  ["localhost", "5433"],
+  ["127.0.0.1", "5433"],
+  ["[::1]", "5433"],
+  ["db", "5432"],
+]);
+const SAFE_BASE_DATABASE_PATH = "/dealer_recon";
+const TARGET_VALIDATION_ERROR =
+  "Disposable PostgreSQL databases require an exact local test database URL.";
 
 export async function withDisposablePostgresDatabase<T>(
   baseDatabaseUrl: string,
@@ -61,18 +69,25 @@ export async function withDisposablePostgresDatabase<T>(
 }
 
 function validatedLocalTestDatabaseUrl(value: string): URL {
-  const url = new URL(value);
-  const databaseName = decodeURIComponent(url.pathname.slice(1));
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(TARGET_VALIDATION_ERROR);
+  }
   const isTestProcess = process.env.NODE_ENV === "test" || process.env.VITEST === "true";
 
   if (
     !isTestProcess ||
     (url.protocol !== "postgresql:" && url.protocol !== "postgres:") ||
-    !LOCAL_DATABASE_HOSTS.has(url.hostname) ||
-    databaseName.length === 0 ||
-    databaseName.startsWith(DISPOSABLE_DATABASE_PREFIX)
+    LOCAL_DATABASE_TARGETS.get(url.hostname) !== url.port ||
+    url.pathname !== SAFE_BASE_DATABASE_PATH ||
+    value.includes("?") ||
+    value.includes("#") ||
+    url.search !== "" ||
+    url.hash !== ""
   ) {
-    throw new Error("Disposable PostgreSQL databases require a local, non-disposable test database URL.");
+    throw new Error(TARGET_VALIDATION_ERROR);
   }
   return url;
 }

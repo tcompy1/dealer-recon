@@ -465,6 +465,55 @@ describeIfDatabase("migrate", () => {
     });
   });
 
+  test("uses a non-default positive sequence increment to calculate the exact next value", async () => {
+    if (!databaseUrl) {
+      throw new Error("DATABASE_URL is required for migration tests.");
+    }
+
+    await withDisposablePostgresDatabase(databaseUrl, async (disposableDatabaseUrl) => {
+      await migrate(disposableDatabaseUrl);
+      const pool = createPool(disposableDatabaseUrl);
+      let incrementChanged = false;
+      try {
+        await migrate(disposableDatabaseUrl, 1, "down");
+        await pool.query(
+          "ALTER SEQUENCE dealerships_id_seq INCREMENT BY 7 RESTART WITH 50",
+        );
+        await pool.query(
+          "ALTER SEQUENCE dealer_groups_id_seq INCREMENT BY 7 RESTART WITH 60",
+        );
+        incrementChanged = true;
+        const calledValue = await pool.query<{ value: string }>(
+          "SELECT nextval('dealerships_id_seq')::text AS value",
+        );
+        expect(calledValue.rows[0]!.value).toBe("50");
+
+        await migrate(disposableDatabaseUrl);
+        const dealership = await pool.query<{ id: number }>(
+          "INSERT INTO dealerships (name) VALUES ('Increment sequence dealership') RETURNING id",
+        );
+        const group = await pool.query<{ id: number }>(
+          `INSERT INTO dealer_groups (dealership_id, name)
+           VALUES (1, 'Increment sequence group')
+           RETURNING id`,
+        );
+        expect({
+          calledSequence: dealership.rows[0]!.id,
+          uncalledSequence: group.rows[0]!.id,
+        }).toEqual({ calledSequence: 57, uncalledSequence: 60 });
+      } finally {
+        try {
+          if (incrementChanged) {
+            await pool.query("ALTER SEQUENCE dealerships_id_seq INCREMENT BY 1");
+            await pool.query("ALTER SEQUENCE dealer_groups_id_seq INCREMENT BY 1");
+          }
+        } finally {
+          await pool.end();
+        }
+      }
+    });
+  });
+
   test("rolls back earlier sequence restarts when a later identity sequence is invalid", async () => {
     if (!databaseUrl) {
       throw new Error("DATABASE_URL is required for migration tests.");

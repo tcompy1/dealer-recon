@@ -96,12 +96,19 @@ describeIfDatabase("Acura reconciliation PostgreSQL vertical slice", () => {
     const adminPool = createPool(databaseUrl);
     const disposableDatabaseNames: string[] = [];
     try {
+      await expect(
+        assertExactCurrentDatabase(
+          adminPool,
+          "dealer_recon_task10_base_url_substitution_guard",
+        ),
+      ).rejects.toThrow("Refusing to run Task 10 against unexpected PostgreSQL database");
+
       for (let execution = 0; execution < 2; execution += 1) {
         await withDisposablePostgresDatabase(
           databaseUrl,
           async (disposableDatabaseUrl, disposableDatabaseName) => {
             disposableDatabaseNames.push(disposableDatabaseName);
-            await runAcuraVerticalSlice(disposableDatabaseUrl);
+            await runAcuraVerticalSlice(disposableDatabaseUrl, disposableDatabaseName);
           },
         );
       }
@@ -118,8 +125,10 @@ describeIfDatabase("Acura reconciliation PostgreSQL vertical slice", () => {
   }, 120_000);
 });
 
-async function runAcuraVerticalSlice(databaseUrl: string): Promise<void> {
-  await migrate(databaseUrl);
+async function runAcuraVerticalSlice(
+  databaseUrl: string,
+  expectedDatabaseName: string,
+): Promise<void> {
   const pool = createPool(databaseUrl);
   const repository = new PostgresTransactionRepository(pool);
   const authRepository = new MemoryAuthRepository();
@@ -127,6 +136,8 @@ async function runAcuraVerticalSlice(databaseUrl: string): Promise<void> {
   let failingRepository: ForcedBatchFailureRepository | null = null;
 
   try {
+        await assertExactCurrentDatabase(pool, expectedDatabaseName);
+        await migrate(databaseUrl);
         const acuraStore = await repository.createDealershipStore(1, { name: "Hiley Acura" });
         const disabledStore = await repository.createDealershipStore(1, {
           name: "Hiley Cars Fort Worth",
@@ -616,6 +627,21 @@ async function runAcuraVerticalSlice(databaseUrl: string): Promise<void> {
   } finally {
     failingRepository?.forceFailure();
     await pool.end();
+  }
+}
+
+async function assertExactCurrentDatabase(
+  pool: ReturnType<typeof createPool>,
+  expectedDatabaseName: string,
+): Promise<void> {
+  const result = await pool.query<{ current_database: string }>(
+    "SELECT current_database() AS current_database",
+  );
+  const currentDatabase = result.rows[0]?.current_database;
+  if (currentDatabase !== expectedDatabaseName) {
+    throw new Error(
+      `Refusing to run Task 10 against unexpected PostgreSQL database: expected ${expectedDatabaseName}, received ${currentDatabase ?? "none"}.`,
+    );
   }
 }
 
