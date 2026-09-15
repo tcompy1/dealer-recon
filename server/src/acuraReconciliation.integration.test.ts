@@ -32,7 +32,7 @@ import {
   ACURA_SANITIZED_FIXTURE_PATHS,
   loadAcuraSanitizedContract,
 } from "./testFixtures/acura/index.js";
-import { withDatabaseTestLock } from "./testUtils/databaseTestLock.js";
+import { withDisposablePostgresDatabase } from "./testUtils/disposablePostgresDatabase.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeIfDatabase = databaseUrl ? describe : describe.skip;
@@ -93,16 +93,40 @@ describeIfDatabase("Acura reconciliation PostgreSQL vertical slice", () => {
       throw new Error("DATABASE_URL is required for the Acura reconciliation integration test.");
     }
 
-    await withDatabaseTestLock(databaseUrl, async () => {
-      await migrate(databaseUrl);
-      const pool = createPool(databaseUrl);
-      const repository = new PostgresTransactionRepository(pool);
-      const authRepository = new MemoryAuthRepository();
-      const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      let failingRepository: ForcedBatchFailureRepository | null = null;
-      const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const adminPool = createPool(databaseUrl);
+    const disposableDatabaseNames: string[] = [];
+    try {
+      for (let execution = 0; execution < 2; execution += 1) {
+        await withDisposablePostgresDatabase(
+          databaseUrl,
+          async (disposableDatabaseUrl, disposableDatabaseName) => {
+            disposableDatabaseNames.push(disposableDatabaseName);
+            await runAcuraVerticalSlice(disposableDatabaseUrl);
+          },
+        );
+      }
 
-      try {
+      expect(new Set(disposableDatabaseNames).size).toBe(2);
+      const remainingDatabases = await adminPool.query<{ count: string }>(
+        "SELECT COUNT(*)::text AS count FROM pg_database WHERE datname = ANY($1::text[])",
+        [disposableDatabaseNames],
+      );
+      expect(Number(remainingDatabases.rows[0]!.count)).toBe(0);
+    } finally {
+      await adminPool.end();
+    }
+  }, 120_000);
+});
+
+async function runAcuraVerticalSlice(databaseUrl: string): Promise<void> {
+  await migrate(databaseUrl);
+  const pool = createPool(databaseUrl);
+  const repository = new PostgresTransactionRepository(pool);
+  const authRepository = new MemoryAuthRepository();
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  let failingRepository: ForcedBatchFailureRepository | null = null;
+
+  try {
         const acuraStore = await repository.createDealershipStore(1, { name: "Hiley Acura" });
         const disabledStore = await repository.createDealershipStore(1, {
           name: "Hiley Cars Fort Worth",
@@ -565,8 +589,16 @@ describeIfDatabase("Acura reconciliation PostgreSQL vertical slice", () => {
           details: { reconciliation_run_status: "artifact_pending" },
         });
 
-        failingRepository.forceFailure();
-        const failedResponse = await failedResponsePromise;
+        const expectedFailureStderr = vi
+          .spyOn(console, "error")
+          .mockImplementation(() => undefined);
+        let failedResponse: Awaited<typeof failedResponsePromise>;
+        try {
+          failingRepository.forceFailure();
+          failedResponse = await failedResponsePromise;
+        } finally {
+          expectedFailureStderr.mockRestore();
+        }
         expect(failedResponse.status).toBe(500);
         expect(failedResponse.body.error).toMatchObject({ code: "INTERNAL_SERVER_ERROR" });
         const failedDetail = await allowedAgent.get(`/reconciliation-runs/${failedRunId}`);
@@ -581,14 +613,11 @@ describeIfDatabase("Acura reconciliation PostgreSQL vertical slice", () => {
           code: "RECONCILIATION_ARTIFACTS_UNAVAILABLE",
           details: { reconciliation_run_status: "artifact_failed" },
         });
-      } finally {
-        failingRepository?.forceFailure();
-        stderr.mockRestore();
-        await pool.end();
-      }
-    });
-  }, 60_000);
-});
+  } finally {
+    failingRepository?.forceFailure();
+    await pool.end();
+  }
+}
 
 function assertPersistedSource(
   source: SourceFile | null,

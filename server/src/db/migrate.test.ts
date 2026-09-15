@@ -4,11 +4,20 @@ import { describe, expect, test } from "vitest";
 
 import { createPool } from "../repositories/postgresTransactionRepository.js";
 import { withDatabaseTestLock } from "../testUtils/databaseTestLock.js";
+import { withDisposablePostgresDatabase } from "../testUtils/disposablePostgresDatabase.js";
 import { migrate } from "./migrate.js";
 
 const DEMO_EMAIL = "demo@dealer-recon.local";
 const ROLLBACK_COLLISION_ERROR =
   "Cannot roll back 1789344000000_add_rooftop_run_identity: source_files contains identities that the legacy uniqueness constraint cannot represent.";
+const MIGRATION_NAMES = [
+  "1778065200000_initial_schema",
+  "1778151600000_add_local_auth_user",
+  "1779001200000_split_review_notes",
+  "1781222400000_add_reconciliation_artifacts",
+  "1789344000000_add_rooftop_run_identity",
+  "1789430400000_sync_seeded_identity_sequences",
+];
 
 class MigrationCommandError extends Error {
   stderr: string;
@@ -24,6 +33,32 @@ const databaseUrl = process.env.DATABASE_URL;
 const describeIfDatabase = databaseUrl ? describe : describe.skip;
 
 describeIfDatabase("migrate", () => {
+  test("removes the exact disposable database when its callback rejects", async () => {
+    if (!databaseUrl) {
+      throw new Error("DATABASE_URL is required for migration tests.");
+    }
+
+    let disposableDatabaseName: string | null = null;
+    await expect(
+      withDisposablePostgresDatabase(databaseUrl, async (_disposableUrl, databaseName) => {
+        disposableDatabaseName = databaseName;
+        throw new Error("expected disposable callback failure");
+      }),
+    ).rejects.toThrow("expected disposable callback failure");
+
+    expect(disposableDatabaseName).toMatch(/^dealer_recon_task10_[a-z0-9_]+$/);
+    const pool = createPool(databaseUrl);
+    try {
+      const remaining = await pool.query<{ count: string }>(
+        "SELECT COUNT(*)::text AS count FROM pg_database WHERE datname = $1",
+        [disposableDatabaseName],
+      );
+      expect(Number(remaining.rows[0]!.count)).toBe(0);
+    } finally {
+      await pool.end();
+    }
+  });
+
   test("can run twice and leaves import scoping and reconciliation identity columns in place", async () => {
     if (!databaseUrl) {
       throw new Error("DATABASE_URL is required for migration tests.");
@@ -316,55 +351,155 @@ describeIfDatabase("migrate", () => {
     });
   });
 
-  test("advances seeded identity sequences before runtime inserts", async () => {
+  test("synchronizes freshly seeded and empty identity tables across explicit down and up", async () => {
     if (!databaseUrl) {
       throw new Error("DATABASE_URL is required for migration tests.");
     }
 
-    await withDatabaseTestLock(databaseUrl, async () => {
-      await migrate(databaseUrl);
+    await withDisposablePostgresDatabase(databaseUrl, async (disposableDatabaseUrl) => {
+        await migrate(disposableDatabaseUrl);
+        const pool = createPool(disposableDatabaseUrl);
+        try {
+          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES);
 
-      const pool = createPool(databaseUrl);
-      const unique = `${Date.now()}-${Math.random()}`;
-      let dealershipId: number | null = null;
-      let dealerGroupId: number | null = null;
-      let dealershipStoreId: number | null = null;
-      try {
-        const dealership = await pool.query<{ id: number }>(
-          "INSERT INTO dealerships (name) VALUES ($1) RETURNING id",
-          [`Sequence test dealership ${unique}`],
-        );
-        dealershipId = dealership.rows[0]!.id;
-        const dealerGroup = await pool.query<{ id: number }>(
-          `INSERT INTO dealer_groups (dealership_id, name)
-           VALUES ($1, $2)
-           RETURNING id`,
-          [dealershipId, `Sequence test group ${unique}`],
-        );
-        dealerGroupId = dealerGroup.rows[0]!.id;
-        const dealershipStore = await pool.query<{ id: number }>(
-          `INSERT INTO dealership_stores (dealership_id, dealer_group_id, name)
-           VALUES ($1, $2, $3)
-           RETURNING id`,
-          [dealershipId, dealerGroupId, `Sequence test store ${unique}`],
-        );
-        dealershipStoreId = dealershipStore.rows[0]!.id;
+          const seededDealership = await pool.query<{ id: number }>(
+            "INSERT INTO dealerships (name) VALUES ('Seeded sequence dealership') RETURNING id",
+          );
+          const seededGroup = await pool.query<{ id: number }>(
+            `INSERT INTO dealer_groups (dealership_id, name)
+             VALUES ($1, 'Seeded sequence group')
+             RETURNING id`,
+            [seededDealership.rows[0]!.id],
+          );
+          const seededStore = await pool.query<{ id: number }>(
+            `INSERT INTO dealership_stores (dealership_id, dealer_group_id, name)
+             VALUES ($1, $2, 'Seeded sequence store')
+             RETURNING id`,
+            [seededDealership.rows[0]!.id, seededGroup.rows[0]!.id],
+          );
+          expect({
+            dealership: seededDealership.rows[0]!.id,
+            dealerGroup: seededGroup.rows[0]!.id,
+            dealershipStore: seededStore.rows[0]!.id,
+          }).toEqual({ dealership: 2, dealerGroup: 2, dealershipStore: 3 });
 
-        expect(dealershipId).toBeGreaterThan(1);
-        expect(dealerGroupId).toBeGreaterThan(1);
-        expect(dealershipStoreId).toBeGreaterThan(2);
-      } finally {
-        if (dealershipStoreId !== null) {
-          await pool.query("DELETE FROM dealership_stores WHERE id = $1", [dealershipStoreId]);
+          await migrate(disposableDatabaseUrl, 1, "down");
+          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -1));
+          await pool.query("DELETE FROM dealership_stores");
+          await pool.query("DELETE FROM dealer_groups");
+          await pool.query("DELETE FROM dealerships");
+          await pool.query("ALTER SEQUENCE dealerships_id_seq RESTART WITH 1");
+          await pool.query("ALTER SEQUENCE dealer_groups_id_seq RESTART WITH 1");
+          await pool.query("ALTER SEQUENCE dealership_stores_id_seq RESTART WITH 1");
+
+          await migrate(disposableDatabaseUrl);
+          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES);
+          const emptyDealership = await pool.query<{ id: number }>(
+            "INSERT INTO dealerships (name) VALUES ('Empty sequence dealership') RETURNING id",
+          );
+          const emptyGroup = await pool.query<{ id: number }>(
+            `INSERT INTO dealer_groups (dealership_id, name)
+             VALUES ($1, 'Empty sequence group')
+             RETURNING id`,
+            [emptyDealership.rows[0]!.id],
+          );
+          const emptyStore = await pool.query<{ id: number }>(
+            `INSERT INTO dealership_stores (dealership_id, dealer_group_id, name)
+             VALUES ($1, $2, 'Empty sequence store')
+             RETURNING id`,
+            [emptyDealership.rows[0]!.id, emptyGroup.rows[0]!.id],
+          );
+          expect({
+            dealership: emptyDealership.rows[0]!.id,
+            dealerGroup: emptyGroup.rows[0]!.id,
+            dealershipStore: emptyStore.rows[0]!.id,
+          }).toEqual({ dealership: 1, dealerGroup: 1, dealershipStore: 1 });
+        } finally {
+          await pool.end();
         }
-        if (dealerGroupId !== null) {
-          await pool.query("DELETE FROM dealer_groups WHERE id = $1", [dealerGroupId]);
+    });
+  });
+
+  test("does not rewind called or uncalled sequences when reapplied", async () => {
+    if (!databaseUrl) {
+      throw new Error("DATABASE_URL is required for migration tests.");
+    }
+
+    await withDisposablePostgresDatabase(databaseUrl, async (disposableDatabaseUrl) => {
+        await migrate(disposableDatabaseUrl);
+        const pool = createPool(disposableDatabaseUrl);
+        try {
+          await migrate(disposableDatabaseUrl, 1, "down");
+          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -1));
+          await pool.query("ALTER SEQUENCE dealerships_id_seq RESTART WITH 50");
+          await pool.query("ALTER SEQUENCE dealer_groups_id_seq RESTART WITH 60");
+          await pool.query("SELECT nextval('dealer_groups_id_seq')");
+          await pool.query(
+            `INSERT INTO dealership_stores (id, dealership_id, dealer_group_id, name)
+             VALUES (70, 1, 1, 'High explicit store')`,
+          );
+
+          await migrate(disposableDatabaseUrl);
+          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES);
+          const dealership = await pool.query<{ id: number }>(
+            "INSERT INTO dealerships (name) VALUES ('Ahead sequence dealership') RETURNING id",
+          );
+          const group = await pool.query<{ id: number }>(
+            `INSERT INTO dealer_groups (dealership_id, name)
+             VALUES (1, 'Ahead sequence group')
+             RETURNING id`,
+          );
+          const store = await pool.query<{ id: number }>(
+            `INSERT INTO dealership_stores (dealership_id, dealer_group_id, name)
+             VALUES (1, 1, 'Ahead sequence store')
+             RETURNING id`,
+          );
+          expect({
+            uncalledSequence: dealership.rows[0]!.id,
+            calledSequence: group.rows[0]!.id,
+            tableMaximum: store.rows[0]!.id,
+          }).toEqual({ uncalledSequence: 50, calledSequence: 61, tableMaximum: 71 });
+        } finally {
+          await pool.end();
         }
-        if (dealershipId !== null) {
-          await pool.query("DELETE FROM dealerships WHERE id = $1", [dealershipId]);
+    });
+  });
+
+  test("rolls back earlier sequence restarts when a later identity sequence is invalid", async () => {
+    if (!databaseUrl) {
+      throw new Error("DATABASE_URL is required for migration tests.");
+    }
+
+    await withDisposablePostgresDatabase(databaseUrl, async (disposableDatabaseUrl) => {
+        await migrate(disposableDatabaseUrl);
+        const pool = createPool(disposableDatabaseUrl);
+        try {
+          await migrate(disposableDatabaseUrl, 1, "down");
+          await pool.query("ALTER SEQUENCE dealerships_id_seq RESTART WITH 1");
+          await pool.query("ALTER SEQUENCE dealer_groups_id_seq RESTART WITH 1");
+          await pool.query("ALTER SEQUENCE dealership_stores_id_seq OWNED BY NONE");
+
+          await expect(migrate(disposableDatabaseUrl)).rejects.toThrow(
+            "Migration command failed",
+          );
+          expect(await sequenceState(pool, "dealerships_id_seq")).toEqual({
+            last_value: "1",
+            is_called: false,
+          });
+          expect(await sequenceState(pool, "dealer_groups_id_seq")).toEqual({
+            last_value: "1",
+            is_called: false,
+          });
+          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -1));
+
+          await pool.query(
+            "ALTER SEQUENCE dealership_stores_id_seq OWNED BY dealership_stores.id",
+          );
+          await migrate(disposableDatabaseUrl);
+          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES);
+        } finally {
+          await pool.end();
         }
-        await pool.end();
-      }
     });
   });
 
@@ -713,6 +848,23 @@ async function countDemoUsersIfSchemaExists(databaseUrl: string): Promise<number
   } finally {
     await pool.end();
   }
+}
+
+async function migrationNames(pool: ReturnType<typeof createPool>): Promise<string[]> {
+  const result = await pool.query<{ name: string }>(
+    "SELECT name FROM pgmigrations ORDER BY id",
+  );
+  return result.rows.map((row) => row.name);
+}
+
+async function sequenceState(
+  pool: ReturnType<typeof createPool>,
+  sequenceName: "dealerships_id_seq" | "dealer_groups_id_seq",
+): Promise<{ last_value: string; is_called: boolean }> {
+  const result = await pool.query<{ last_value: string; is_called: boolean }>(
+    `SELECT last_value::text, is_called FROM ${sequenceName}`,
+  );
+  return result.rows[0]!;
 }
 
 function runMigrationDownCapturingOutput(databaseUrl: string): Promise<void> {

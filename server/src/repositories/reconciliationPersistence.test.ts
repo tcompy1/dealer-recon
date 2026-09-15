@@ -18,8 +18,11 @@ import type {
   TransactionSummary,
 } from "../domain/types.js";
 import type { UploadPreprocessingMetadata } from "../services/preprocessing/types.js";
+import { RECONCILIATION_ENGINE_VERSION } from "../services/reconciliationEngine.js";
+import { buildReconciliationReplay } from "../services/reconciliationReplay.js";
 import { migrate } from "../db/migrate.js";
 import { withDatabaseTestLock } from "../testUtils/databaseTestLock.js";
+import { withDisposablePostgresDatabase } from "../testUtils/disposablePostgresDatabase.js";
 import {
   createPool,
   PostgresTransactionRepository,
@@ -165,6 +168,141 @@ describeIfDatabase("reconciliation artifact batch persistence in PostgreSQL", ()
 });
 
 describeIfDatabase("reconciliation persistence", () => {
+  test("replay reloads a stored legacy parser version and reports the current configured difference", async () => {
+    if (!databaseUrl) {
+      throw new Error("DATABASE_URL is required for reconciliation persistence tests.");
+    }
+
+    await withDisposablePostgresDatabase(databaseUrl, async (disposableDatabaseUrl) => {
+        await migrate(disposableDatabaseUrl);
+        const month = accountingMonth("2026-04");
+        const legacyParserVersion = "legacy-parser-v0";
+        let runId: number;
+
+        const writerPool = createPool(disposableDatabaseUrl);
+        try {
+          const writer = new PostgresTransactionRepository(writerPool);
+          const boaIdentity: SourceProcessingIdentity = {
+            accounting_month: month,
+            rooftop_profile_id: "acura-v1",
+            rooftop_profile_version: "1",
+            parser_name: "boa-csv",
+            parser_version: legacyParserVersion,
+            preprocessor_name: "boa-floorplan",
+            preprocessor_version: "preprocessing-v1",
+          };
+          const dealertrackIdentity: SourceProcessingIdentity = {
+            ...boaIdentity,
+            parser_name: "dealertrack-csv",
+            parser_version: "1",
+            preprocessor_name: "dealertrack-floorplan",
+          };
+          const boa = await writer.createSourceFileWithTransactions(
+            1,
+            profiledSourceFile(
+              "stored-legacy-boa.csv",
+              "stored-legacy-boa",
+              boaIdentity,
+              preprocessingMetadata(month, boaIdentity, 1),
+            ),
+            [],
+          );
+          const dealertrack = await writer.createSourceFileWithTransactions(
+            1,
+            profiledSourceFile(
+              "stored-current-dealertrack.csv",
+              "stored-current-dealertrack",
+              dealertrackIdentity,
+              preprocessingMetadata(month, dealertrackIdentity, 1, "dealertrack"),
+              "dealertrack",
+            ),
+            [],
+          );
+          const run = await writer.createReconciliationRun({
+            dealership_id: 1,
+            dealership_store_id: 1,
+            boa_source_file_id: boa.sourceFile.id,
+            dealertrack_source_file_id: dealertrack.sourceFile.id,
+            accounting_month: month,
+            rooftop_profile_id: "acura-v1",
+            rooftop_profile_version: "1",
+            result: emptyReconciliationResult(),
+            input_snapshot: {
+              engine_version: RECONCILIATION_ENGINE_VERSION,
+              inputs: [
+                {
+                  side: "boa",
+                  source_type: "boa",
+                  source_file_id: boa.sourceFile.id,
+                  parser_version: legacyParserVersion,
+                  parser_metadata: {
+                    source_type: "boa",
+                    parser_name: boaIdentity.parser_name,
+                    parser_version: legacyParserVersion,
+                    rooftop_profile_id: boaIdentity.rooftop_profile_id,
+                    rooftop_profile_version: boaIdentity.rooftop_profile_version,
+                  },
+                  transactions: [],
+                },
+                {
+                  side: "dealertrack",
+                  source_type: "dealertrack",
+                  source_file_id: dealertrack.sourceFile.id,
+                  parser_version: dealertrackIdentity.parser_version,
+                  parser_metadata: {
+                    source_type: "dealertrack",
+                    parser_name: dealertrackIdentity.parser_name,
+                    parser_version: dealertrackIdentity.parser_version,
+                    rooftop_profile_id: dealertrackIdentity.rooftop_profile_id,
+                    rooftop_profile_version: dealertrackIdentity.rooftop_profile_version,
+                  },
+                  transactions: [],
+                },
+              ],
+            },
+          });
+          runId = run.id;
+        } finally {
+          await writerPool.end();
+        }
+
+        const readerPool = createPool(disposableDatabaseUrl);
+        try {
+          const reader = new PostgresTransactionRepository(readerPool);
+          const snapshot = await reader.getReconciliationRunSnapshot(1, runId);
+          expect(snapshot?.inputs).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+              side: "boa",
+              parser_version: legacyParserVersion,
+              parser_metadata: expect.objectContaining({
+                parser_name: "boa-csv",
+                parser_version: legacyParserVersion,
+              }),
+            }),
+          ]));
+
+          const expectedDifference = {
+            side: "boa",
+            original: legacyParserVersion,
+            current: "1",
+            differs: true,
+          };
+          const serviceReplay = await buildReconciliationReplay(reader, 1, runId);
+          expect(serviceReplay?.parser_version_difference).toContainEqual(expectedDifference);
+
+          const app = createApp(reader, [], 1, async () => undefined, {
+            nodeEnv: "test",
+            allowDevDealershipFallback: true,
+          });
+          const endpointReplay = await request(app).get(`/reconciliation-runs/${runId}/replay`);
+          expect(endpointReplay.status).toBe(200);
+          expect(endpointReplay.body.parser_version_difference).toContainEqual(expectedDifference);
+        } finally {
+          await readerPool.end();
+        }
+    });
+  });
+
   test("POST /reconcile persists run counts, match groups, transactions, and exceptions", async () => {
     if (!databaseUrl) {
       throw new Error("DATABASE_URL is required for reconciliation persistence tests.");
