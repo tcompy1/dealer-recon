@@ -3412,6 +3412,10 @@ describe("app", () => {
       mergedSheetLabel: "ACURA",
       dealertrackAccountLabel: "324",
     });
+    expect(fpRecResponse.body.presentation).toEqual({
+      presenter_id: "acura-fp-rec-v1",
+      accounting_month: "2026-04",
+    });
     expect(countApiRows(fpRecResponse.body.rows)).toEqual(countApiRows(response.body.rows));
     expect(fpRecResponse.body.boa_total_amount_cents).toBe(response.body.boa_total_amount_cents);
     expect(fpRecResponse.body.dealertrack_total_amount_cents).toBe(

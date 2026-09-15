@@ -62,11 +62,12 @@ import type {
 } from "./services/preprocessing/types.js";
 import { toExceptionsCsv, toMonthEndReportCsv } from "./presenters/csv.js";
 import {
-  buildHurstFpRecWorkbook,
-  toHurstFpRecFilename,
-  toHurstFpRecXlsHtml,
-} from "./presenters/hurstFpRec.js";
+  buildFpRecWorkbook,
+  toFpRecFilename,
+  toFpRecXlsHtml,
+} from "./presenters/fpRec.js";
 import {
+  getRooftopProfile,
   getStoreWorkflowConfig,
   parseStoreKey,
   resolveEnabledRooftopProfileFromStoreName,
@@ -1605,10 +1606,10 @@ export function createApp(
         { supported_store_keys: [...STORE_KEYS] },
       );
     }
-    const storeConfig = storeKey
-      ? getStoreWorkflowConfig(storeKey)
-      : resolveStoreWorkflowConfigFromStoreName(detail.store_name);
-    if (!storeConfig) {
+    const rooftopProfile = storeKey
+      ? getRooftopProfile(storeKey)
+      : resolveRooftopProfileFromStoreName(detail.store_name);
+    if (!rooftopProfile) {
       throw new ValidationError(
         "No store workflow config is configured for this reconciliation run.",
         "STORE_WORKFLOW_CONFIG_NOT_FOUND",
@@ -1633,13 +1634,13 @@ export function createApp(
       }
     }
 
-    const workbook = buildHurstFpRecWorkbook(detail, storeConfig);
+    const workbook = buildFpRecWorkbook(detail, rooftopProfile);
     if (format === "json") {
       response.json(workbook);
       return;
     }
-    const fpRecHtml = toHurstFpRecXlsHtml(workbook);
-    const fpRecFilename = toHurstFpRecFilename(workbook);
+    const fpRecHtml = toFpRecXlsHtml(workbook);
+    const fpRecFilename = toFpRecFilename(workbook);
 
     await auditGeneratedArtifactDownload(response, {
       reconciliationRunId,

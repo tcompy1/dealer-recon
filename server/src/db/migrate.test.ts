@@ -316,6 +316,58 @@ describeIfDatabase("migrate", () => {
     });
   });
 
+  test("advances seeded identity sequences before runtime inserts", async () => {
+    if (!databaseUrl) {
+      throw new Error("DATABASE_URL is required for migration tests.");
+    }
+
+    await withDatabaseTestLock(databaseUrl, async () => {
+      await migrate(databaseUrl);
+
+      const pool = createPool(databaseUrl);
+      const unique = `${Date.now()}-${Math.random()}`;
+      let dealershipId: number | null = null;
+      let dealerGroupId: number | null = null;
+      let dealershipStoreId: number | null = null;
+      try {
+        const dealership = await pool.query<{ id: number }>(
+          "INSERT INTO dealerships (name) VALUES ($1) RETURNING id",
+          [`Sequence test dealership ${unique}`],
+        );
+        dealershipId = dealership.rows[0]!.id;
+        const dealerGroup = await pool.query<{ id: number }>(
+          `INSERT INTO dealer_groups (dealership_id, name)
+           VALUES ($1, $2)
+           RETURNING id`,
+          [dealershipId, `Sequence test group ${unique}`],
+        );
+        dealerGroupId = dealerGroup.rows[0]!.id;
+        const dealershipStore = await pool.query<{ id: number }>(
+          `INSERT INTO dealership_stores (dealership_id, dealer_group_id, name)
+           VALUES ($1, $2, $3)
+           RETURNING id`,
+          [dealershipId, dealerGroupId, `Sequence test store ${unique}`],
+        );
+        dealershipStoreId = dealershipStore.rows[0]!.id;
+
+        expect(dealershipId).toBeGreaterThan(1);
+        expect(dealerGroupId).toBeGreaterThan(1);
+        expect(dealershipStoreId).toBeGreaterThan(2);
+      } finally {
+        if (dealershipStoreId !== null) {
+          await pool.query("DELETE FROM dealership_stores WHERE id = $1", [dealershipStoreId]);
+        }
+        if (dealerGroupId !== null) {
+          await pool.query("DELETE FROM dealer_groups WHERE id = $1", [dealerGroupId]);
+        }
+        if (dealershipId !== null) {
+          await pool.query("DELETE FROM dealerships WHERE id = $1", [dealershipId]);
+        }
+        await pool.end();
+      }
+    });
+  });
+
   test("keeps legacy identity nullable and enforces exact accounting month format", async () => {
     if (!databaseUrl) {
       throw new Error("DATABASE_URL is required for migration tests.");
@@ -474,6 +526,9 @@ describeIfDatabase("migrate", () => {
           [`rollback-collision-${unique}`],
         );
 
+        // Remove the later sequence-synchronization migration so this test
+        // exercises the guarded identity migration it owns.
+        await runMigrationDownCapturingOutput(databaseUrl);
         await expect(runMigrationDownCapturingOutput(databaseUrl)).rejects.toMatchObject({
           stderr: expect.stringContaining(ROLLBACK_COLLISION_ERROR),
         });

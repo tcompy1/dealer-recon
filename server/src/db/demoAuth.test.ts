@@ -18,7 +18,10 @@ const DEMO_EMAIL = "demo@dealer-recon.local";
 const DEMO_PASSWORD = "dealer-recon-demo";
 
 const boaCsvRow = (stockNumber: string, vin: string, amount: string, reference: string) =>
-  `,,,9/26/2025,${reference},,${stockNumber},,${vin},,"${amount}",`;
+  [
+    "Serial No/VIN,Stock/Lease No,Original Amount,Ending Balance,Invoice Date,Invoice Number",
+    `${vin},${stockNumber},${amount},${amount},4/26/2026,${reference}`,
+  ].join("\n");
 
 describeIfDatabase("explicit local demo auth seed", () => {
   test("logs in, returns /me, has store 1 access, and can upload", async () => {
@@ -76,7 +79,7 @@ describeIfDatabase("explicit local demo auth seed", () => {
           .field("store_id", "1")
           .field("accounting_month", "2026-04")
           .attach("file", Buffer.from(csv), `demo-auth-${unique}.csv`);
-        expect(uploadResponse.status).toBe(200);
+        expect(uploadResponse.status, JSON.stringify(uploadResponse.body)).toBe(200);
         expect(uploadResponse.body).toMatchObject({
           source_type: "boa",
           dealership_store_id: 1,
