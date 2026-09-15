@@ -1,4 +1,7 @@
-import type { SourceType } from "./sourceFile";
+import type { SourceFileSummary, SourceType } from "./sourceFile";
+import type { RooftopProfileId } from "./store";
+
+export type { SourceFileSummary } from "./sourceFile";
 
 export type ReconciledTransaction = {
   id: number;
@@ -82,6 +85,9 @@ export type VinPresenceDiagnostics = {
 
 export type ReconciliationResponse = {
   reconciliation_run_id: number;
+  accounting_month: string;
+  rooftop_profile_id: RooftopProfileId;
+  rooftop_profile_version: string;
   matched_count: number;
   exception_count: number;
   duplicate_count: number;
@@ -93,11 +99,13 @@ export type ReconciliationResponse = {
 export type ReconcileSourceFilesInput = {
   boaSourceFileId: number;
   dealertrackSourceFileId: number;
-  dealershipStoreId?: number | null;
+  dealershipStoreId: number;
+  accountingMonth: string;
 };
 
 export type ReconciliationRunListItem = {
   reconciliation_run_id: number;
+  dealership_id: number;
   dealership_store_id: number | null;
   store_name: string | null;
   dealer_group_id: number | null;
@@ -110,17 +118,9 @@ export type ReconciliationRunListItem = {
   exception_count: number;
   duplicate_count: number;
   status: string;
-  created_at: string;
-};
-
-export type SourceFileSummary = {
-  source_file_id: number;
-  dealership_store_id: number | null;
-  store_name: string | null;
-  source_type: SourceType;
-  filename: string;
-  row_count: number;
-  validation_error_count: number;
+  accounting_month: string | null;
+  rooftop_profile_id: RooftopProfileId | null;
+  rooftop_profile_version: string | null;
   created_at: string;
 };
 

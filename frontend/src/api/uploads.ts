@@ -1,28 +1,34 @@
 import { API_BASE_URL, apiGet } from "./client";
+import { ApiError, readApiError } from "./errorMessage";
 import type {
+  RooftopFailureDetails,
   SourceFileSummary,
   SourceType,
   UploadPreprocessingMetadata,
   UploadResponse,
 } from "../types/sourceFile";
 
-type UploadSourceFileInput = {
+export type UploadSourceFileInput = {
   sourceType: SourceType;
   file: File;
-  dealershipStoreId?: number | null;
+  dealershipStoreId: number;
+  accountingMonth: string;
 };
 
-export class UploadError extends Error {
-  readonly status: number;
+export class UploadError extends ApiError {
   readonly preprocessing: UploadPreprocessingMetadata | null;
 
   constructor(
     message: string,
-    options: { status: number; preprocessing?: UploadPreprocessingMetadata | null },
+    options: {
+      status: number;
+      code?: string | null;
+      details?: RooftopFailureDetails | null;
+      preprocessing?: UploadPreprocessingMetadata | null;
+    },
   ) {
-    super(message);
+    super(message, options);
     this.name = "UploadError";
-    this.status = options.status;
     this.preprocessing = options.preprocessing ?? null;
   }
 }
@@ -31,11 +37,29 @@ export async function uploadSourceFile({
   sourceType,
   file,
   dealershipStoreId,
+  accountingMonth,
 }: UploadSourceFileInput): Promise<UploadResponse> {
+  return sendUpload({ sourceType, file, dealershipStoreId, accountingMonth });
+}
+
+async function sendUpload({
+  sourceType,
+  file,
+  dealershipStoreId,
+  accountingMonth,
+}: {
+  sourceType: SourceType;
+  file: File;
+  dealershipStoreId?: number | null;
+  accountingMonth?: string;
+}): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("source_type", sourceType);
-  if (dealershipStoreId) {
+  if (dealershipStoreId !== undefined && dealershipStoreId !== null) {
     formData.append("store_id", String(dealershipStoreId));
+  }
+  if (accountingMonth !== undefined) {
+    formData.append("accounting_month", accountingMonth);
   }
   formData.append("file", file);
 
@@ -46,16 +70,20 @@ export async function uploadSourceFile({
   });
 
   if (!response.ok) {
-    const { detail, preprocessing } = await readUploadErrorBody(response);
-    throw new UploadError(detail, { status: response.status, preprocessing });
+    const apiError = await readApiError(response.clone(), "Upload failed");
+    const preprocessing = await readUploadPreprocessing(response);
+    throw new UploadError(apiError.message, {
+      status: apiError.status,
+      code: apiError.code,
+      details: apiError.details,
+      preprocessing,
+    });
   }
 
   return response.json() as Promise<UploadResponse>;
 }
 
-async function readUploadErrorBody(
-  response: Response,
-): Promise<{ detail: string; preprocessing: UploadPreprocessingMetadata | null }> {
+async function readUploadPreprocessing(response: Response): Promise<UploadPreprocessingMetadata | null> {
   try {
     const body = (await response.json()) as {
       detail?: unknown;
@@ -67,13 +95,6 @@ async function readUploadErrorBody(
         } | null;
       };
     };
-    let detail = `Upload failed: ${response.status}`;
-    if (typeof body.detail === "string") {
-      detail = body.detail;
-    } else if (typeof body.error?.message === "string") {
-      detail = body.error.message;
-    }
-
     let preprocessing: UploadPreprocessingMetadata | null = null;
     if (body.preprocessing && typeof body.preprocessing === "object") {
       preprocessing = body.preprocessing;
@@ -84,9 +105,9 @@ async function readUploadErrorBody(
       preprocessing = body.error.details.preprocessing;
     }
 
-    return { detail, preprocessing };
+    return preprocessing;
   } catch {
-    return { detail: `Upload failed: ${response.status}`, preprocessing: null };
+    return null;
   }
 }
 
@@ -105,4 +126,11 @@ export async function listSourceFiles(
   return apiGet<SourceFileSummary[]>(`/source-files${query}`);
 }
 
-export const uploadTransactions = uploadSourceFile;
+export function uploadTransactions(input: {
+  sourceType: SourceType;
+  file: File;
+  dealershipStoreId?: number | null;
+  accountingMonth?: string;
+}): Promise<UploadResponse> {
+  return sendUpload(input);
+}
