@@ -77,6 +77,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
   const activeReconciliationRequest = useRef<number | null>(null);
   const replayRequestVersion = useRef(0);
   const activeReplayRequest = useRef<number | null>(null);
+  const activeRunId = useRef<number | null>(null);
   const [boaUpload, setBoaUpload] = useState<UploadSlot>(initialUploadSlot);
   const [dealertrackUpload, setDealertrackUpload] = useState<UploadSlot>(initialUploadSlot);
   const [dealerGroups, setDealerGroups] = useState<DealerGroup[]>([]);
@@ -192,7 +193,8 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       !dealertrackUpload.upload ||
       !canUseRooftop ||
       selectedStoreId === null ||
-      activeReconciliationRequest.current !== null
+      activeReconciliationRequest.current !== null ||
+      activeReplayRequest.current !== null
     ) {
       return;
     }
@@ -221,6 +223,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       if (!isCurrentReconciliationRequest(contextVersion, requestVersion)) {
         return;
       }
+      activeRunId.current = detail.reconciliation_run_id;
       setActiveRun(detail);
       setActiveRunDiagnostics(result.vin_presence_diagnostics);
       setActiveRunReplay(null);
@@ -269,6 +272,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
   function resetWorkflowSelection() {
     invalidateWorkflowRequests();
+    activeRunId.current = null;
     setActiveRun(null);
     setActiveRunDiagnostics(null);
     setActiveRunReplay(null);
@@ -314,26 +318,33 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
   }
 
   async function handleReplayRun() {
-    if (!activeRun || activeReplayRequest.current !== null) {
+    if (
+      !activeRun ||
+      activeReplayRequest.current !== null ||
+      activeReconciliationRequest.current !== null
+    ) {
       return;
     }
     const contextVersion = workflowContextVersion.current;
     const requestVersion = replayRequestVersion.current + 1;
+    const replayRunId = activeRun.reconciliation_run_id;
     replayRequestVersion.current = requestVersion;
     activeReplayRequest.current = requestVersion;
     setIsReplaying(true);
     setWorkflowError(null);
+    setWorkflowRecovery(null);
     try {
-      const replay = await replayReconciliationRun(activeRun.reconciliation_run_id);
-      if (isCurrentReplayRequest(contextVersion, requestVersion)) {
+      const replay = await replayReconciliationRun(replayRunId);
+      if (isCurrentReplayRequest(contextVersion, requestVersion, replayRunId)) {
         setActiveRunReplay(replay);
       }
     } catch (error) {
-      if (isCurrentReplayRequest(contextVersion, requestVersion)) {
+      if (isCurrentReplayRequest(contextVersion, requestVersion, replayRunId)) {
         setWorkflowError(error instanceof Error ? error.message : "Historical replay could not be run.");
+        setWorkflowRecovery(error instanceof ApiError ? error.details?.recovery ?? null : null);
       }
     } finally {
-      if (isCurrentReplayRequest(contextVersion, requestVersion)) {
+      if (isCurrentReplayRequest(contextVersion, requestVersion, replayRunId)) {
         activeReplayRequest.current = null;
         setIsReplaying(false);
       }
@@ -378,11 +389,16 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     );
   }
 
-  function isCurrentReplayRequest(contextVersion: number, requestVersion: number) {
+  function isCurrentReplayRequest(
+    contextVersion: number,
+    requestVersion: number,
+    reconciliationRunId: number,
+  ) {
     return (
       workflowContextVersion.current === contextVersion &&
       replayRequestVersion.current === requestVersion &&
-      activeReplayRequest.current === requestVersion
+      activeReplayRequest.current === requestVersion &&
+      activeRunId.current === reconciliationRunId
     );
   }
 
@@ -467,7 +483,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         />
         <button
           className="forge-button-primary w-full md:w-auto md:flex-shrink-0"
-          disabled={!canModify || !canReconcile || isReconciling}
+          disabled={!canModify || !canReconcile || isReconciling || isReplaying}
           type="button"
           onClick={() => void handleReconcile()}
         >
@@ -1000,6 +1016,7 @@ function ResultsSection({
               <ExceptionBreakdown run={run} />
               <HistoricalReplayPanel
                 replay={replay}
+                isReconciling={isReconciling}
                 isReplaying={isReplaying}
                 onReplay={onReplay}
               />
@@ -1115,10 +1132,12 @@ function ExceptionBreakdown({ run }: { run: ReconciliationRunDetail }) {
 
 function HistoricalReplayPanel({
   replay,
+  isReconciling,
   isReplaying,
   onReplay,
 }: {
   replay: ReconciliationReplayResponse | null;
+  isReconciling: boolean;
   isReplaying: boolean;
   onReplay: () => void;
 }) {
@@ -1133,7 +1152,7 @@ function HistoricalReplayPanel({
         </div>
         <button
           className="forge-button-primary"
-          disabled={isReplaying}
+          disabled={isReplaying || isReconciling}
           type="button"
           onClick={onReplay}
         >

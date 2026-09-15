@@ -74,7 +74,7 @@ const stores: DealershipStoreWithRooftopSupport[] = [
 
 describe("WorkflowDashboard rooftop workflow", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     vi.mocked(listDealerGroups).mockResolvedValue([
       {
         id: 1,
@@ -374,6 +374,114 @@ describe("WorkflowDashboard rooftop workflow", () => {
     expect(await screen.findByText("Results unchanged")).toBeInTheDocument();
   });
 
+  test("blocks reconciliation while replay still owns the active run", async () => {
+    const pendingReplay = deferred<ReconciliationReplayResponse>();
+    vi.mocked(replayReconciliationRun).mockReturnValueOnce(pendingReplay.promise);
+    vi.mocked(reconcileSourceFiles).mockResolvedValueOnce(reconciliationResponse)
+      .mockResolvedValueOnce(buildReconciliationResponse(43, "2026-04"));
+    vi.mocked(getReconciliationRun).mockImplementation(async (runId) =>
+      runId === 43 ? buildReconciliationRun(43, "2026-04") : reconciliationRun,
+    );
+    render(<WorkflowDashboard />);
+    await completeInitialRun();
+
+    fireEvent.click(screen.getByRole("button", { name: "Replay Snapshot" }));
+    await waitFor(() => expect(replayReconciliationRun).toHaveBeenCalledTimes(1));
+
+    const runButton = screen.getByRole("button", { name: "Run Workflow" });
+    expect(runButton).toBeDisabled();
+    fireEvent.click(runButton);
+    expect(reconcileSourceFiles).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      pendingReplay.resolve(replayResponse);
+      await pendingReplay.promise;
+    });
+
+    expect(await screen.findByText("Results unchanged")).toBeInTheDocument();
+    expect(screen.getAllByText("ACURA · Apr 2026 · Run #42").length).toBeGreaterThan(0);
+    expect(screen.queryByText("ACURA · Apr 2026 · Run #43")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run Workflow" })).toBeEnabled();
+  });
+
+  test("blocks replay while a replacement reconciliation is pending", async () => {
+    const pendingReconciliation = deferred<ReconciliationResponse>();
+    vi.mocked(reconcileSourceFiles)
+      .mockResolvedValueOnce(reconciliationResponse)
+      .mockReturnValueOnce(pendingReconciliation.promise);
+    vi.mocked(getReconciliationRun).mockImplementation(async (runId) =>
+      runId === 43 ? buildReconciliationRun(43, "2026-04") : reconciliationRun,
+    );
+    render(<WorkflowDashboard />);
+    await completeInitialRun();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run Workflow" }));
+    await waitFor(() => expect(reconcileSourceFiles).toHaveBeenCalledTimes(2));
+
+    const replayButton = screen.getByRole("button", { name: "Replay Snapshot" });
+    expect(replayButton).toBeDisabled();
+    fireEvent.click(replayButton);
+    expect(replayReconciliationRun).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pendingReconciliation.resolve(buildReconciliationResponse(43, "2026-04"));
+      await pendingReconciliation.promise;
+    });
+
+    expect((await screen.findAllByText("ACURA · Apr 2026 · Run #43")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Replay Snapshot" })).toBeEnabled();
+  });
+
+  test("does not retain reconciliation recovery beside a generic replay failure", async () => {
+    render(<WorkflowDashboard />);
+    await completeInitialRun();
+    vi.mocked(reconcileSourceFiles).mockRejectedValueOnce(new ApiError(
+      "The selected source pair cannot be reconciled.",
+      {
+        status: 422,
+        code: "SOURCE_PERIOD_MISMATCH",
+        details: {
+          source: null,
+          accounting_month: "2026-04",
+          rooftop_profile_id: "acura-v1",
+          recovery: "Choose two April source files.",
+        },
+      },
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "Run Workflow" }));
+    expect(await screen.findByText("Choose two April source files.")).toBeInTheDocument();
+
+    vi.mocked(replayReconciliationRun).mockRejectedValueOnce(new Error("Historical replay failed."));
+    fireEvent.click(screen.getByRole("button", { name: "Replay Snapshot" }));
+
+    expect(await screen.findByText("Historical replay failed.")).toBeInTheDocument();
+    expect(screen.queryByText("Choose two April source files.")).not.toBeInTheDocument();
+  });
+
+  test("renders recovery only from the current structured replay error", async () => {
+    vi.mocked(replayReconciliationRun).mockRejectedValueOnce(new ApiError(
+      "The saved replay inputs are unavailable.",
+      {
+        status: 409,
+        code: "REPLAY_INPUTS_UNAVAILABLE",
+        details: {
+          source: null,
+          accounting_month: "2026-04",
+          rooftop_profile_id: "acura-v1",
+          recovery: "Run a new April reconciliation.",
+        },
+      },
+    ));
+    render(<WorkflowDashboard />);
+    await completeInitialRun();
+
+    fireEvent.click(screen.getByRole("button", { name: "Replay Snapshot" }));
+
+    expect(await screen.findByText("The saved replay inputs are unavailable.")).toBeInTheDocument();
+    expect(screen.getByText("Run a new April reconciliation.")).toBeInTheDocument();
+  });
+
   test("ignores a replay error after its run context is replaced", async () => {
     const pendingReplay = deferred<ReconciliationReplayResponse>();
     vi.mocked(replayReconciliationRun).mockReturnValueOnce(pendingReplay.promise);
@@ -467,6 +575,13 @@ async function uploadBothInputs(expectedUploadCallCount: number) {
   await waitFor(() =>
     expect(screen.getAllByText("source_file_id:", { exact: false })).toHaveLength(2),
   );
+}
+
+async function completeInitialRun() {
+  await prepareAprilInputs();
+  await uploadBothInputs(2);
+  fireEvent.click(screen.getByRole("button", { name: "Run Workflow" }));
+  await screen.findByRole("button", { name: "Replay Snapshot" });
 }
 
 function buildUploadResponse(sourceType: "boa" | "dealertrack"): UploadResponse {
