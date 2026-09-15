@@ -338,6 +338,7 @@ describe("merged floorplan presenter", () => {
     expect(html).not.toContain("<th>HURST</th>");
     expect(html).not.toContain("<th>2100</th>");
     expect(html).not.toContain("2100 total");
+    expect(toMergedFloorplanFilename(workbook)).toBe("acura-merged-floorplan-2026-04.xls");
   });
 
   test("uses FW merged headers and display account label from store config", () => {
@@ -455,6 +456,23 @@ describe("merged floorplan presenter", () => {
       dealertrack_description: "RIGHT ACCOUNT   4/30/26  JM3KFBAL0S0764873",
       dealertrack_control: "A1001",
     });
+  });
+
+  test("preserves the Dealertrack sequence when Acura rows share an amount", () => {
+    const matchedVin = "5NPE24AF7KH700001";
+    const dealertrackOnlyVin = "5NPE24AF7KH700009";
+    const workbook = buildMergedFloorplanWorkbook({
+      storeConfig: STORE_WORKFLOW_CONFIGS.acura,
+      storeName: "Hiley Acura",
+      periodDate: "04-30-26",
+      boaRecords: [boa(101, 1_000_000, matchedVin, "MATCHED")],
+      dealertrackRecords: [
+        dealertrack(201, 1_000_000, matchedVin, "MATCHED", "A1001", "324"),
+        dealertrack(202, 1_000_000, dealertrackOnlyVin, "DT ONLY", "A1009", "324"),
+      ],
+    });
+
+    expect(workbook.rows.map((row) => row.dealertrack_vin6)).toEqual(["700001", "700009"]);
   });
 });
 

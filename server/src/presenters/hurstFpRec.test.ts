@@ -1,10 +1,15 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, test } from "vitest";
 
-import { STORE_WORKFLOW_CONFIGS, type StoreKey } from "../config/storeWorkflowConfig.js";
+import {
+  ROOFTOP_PROFILES,
+  STORE_WORKFLOW_CONFIGS,
+  type StoreKey,
+} from "../config/storeWorkflowConfig.js";
 import type { ReconciliationRunDetail, SourceType, TransactionSummary } from "../domain/types.js";
 import { parseAmountToCents } from "../domain/money.js";
 import {
@@ -14,6 +19,12 @@ import {
   toHurstFpRecFilename,
   toHurstFpRecXlsHtml,
 } from "./hurstFpRec.js";
+import {
+  buildFpRecWorkbook,
+  buildFpRecWorkbookFromMergedFloorplan as buildProfiledFpRecWorkbookFromMergedFloorplan,
+  toFpRecFilename,
+  toFpRecXlsHtml,
+} from "./fpRec.js";
 import {
   buildMergedFloorplanWorkbook,
   type MergedFloorplanWorkbook,
@@ -607,6 +618,13 @@ function mergedWorkbookForStore(storeKey: StoreKey): MergedFloorplanWorkbook {
 }
 
 describe("Hurst FP Rec draft accounting workpaper contract", () => {
+  test("preserves the byte-observable Hurst HTML export", () => {
+    const html = toHurstFpRecXlsHtml(buildHurstFpRecWorkbook(clerkContractDetail()));
+    expect(createHash("sha256").update(html).digest("hex")).toBe(
+      "fd2f02b03ec1d62eece7d509e1d055a80f3eb1170938abe8c1cd6896192e9ebb",
+    );
+  });
+
   test("exports the Hurst workpaper summary and exception sections", () => {
     const html = toHurstFpRecXlsHtml(buildHurstFpRecWorkbook(clerkContractDetail()));
     const rows = workpaperHtmlRows();
@@ -759,6 +777,38 @@ describe("Hurst FP Rec draft accounting workpaper contract", () => {
 });
 
 describe("buildHurstFpRecWorkbook", () => {
+  test("keeps generic Hurst output byte-identical to the compatibility wrapper", () => {
+    const detail = clerkContractDetail();
+    const genericWorkbook = buildFpRecWorkbook(detail, ROOFTOP_PROFILES.hurst);
+    const compatibilityWorkbook = buildHurstFpRecWorkbook(detail);
+
+    expect(genericWorkbook).toEqual(compatibilityWorkbook);
+    expect(toFpRecXlsHtml(genericWorkbook)).toBe(toHurstFpRecXlsHtml(compatibilityWorkbook));
+    expect(toFpRecFilename(genericWorkbook)).toBe(toHurstFpRecFilename(compatibilityWorkbook));
+  });
+
+  test("uses the Acura profile and stored accounting month for the compact workpaper", () => {
+    const detail = buildDetail({
+      store_name: "Hiley Acura",
+      accounting_month: "2026-04" as ReconciliationRunDetail["accounting_month"],
+      rooftop_profile_id: "acura-v1",
+      rooftop_profile_version: "1",
+      match_groups: [matchGroup(1_000_000, 1_000_000)],
+    });
+    const workbook = buildFpRecWorkbook(detail, ROOFTOP_PROFILES.acura);
+    const html = toFpRecXlsHtml(workbook);
+
+    expect(workbook.period_date).toBe("04-30-26");
+    expect(html).toContain("Floorplan Reconciliation-Hiley Acura");
+    expect(html).toContain("Outstanding STMT");
+    expect(html).toContain("GL FLOORED");
+    expect(html).toContain("BOA FLOORED");
+    expect(html).toContain("<x:Name>APR26</x:Name>");
+    expect(html).toContain("<x:Name>Print_Area</x:Name>");
+    expect(html.match(/<col\b/g)).toHaveLength(4);
+    expect(toFpRecFilename(workbook)).toContain("2026-04");
+  });
+
   test("builds side-aware clerk rows from matches and exceptions", () => {
     const workbook = buildHurstFpRecWorkbook(clerkContractDetail());
 
@@ -886,6 +936,17 @@ describe("buildHurstFpRecWorkbook", () => {
 });
 
 describe("store-configured FP Rec from merged floorplan workbook", () => {
+  test("builds a profiled Acura FP REC from the merged stored-detail view", () => {
+    const mergedWorkbook = mergedWorkbookForStore("acura");
+    const workbook = buildProfiledFpRecWorkbookFromMergedFloorplan(
+      mergedWorkbook,
+      ROOFTOP_PROFILES.acura,
+    );
+
+    expect(workbook.rows).toEqual(buildFpRecWorkbookFromMergedFloorplan(mergedWorkbook).rows);
+    expect(toFpRecXlsHtml(workbook)).toContain("Outstanding STMT");
+  });
+
   test.each([
     ["hurst", ["HURST", "2100"]],
     ["acura", ["ACURA", "324"]],

@@ -16,10 +16,10 @@ import {
 } from "../config/storeWorkflowConfig.js";
 import { buildMergedFloorplanArtifact } from "./mergedFloorplanExport.js";
 import {
-  buildHurstFpRecWorkbook,
-  toHurstFpRecFilename,
-  toHurstFpRecXlsHtml,
-} from "../presenters/hurstFpRec.js";
+  buildFpRecWorkbook,
+  toFpRecFilename,
+  toFpRecXlsHtml,
+} from "../presenters/fpRec.js";
 
 type CsvScalar = string | number | null;
 type CsvCell = CsvScalar | { value: CsvScalar; preservePlainNumericText?: boolean };
@@ -94,8 +94,8 @@ export async function persistReconciliationRunArtifacts({
   ];
 
   const mergedArtifact = buildMergedFloorplanArtifact(detail, persistedProfile);
-  const fpRecWorkbook = buildHurstFpRecWorkbook(detail, persistedProfile);
-  const fpRecHtml = toHurstFpRecXlsHtml(fpRecWorkbook);
+  const fpRecWorkbook = buildFpRecWorkbook(detail, persistedProfile);
+  const fpRecHtml = toFpRecXlsHtml(fpRecWorkbook);
   artifacts.push(
     {
       ...base,
@@ -107,7 +107,7 @@ export async function persistReconciliationRunArtifacts({
     {
       ...base,
       artifact_type: "FP_REC",
-      filename: toHurstFpRecFilename(fpRecWorkbook),
+      filename: toFpRecFilename(fpRecWorkbook),
       content_type: "application/vnd.ms-excel",
       content: Buffer.from(fpRecHtml, "utf8"),
     },

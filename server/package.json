@@ -38,6 +38,7 @@
     "@types/pg": "^8.11.4",
     "@types/supertest": "^6.0.2",
     "eslint": "^9.39.4",
+    "exceljs": "^4.4.0",
     "globals": "^15.15.0",
     "supertest": "^6.3.4",
     "tsx": "^4.7.1",

@@ -1,4 +1,5 @@
 import { formatCents } from "../domain/money.js";
+import { accountingMonthEndDate } from "../domain/accountingMonth.js";
 import { computeVin6, extractVin6FromDescription } from "../domain/vin6.js";
 import type { ReconciliationRunDetail, SourceType, TransactionSummary } from "../domain/types.js";
 import type { StoreWorkflowConfig } from "../config/storeWorkflowConfig.js";
@@ -126,7 +127,9 @@ export function toMergedFloorplanXlsHtml(workbook: MergedFloorplanWorkbook): str
 }
 
 export function toMergedFloorplanFilename(workbook: MergedFloorplanWorkbook): string {
-  const period = workbook.period_date?.replace(/[^0-9]/g, "-").replace(/^-|-$/g, "") || "period";
+  const period = workbook.store_config.storeKey === "acura"
+    ? accountingMonthLabelFromPeriodDate(workbook.period_date) ?? "period"
+    : workbook.period_date?.replace(/[^0-9]/g, "-").replace(/^-|-$/g, "") || "period";
   return `${workbook.store_config.outputFilenamePrefix}-merged-floorplan-${period}.xls`;
 }
 
@@ -294,7 +297,7 @@ function sortMergedRows(
     if (amountDelta !== 0) {
       return amountDelta;
     }
-    return compareTieBreakers(left, right);
+    return compareTieBreakers(left, right, storeConfig);
   });
 }
 
@@ -308,7 +311,18 @@ function sortableAmount(row: MergedFloorplanRow, storeConfig: StoreWorkflowConfi
   return Number.MAX_SAFE_INTEGER;
 }
 
-function compareTieBreakers(left: MergedFloorplanRow, right: MergedFloorplanRow): number {
+function compareTieBreakers(
+  left: MergedFloorplanRow,
+  right: MergedFloorplanRow,
+  storeConfig: StoreWorkflowConfig,
+): number {
+  if (storeConfig.dtOnlyPlacementRule === "interleave_by_amount") {
+    return (
+      left.dealertrack_vin6.localeCompare(right.dealertrack_vin6) ||
+      left.boa_vin6.localeCompare(right.boa_vin6) ||
+      left.dealertrack_control.localeCompare(right.dealertrack_control)
+    );
+  }
   return (
     left.boa_vin6.localeCompare(right.boa_vin6) ||
     left.dealertrack_vin6.localeCompare(right.dealertrack_vin6) ||
@@ -489,6 +503,9 @@ function resolvePeriodAnchorDateFromTransactions(transactions: TransactionSummar
 }
 
 function resolvePeriodAnchorDate(detail: ReconciliationRunDetail): string | null {
+  if (detail.accounting_month) {
+    return formatDateMmDdYy(accountingMonthEndDate(detail.accounting_month));
+  }
   let latestIso: string | null = null;
   for (const exception of detail.exceptions) {
     latestIso = newerIsoDate(latestIso, exception.transaction.transaction_date);
@@ -501,6 +518,11 @@ function resolvePeriodAnchorDate(detail: ReconciliationRunDetail): string | null
     }
   }
   return formatDateMmDdYy(latestIso ?? detail.created_at);
+}
+
+function accountingMonthLabelFromPeriodDate(periodDate: string | null): string | null {
+  const match = /^(\d{2})[-/](\d{2})[-/](\d{2})$/.exec(periodDate ?? "");
+  return match ? `20${match[3]}-${match[1]}` : null;
 }
 
 function newerIsoDate(current: string | null, value: string | null | undefined): string | null {
