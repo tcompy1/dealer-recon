@@ -748,6 +748,7 @@ describe("app", () => {
       boa_source_file_id: boaUpload.body.source_file_id,
       dealertrack_source_file_id: dealertrackUpload.body.source_file_id,
       dealership_store_id: 1,
+      accounting_month: "2026-04",
     });
     const detail = await accountingAgent.get(`/reconciliation-runs/${reconciliation.body.reconciliation_run_id}`);
     const exceptionId = detail.body.exceptions[0].exception_id;
@@ -1832,6 +1833,7 @@ describe("app", () => {
         boa_source_file_id: boaUpload.source_file_id,
         dealertrack_source_file_id: badImport.sourceFile.id,
         dealership_store_id: 1,
+        accounting_month: "2026-04",
       });
 
     expect(reconciliation.status).toBe(200);
@@ -2301,6 +2303,51 @@ describe("app", () => {
               dealertrack_accounting_month: "2026-04",
             }),
             recovery: "Select source files processed for the selected accounting month.",
+          },
+          request_id: expect.any(String),
+        },
+      });
+      expect(reconcileSpy).not.toHaveBeenCalled();
+      await expect(repository.listReconciliationRuns(1)).resolves.toEqual([]);
+    } finally {
+      reconcileSpy.mockRestore();
+    }
+  });
+
+  test("POST /reconcile requires an explicit accounting month instead of inferring it from source files", async () => {
+    const repository = new MemoryTransactionRepository();
+    const app = createFallbackApp(repository);
+    const boaUpload = await uploadCsv(
+      app,
+      "boa",
+      boaUploadCsv("M70501", "1HGCM82633A004352", "$100.00", "70501"),
+      "boa-accounting-month-required.csv",
+    );
+    const dealertrackUpload = await uploadCsv(
+      app,
+      "dealertrack",
+      dealertrackUploadCsv("M70501", "-100", "1HGCM82633A004352"),
+      "dealertrack-accounting-month-required.csv",
+    );
+    const reconcileSpy = vi.spyOn(reconciliationEngine, "reconcileTransactionSets");
+
+    try {
+      const response = await request(app).post("/reconcile").send({
+        boa_source_file_id: boaUpload.source_file_id,
+        dealertrack_source_file_id: dealertrackUpload.source_file_id,
+        dealership_store_id: 1,
+      });
+
+      expect(response.status).toBe(422);
+      expect(response.body).toEqual({
+        error: {
+          code: "ACCOUNTING_MONTH_REQUIRED",
+          message: "accounting_month is required for floorplan reconciliation.",
+          details: {
+            source: null,
+            accounting_month: null,
+            rooftop_profile_id: "hurst-v1",
+            recovery: "Select the accounting month in YYYY-MM format before reconciling the source files.",
           },
           request_id: expect.any(String),
         },
@@ -3156,6 +3203,47 @@ describe("app", () => {
     );
   });
 
+  test.each(["artifact_pending", "artifact_failed"] as const)(
+    "reconciliation artifact endpoints reject a %s run",
+    async (status) => {
+      const repository = new MemoryTransactionRepository();
+      const app = createFallbackApp(repository);
+      const reconciliation = await createReconciliation(app);
+      const artifacts = await repository.listReconciliationArtifacts(
+        1,
+        reconciliation.reconciliation_run_id,
+      );
+      await repository.updateReconciliationRunStatus(
+        1,
+        reconciliation.reconciliation_run_id,
+        status,
+      );
+
+      const [listResponse, downloadResponse, mergedResponse, fpRecResponse] = await Promise.all([
+        request(app).get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/artifacts`),
+        request(app).get(`/artifacts/${artifacts[0]!.id}/download`),
+        request(app)
+          .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
+          .query({ format: "json" }),
+        request(app)
+          .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/fp-rec`)
+          .query({ format: "json" }),
+      ]);
+
+      for (const response of [listResponse, downloadResponse, mergedResponse, fpRecResponse]) {
+        expect(response.status).toBe(409);
+        expect(response.body).toEqual({
+          error: {
+            code: "RECONCILIATION_ARTIFACTS_UNAVAILABLE",
+            message: "Reconciliation artifacts are unavailable until the run has completed.",
+            details: { reconciliation_run_status: status },
+            request_id: expect.any(String),
+          },
+        });
+      }
+    },
+  );
+
   test("formula-leading source text is inert in exception and cleaned CSV artifact downloads", async () => {
     const app = createFallbackApp();
     const reconciliation = await createReconciliationWithRows(app, {
@@ -3510,6 +3598,7 @@ describe("app", () => {
     const reconciliation = await request(app).post("/reconcile").send({
       boa_source_file_id: boaUpload.source_file_id,
       dealertrack_source_file_id: dealertrackUpload.source_file_id,
+      accounting_month: "2026-04",
     });
 
     expect(reconciliation.status).toBe(200);
@@ -3544,6 +3633,7 @@ describe("app", () => {
     const reconciliation = await request(app).post("/reconcile").send({
       boa_source_file_id: boaUpload.source_file_id,
       dealertrack_source_file_id: dealertrackUpload.source_file_id,
+      accounting_month: "2026-04",
     });
 
     const response = await request(app)
@@ -3749,6 +3839,7 @@ describe("app", () => {
     const reconciliationResponse = await request(app).post("/reconcile").send({
       boa_source_file_id: boaUpload.source_file_id,
       dealertrack_source_file_id: dealertrackUpload.source_file_id,
+      accounting_month: "2026-04",
     });
     expect(reconciliationResponse.status).toBe(200);
     const reconciliation = reconciliationResponse.body as { reconciliation_run_id: number };
@@ -3866,6 +3957,7 @@ describe("app", () => {
     const response = await request(app).post("/reconcile").send({
       boa_source_file_id: boaUpload.source_file_id,
       dealertrack_source_file_id: dealertrackUpload.source_file_id,
+      accounting_month: "2026-04",
     });
 
     expect(response.status).toBe(200);
@@ -3902,6 +3994,7 @@ describe("app", () => {
     const response = await request(firstDealershipApp).post("/reconcile").send({
       boa_source_file_id: boaUpload.source_file_id,
       dealertrack_source_file_id: dealertrackUpload.source_file_id,
+      accounting_month: "2026-04",
     });
 
     expect(response.status).toBe(403);
@@ -3958,6 +4051,7 @@ describe("app", () => {
     const response = await request(app).post("/reconcile").send({
       boa_source_file_id: secondBoaUpload.source_file_id,
       dealertrack_source_file_id: secondDealertrackUpload.source_file_id,
+      accounting_month: "2026-04",
     });
 
     expect(response.status).toBe(200);
@@ -3990,6 +4084,7 @@ describe("app", () => {
     const response = await request(app).post("/reconcile").send({
       boa_source_file_id: bankUpload.source_file_id,
       dealertrack_source_file_id: dealertrackUpload.source_file_id,
+      accounting_month: "2026-04",
     });
 
     expect(response.status).toBe(422);
@@ -4350,6 +4445,7 @@ async function createReconciliationWithAgentRows(
     boa_source_file_id: boaUpload.source_file_id,
     dealertrack_source_file_id: dealertrackUpload.source_file_id,
     dealership_store_id: storeId,
+    accounting_month: "2026-04",
   });
 
   expect(response.status).toBe(200);
@@ -4391,6 +4487,7 @@ async function createReconciliationWithAgent(agent: ReturnType<typeof request.ag
     boa_source_file_id: boaUpload.body.source_file_id,
     dealertrack_source_file_id: dealertrackUpload.body.source_file_id,
     dealership_store_id: 1,
+    accounting_month: "2026-04",
   });
   expect(response.status).toBe(200);
   return response.body as { reconciliation_run_id: number };
@@ -4425,6 +4522,7 @@ async function createReconciliationWithRows(
     boa_source_file_id: boaUpload.source_file_id,
     dealertrack_source_file_id: dealertrackUpload.source_file_id,
     ...(storeId ? { dealership_store_id: storeId } : {}),
+    accounting_month: "2026-04",
   });
 
   expect(response.status).toBe(200);

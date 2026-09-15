@@ -50,6 +50,19 @@ class ObservingArtifactBatchRepository extends MemoryTransactionRepository {
   }
 }
 
+class NullCompletionStatusRepository extends MemoryTransactionRepository {
+  override async updateReconciliationRunStatus(
+    dealershipId: number,
+    reconciliationRunId: number,
+    status: string,
+  ) {
+    if (status === "completed" || status === "completed_auto") {
+      return null;
+    }
+    return super.updateReconciliationRunStatus(dealershipId, reconciliationRunId, status);
+  }
+}
+
 describe("createReconciliationRunFromSourceFiles", () => {
   test("marks the run artifact_failed when artifact persistence fails", async () => {
     const repository = new FailingArtifactRepository();
@@ -193,6 +206,84 @@ describe("createReconciliationRunFromSourceFiles", () => {
         expect.objectContaining({ artifact_type }),
       ),
     );
+  });
+
+  test("marks artifacts failed and emits no completion events when the completed status write is missing", async () => {
+    const repository = new NullCompletionStatusRepository();
+    const { boaSourceFile, dealertrackSourceFile } = await seedHurstSourcePair(repository, true);
+
+    await expect(
+      createReconciliationRunFromSourceFiles({
+        repository,
+        dealershipId: 1,
+        boaSourceFile,
+        dealertrackSourceFile,
+        accountingMonth: accountingMonth("2026-04"),
+        rooftopProfile: getRooftopProfile("hurst"),
+        automated: false,
+      }),
+    ).rejects.toThrow("completed status transition was not persisted");
+
+    const runs = await repository.listReconciliationRuns(1);
+    expect(runs).toEqual([
+      expect.objectContaining({ status: "artifact_failed" }),
+    ]);
+    await expect(repository.listIngestionEvents(1, 1)).resolves.toEqual([]);
+    await expect(repository.listOperationalEvents(1, 1)).resolves.toEqual([]);
+  });
+
+  test.each([
+    {
+      name: "month",
+      accountingMonth: accountingMonth("2026-05"),
+      expectedCode: "RECONCILIATION_SOURCE_IDENTITY_MISMATCH",
+    },
+    {
+      name: "profile",
+      boa: { rooftop_profile_id: "acura-v1" as RooftopProfileId },
+      expectedCode: "RECONCILIATION_SOURCE_IDENTITY_MISMATCH",
+    },
+    {
+      name: "profile version",
+      dealertrack: { rooftop_profile_version: "2" },
+      expectedCode: "RECONCILIATION_SOURCE_IDENTITY_MISMATCH",
+    },
+    {
+      name: "store",
+      dealertrack: { dealership_store_id: 2 },
+      expectedCode: "RECONCILIATION_STORE_MISMATCH",
+    },
+    {
+      name: "source type",
+      boa: { source_type: "bank" as SourceFile["source_type"] },
+      expectedCode: "RECONCILIATION_SOURCE_TYPE_MISMATCH",
+    },
+    {
+      name: "disabled profile",
+      rooftopProfile: getRooftopProfile("fw"),
+      expectedCode: "ROOFTOP_PROFILE_UNSUPPORTED",
+    },
+    {
+      name: "stored parser provenance",
+      boa: { parser_name: null },
+      expectedCode: "RECONCILIATION_SOURCE_IDENTITY_MISMATCH",
+    },
+  ])("rejects a direct service call with an invalid $name identity", async (fixture) => {
+    const repository = new MemoryTransactionRepository();
+    const { boaSourceFile, dealertrackSourceFile } = await seedHurstSourcePair(repository, true);
+
+    await expect(
+      createReconciliationRunFromSourceFiles({
+        repository,
+        dealershipId: 1,
+        boaSourceFile: { ...boaSourceFile, ...fixture.boa },
+        dealertrackSourceFile: { ...dealertrackSourceFile, ...fixture.dealertrack },
+        accountingMonth: fixture.accountingMonth ?? accountingMonth("2026-04"),
+        rooftopProfile: fixture.rooftopProfile ?? getRooftopProfile("hurst"),
+        automated: false,
+      }),
+    ).rejects.toMatchObject({ code: fixture.expectedCode });
+    await expect(repository.listReconciliationRuns(1)).resolves.toEqual([]);
   });
 });
 

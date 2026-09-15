@@ -1259,6 +1259,23 @@ export class PostgresTransactionRepository implements TransactionRepository {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      const reconciliationRunIds = [...new Set(
+        artifacts.map((artifact) => artifact.reconciliation_run_id),
+      )].sort((left, right) => left - right);
+      const scopedRuns = await client.query<{ id: number }>(
+        `SELECT id
+         FROM reconciliation_runs
+         WHERE dealership_id = $1
+           AND id = ANY($2::integer[])
+           AND status = 'artifact_pending'
+         FOR UPDATE`,
+        [dealershipId, reconciliationRunIds],
+      );
+      if (scopedRuns.rows.length !== reconciliationRunIds.length) {
+        throw new Error(
+          "Cannot persist reconciliation artifact batch: every run must belong to the dealership and be artifact_pending.",
+        );
+      }
       const created: ReconciliationArtifactMetadata[] = [];
       for (const artifact of artifacts) {
         const result = await client.query<ReconciliationArtifactRow>(

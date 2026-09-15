@@ -22,7 +22,10 @@ import {
   RECONCILIATION_ENGINE_VERSION,
   reconcileTransactionSets,
 } from "./reconciliationEngine.js";
-import { persistReconciliationRunArtifacts } from "./reconciliationArtifacts.js";
+import {
+  persistReconciliationRunArtifacts,
+  ReconciliationArtifactPersistenceError,
+} from "./reconciliationArtifacts.js";
 
 const expectedFloorplanSourceTypes: SourceType[] = ["boa", "dealertrack"];
 const staleReconciliationMs = 7 * 24 * 60 * 60 * 1000;
@@ -272,11 +275,17 @@ export async function createReconciliationRunFromSourceFiles(
       dealertrackTransactions,
       uploadedByUserId,
     });
-    completedRun = await repository.updateReconciliationRunStatus(
+    const persistedCompletedRun = await repository.updateReconciliationRunStatus(
       dealershipId,
       run.id,
       automated ? "completed_auto" : "completed",
-    ) ?? { ...run, status: automated ? "completed_auto" : "completed" };
+    );
+    if (!persistedCompletedRun) {
+      throw new ReconciliationArtifactPersistenceError(
+        `Reconciliation run ${run.id} completed status transition was not persisted.`,
+      );
+    }
+    completedRun = persistedCompletedRun;
   } catch (error) {
     await repository.updateReconciliationRunStatus(dealershipId, run.id, "artifact_failed");
     throw error;

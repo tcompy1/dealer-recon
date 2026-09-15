@@ -1100,7 +1100,7 @@ export function createApp(
       throw unsupportedRooftopError(body.accounting_month, resolvedRooftopProfile);
     }
     const accountingMonth = body.accounting_month === undefined
-      ? boaSourceFile?.accounting_month ?? dealertrackSourceFile?.accounting_month ?? null
+      ? null
       : parseAccountingMonth(body.accounting_month);
     if (!accountingMonth) {
       throw rooftopValidationError(
@@ -1411,6 +1411,7 @@ export function createApp(
     if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
+    assertReconciliationArtifactsAvailable(detail.status);
 
     response.json(
       await repository.listReconciliationArtifacts(
@@ -1436,6 +1437,14 @@ export function createApp(
     if (!(await canAccessStore(repository, getAuthenticatedUser(response), artifact.store_id))) {
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
+    const runDetail = await repository.getReconciliationRunDetail(
+      getRequestDealershipId(response),
+      artifact.reconciliation_run_id,
+    );
+    if (!runDetail) {
+      throw new NotFoundError("Reconciliation run");
+    }
+    assertReconciliationArtifactsAvailable(runDetail.status);
 
     await auditArtifactDownload(response, artifact);
     sendArtifactDownload(response, artifact);
@@ -1500,6 +1509,7 @@ export function createApp(
     if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
+    assertReconciliationArtifactsAvailable(detail.status);
 
     const storeKeyOverrideProvided = request.query.store_key !== undefined;
     const storeKey = parseStoreKey(request.query.store_key);
@@ -1584,6 +1594,7 @@ export function createApp(
     if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
+    assertReconciliationArtifactsAvailable(detail.status);
 
     const storeKeyOverrideProvided = request.query.store_key !== undefined;
     const storeKey = parseStoreKey(request.query.store_key);
@@ -2035,6 +2046,17 @@ function sendArtifactDownload(
       `attachment; filename="${safeHeaderFilename(artifact.filename)}"`,
     )
     .send(artifact.content);
+}
+
+function assertReconciliationArtifactsAvailable(status: string): void {
+  if (status === "completed" || status === "completed_auto") {
+    return;
+  }
+  throw new ConflictError(
+    "Reconciliation artifacts are unavailable until the run has completed.",
+    "RECONCILIATION_ARTIFACTS_UNAVAILABLE",
+    { reconciliation_run_status: status },
+  );
 }
 
 function safeHeaderFilename(filename: string): string {

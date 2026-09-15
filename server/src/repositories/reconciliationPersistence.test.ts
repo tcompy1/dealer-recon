@@ -153,13 +153,13 @@ describeIfDatabase("reusable source identity persistence in PostgreSQL", () => {
 });
 
 describe("reconciliation artifact batch persistence", () => {
-  test("memory repository inserts complete batches and rejects a duplicate type without partial persistence", async () => {
+  test("memory repository inserts complete batches and rejects invalid batches without partial persistence", async () => {
     await assertArtifactBatchAtomicity(new MemoryTransactionRepository(), "memory");
   });
 });
 
 describeIfDatabase("reconciliation artifact batch persistence in PostgreSQL", () => {
-  test("inserts complete batches and rolls back a duplicate type without partial persistence", async () => {
+  test("inserts complete batches and rolls back invalid batches without partial persistence", async () => {
     await withPostgresArtifactRepository(assertArtifactBatchAtomicity);
   });
 });
@@ -210,6 +210,7 @@ describeIfDatabase("reconciliation persistence", () => {
           boa_source_file_id: boaUpload.source_file_id,
           dealertrack_source_file_id: dealertrackUpload.source_file_id,
           dealership_store_id: 1,
+          accounting_month: "2026-04",
         });
 
         expect(response.status).toBe(200);
@@ -1178,6 +1179,30 @@ async function assertArtifactBatchAtomicity(
     repository.createReconciliationArtifactBatch(1, attemptedBatch),
   ).rejects.toThrow();
   await expect(repository.listReconciliationArtifacts(1, duplicateRun.id)).resolves.toEqual([]);
+
+  const terminalRun = await createArtifactBatchRun(repository, namespace, "terminal", month);
+  await repository.updateReconciliationRunStatus(1, terminalRun.id, "completed");
+  await expect(
+    repository.createReconciliationArtifactBatch(1, artifactBatch(terminalRun.id, month)),
+  ).rejects.toThrow("artifact_pending");
+  await expect(repository.listReconciliationArtifacts(1, terminalRun.id)).resolves.toEqual([]);
+
+  const wrongDealershipRun = await createArtifactBatchRun(repository, namespace, "wrong-dealer", month);
+  await expect(
+    repository.createReconciliationArtifactBatch(2, artifactBatch(wrongDealershipRun.id, month)),
+  ).rejects.toThrow();
+  await expect(repository.listReconciliationArtifacts(1, wrongDealershipRun.id)).resolves.toEqual([]);
+
+  const injectedFailureRun = await createArtifactBatchRun(repository, namespace, "injected-failure", month);
+  const injectedFailureBatch = artifactBatch(injectedFailureRun.id, month);
+  injectedFailureBatch[1] = {
+    ...injectedFailureBatch[1]!,
+    content: null as unknown as Buffer,
+  };
+  await expect(
+    repository.createReconciliationArtifactBatch(1, injectedFailureBatch),
+  ).rejects.toThrow();
+  await expect(repository.listReconciliationArtifacts(1, injectedFailureRun.id)).resolves.toEqual([]);
 }
 
 async function createArtifactBatchRun(

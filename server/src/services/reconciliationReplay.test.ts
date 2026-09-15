@@ -50,6 +50,38 @@ describe("replaySnapshot", () => {
       expect.objectContaining({ side: "dealertrack", original: "legacy-parser", differs: true }),
     ]);
   });
+
+  test("compares a stored parser version with the current profile parser identity", () => {
+    const detail = runDetail({
+      accounting_month: "2026-04" as ReconciliationRunDetail["accounting_month"],
+      rooftop_profile_id: "hurst-v1",
+      rooftop_profile_version: "1",
+    });
+    const snapshot = snapshotWithTransactions([boaTransaction()], [dealertrackTransaction()], {
+      parserVersion: "legacy-parser",
+    });
+    snapshot.inputs[0]!.parser_metadata = {
+      source_type: "boa",
+      parser_name: "boa-csv",
+      parser_version: "legacy-parser",
+      rooftop_profile_id: "hurst-v1",
+      rooftop_profile_version: "1",
+    };
+    snapshot.inputs[1]!.parser_metadata = {
+      source_type: "dealertrack",
+      parser_name: "dealertrack-csv",
+      parser_version: "legacy-parser",
+      rooftop_profile_id: "hurst-v1",
+      rooftop_profile_version: "1",
+    };
+
+    const replay = replaySnapshot(detail, snapshot);
+
+    expect(replay.parser_version_difference).toEqual([
+      { side: "boa", original: "legacy-parser", current: "1", differs: true },
+      { side: "dealertrack", original: "legacy-parser", current: "1", differs: true },
+    ]);
+  });
 });
 
 function snapshotWithTransactions(

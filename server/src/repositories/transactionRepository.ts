@@ -942,6 +942,11 @@ export class MemoryTransactionRepository implements TransactionRepository {
           `Cannot persist reconciliation artifact batch: run ${artifactInput.reconciliation_run_id} does not belong to dealership ${dealershipId}.`,
         );
       }
+      if (run.status !== "artifact_pending") {
+        throw new Error(
+          `Cannot persist reconciliation artifact batch: run ${artifactInput.reconciliation_run_id} must be artifact_pending.`,
+        );
+      }
 
       const key = `${artifactInput.reconciliation_run_id}:${artifactInput.artifact_type}`;
       if (batchKeys.has(key)) {
