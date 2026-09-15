@@ -6,11 +6,13 @@ import {
   getReconciliationRun,
   listReconciliationArtifacts,
   reconcileSourceFiles,
+  replayReconciliationRun,
 } from "../api/reconciliation";
 import { listDealerGroups, listDealershipStores } from "../api/stores";
 import { uploadSourceFile } from "../api/uploads";
 import type {
   ReconciliationResponse,
+  ReconciliationReplayResponse,
   ReconciliationRunDetail,
 } from "../types/reconciliation";
 import type { UploadResponse } from "../types/sourceFile";
@@ -39,6 +41,7 @@ vi.mock("../api/reconciliation", async (importOriginal) => {
     getReconciliationRun: vi.fn(),
     listReconciliationArtifacts: vi.fn(),
     reconcileSourceFiles: vi.fn(),
+    replayReconciliationRun: vi.fn(),
   };
 });
 
@@ -87,6 +90,7 @@ describe("WorkflowDashboard rooftop workflow", () => {
     vi.mocked(reconcileSourceFiles).mockResolvedValue(reconciliationResponse);
     vi.mocked(getReconciliationRun).mockResolvedValue(reconciliationRun);
     vi.mocked(listReconciliationArtifacts).mockResolvedValue([]);
+    vi.mocked(replayReconciliationRun).mockResolvedValue(replayResponse);
   });
 
   afterEach(cleanup);
@@ -132,6 +136,18 @@ describe("WorkflowDashboard rooftop workflow", () => {
     for (const button of screen.getAllByRole("button", { name: "Upload" })) {
       expect(button).toBeEnabled();
     }
+  });
+
+  test("displays the selected accounting month in an operator-facing format", async () => {
+    render(<WorkflowDashboard />);
+
+    const monthInput = await screen.findByLabelText("Accounting month");
+    fireEvent.change(monthInput, { target: { value: "2026-04" } });
+
+    const monthStation = screen.getByText("Month").closest(".forge-step-card");
+    expect(monthInput).toHaveValue("2026-04");
+    expect(within(monthStation as HTMLElement).getByRole("heading", { name: "Apr 2026" }))
+      .toBeInTheDocument();
   });
 
   test("sends one selected month through both uploads and reconciliation and renders final outputs", async () => {
@@ -228,6 +244,155 @@ describe("WorkflowDashboard rooftop workflow", () => {
     expect(screen.queryByText("source_file_id:", { exact: false })).not.toBeInTheDocument();
   });
 
+  test("does not attach stale upload success or error after either source file is replaced", async () => {
+    const pendingBoaUpload = deferred<UploadResponse>();
+    const pendingDealertrackUpload = deferred<UploadResponse>();
+    vi.mocked(uploadSourceFile)
+      .mockReturnValueOnce(pendingBoaUpload.promise)
+      .mockReturnValueOnce(pendingDealertrackUpload.promise);
+    render(<WorkflowDashboard />);
+    await prepareAprilInputs();
+
+    for (const button of screen.getAllByRole("button", { name: "Upload" })) {
+      fireEvent.click(button);
+    }
+    await waitFor(() => expect(uploadSourceFile).toHaveBeenCalledTimes(2));
+
+    fireEvent.change(screen.getByLabelText("BOA input file"), {
+      target: { files: [new File(["new boa"], "replacement-boa.csv", { type: "text/csv" })] },
+    });
+    fireEvent.change(screen.getByLabelText("Dealertrack input file"), {
+      target: {
+        files: [new File(["new dt"], "replacement-dealertrack.csv", { type: "text/csv" })],
+      },
+    });
+
+    await act(async () => {
+      pendingBoaUpload.resolve(buildUploadResponse("boa"));
+      pendingDealertrackUpload.reject(new ApiError("Old Dealertrack upload failed.", {
+        status: 422,
+        details: {
+          source: "dealertrack",
+          accounting_month: "2026-04",
+          rooftop_profile_id: "acura-v1",
+          recovery: "Upload the replacement Dealertrack file.",
+        },
+      }));
+      await Promise.allSettled([pendingBoaUpload.promise, pendingDealertrackUpload.promise]);
+    });
+
+    expect(screen.queryByText("source_file_id:", { exact: false })).not.toBeInTheDocument();
+    expect(screen.queryByText("Old Dealertrack upload failed.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Upload the replacement Dealertrack file.")).not.toBeInTheDocument();
+    for (const button of screen.getAllByRole("button", { name: "Upload" })) {
+      expect(button).toBeEnabled();
+    }
+  });
+
+  test("keeps a new reconciliation pending when an older context request finishes", async () => {
+    const aprilReconciliation = deferred<ReconciliationResponse>();
+    const mayReconciliation = deferred<ReconciliationResponse>();
+    vi.mocked(reconcileSourceFiles)
+      .mockReturnValueOnce(aprilReconciliation.promise)
+      .mockReturnValueOnce(mayReconciliation.promise);
+    vi.mocked(getReconciliationRun).mockImplementation(async (runId) =>
+      runId === 43 ? buildReconciliationRun(43, "2026-05") : reconciliationRun,
+    );
+    render(<WorkflowDashboard />);
+    await prepareAprilInputs();
+    await uploadBothInputs(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "Run Workflow" }));
+    await waitFor(() => expect(reconcileSourceFiles).toHaveBeenCalledTimes(1));
+
+    await prepareInputsForMonth("2026-05");
+    await uploadBothInputs(4);
+    fireEvent.click(screen.getByRole("button", { name: "Run Workflow" }));
+    await waitFor(() => expect(reconcileSourceFiles).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      aprilReconciliation.resolve(reconciliationResponse);
+      await aprilReconciliation.promise;
+    });
+
+    const pendingButton = screen.getByRole("button", { name: "Running workflow..." });
+    expect(pendingButton).toBeDisabled();
+    fireEvent.click(pendingButton);
+    expect(reconcileSourceFiles).toHaveBeenCalledTimes(2);
+    expect(getReconciliationRun).not.toHaveBeenCalled();
+
+    await act(async () => {
+      mayReconciliation.resolve(buildReconciliationResponse(43, "2026-05"));
+      await mayReconciliation.promise;
+    });
+    expect((await screen.findAllByText("ACURA · May 2026 · Run #43")).length).toBeGreaterThan(0);
+  });
+
+  test("keeps a new replay pending when a replay from an older context finishes", async () => {
+    const aprilReplay = deferred<ReconciliationReplayResponse>();
+    const mayReplay = deferred<ReconciliationReplayResponse>();
+    vi.mocked(replayReconciliationRun)
+      .mockReturnValueOnce(aprilReplay.promise)
+      .mockReturnValueOnce(mayReplay.promise);
+    vi.mocked(reconcileSourceFiles)
+      .mockResolvedValueOnce(reconciliationResponse)
+      .mockResolvedValueOnce(buildReconciliationResponse(43, "2026-05"));
+    vi.mocked(getReconciliationRun).mockImplementation(async (runId) =>
+      runId === 43 ? buildReconciliationRun(43, "2026-05") : reconciliationRun,
+    );
+    render(<WorkflowDashboard />);
+    await prepareAprilInputs();
+    await uploadBothInputs(2);
+    fireEvent.click(screen.getByRole("button", { name: "Run Workflow" }));
+    await screen.findByRole("button", { name: "Replay Snapshot" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Replay Snapshot" }));
+    await waitFor(() => expect(replayReconciliationRun).toHaveBeenCalledTimes(1));
+
+    await prepareInputsForMonth("2026-05");
+    await uploadBothInputs(4);
+    fireEvent.click(screen.getByRole("button", { name: "Run Workflow" }));
+    await screen.findByText("ACURA · May 2026 · Run #43", { selector: "p" });
+    fireEvent.click(screen.getByRole("button", { name: "Replay Snapshot" }));
+    await waitFor(() => expect(replayReconciliationRun).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      aprilReplay.resolve({ ...replayResponse, results_changed: true });
+      await aprilReplay.promise;
+    });
+
+    const pendingButton = screen.getByRole("button", { name: "Replaying..." });
+    expect(pendingButton).toBeDisabled();
+    fireEvent.click(pendingButton);
+    expect(replayReconciliationRun).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Results changed")).not.toBeInTheDocument();
+
+    await act(async () => {
+      mayReplay.resolve({ ...replayResponse, reconciliation_run_id: 43 });
+      await mayReplay.promise;
+    });
+    expect(await screen.findByText("Results unchanged")).toBeInTheDocument();
+  });
+
+  test("ignores a replay error after its run context is replaced", async () => {
+    const pendingReplay = deferred<ReconciliationReplayResponse>();
+    vi.mocked(replayReconciliationRun).mockReturnValueOnce(pendingReplay.promise);
+    render(<WorkflowDashboard />);
+    await prepareAprilInputs();
+    await uploadBothInputs(2);
+    fireEvent.click(screen.getByRole("button", { name: "Run Workflow" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Replay Snapshot" }));
+    await waitFor(() => expect(replayReconciliationRun).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Accounting month"), { target: { value: "2026-05" } });
+    await act(async () => {
+      pendingReplay.reject(new Error("Old replay failed."));
+      await pendingReplay.promise.catch(() => undefined);
+    });
+
+    expect(screen.queryByText("Old replay failed.")).not.toBeInTheDocument();
+  });
+
   test("renders the server explanation and structured recovery for a period mismatch", async () => {
     vi.mocked(uploadSourceFile).mockRejectedValueOnce(
       new ApiError(
@@ -279,8 +444,12 @@ describe("WorkflowDashboard rooftop workflow", () => {
 });
 
 async function prepareAprilInputs() {
+  await prepareInputsForMonth("2026-04");
+}
+
+async function prepareInputsForMonth(accountingMonth: string) {
   fireEvent.change(await screen.findByLabelText("Accounting month"), {
-    target: { value: "2026-04" },
+    target: { value: accountingMonth },
   });
   fireEvent.change(screen.getByLabelText("BOA input file"), {
     target: { files: [new File(["boa"], "boa.csv", { type: "text/csv" })] },
@@ -288,6 +457,16 @@ async function prepareAprilInputs() {
   fireEvent.change(screen.getByLabelText("Dealertrack input file"), {
     target: { files: [new File(["dealertrack"], "dealertrack.csv", { type: "text/csv" })] },
   });
+}
+
+async function uploadBothInputs(expectedUploadCallCount: number) {
+  for (const button of screen.getAllByRole("button", { name: "Upload" })) {
+    fireEvent.click(button);
+  }
+  await waitFor(() => expect(uploadSourceFile).toHaveBeenCalledTimes(expectedUploadCallCount));
+  await waitFor(() =>
+    expect(screen.getAllByText("source_file_id:", { exact: false })).toHaveLength(2),
+  );
 }
 
 function buildUploadResponse(sourceType: "boa" | "dealertrack"): UploadResponse {
@@ -378,6 +557,17 @@ const reconciliationResponse: ReconciliationResponse = {
   },
 };
 
+function buildReconciliationResponse(
+  reconciliationRunId: number,
+  accountingMonth: string,
+): ReconciliationResponse {
+  return {
+    ...reconciliationResponse,
+    reconciliation_run_id: reconciliationRunId,
+    accounting_month: accountingMonth,
+  };
+}
+
 const sourceSummary = (sourceType: "boa" | "dealertrack") => ({
   source_file_id: sourceType === "boa" ? 101 : 102,
   dealership_id: 1,
@@ -423,10 +613,43 @@ const reconciliationRun: ReconciliationRunDetail = {
   exceptions: [],
 };
 
+function buildReconciliationRun(
+  reconciliationRunId: number,
+  accountingMonth: string,
+): ReconciliationRunDetail {
+  return {
+    ...reconciliationRun,
+    reconciliation_run_id: reconciliationRunId,
+    accounting_month: accountingMonth,
+  };
+}
+
+const replayResponse: ReconciliationReplayResponse = {
+  reconciliation_run_id: 42,
+  results_changed: false,
+  original: { matched_count: 0, exception_count: 0 },
+  replayed: { matched_count: 0, exception_count: 0 },
+  matched_count_delta: 0,
+  exception_count_delta: 0,
+  newly_matched: [],
+  newly_unmatched: [],
+  engine_version_difference: {
+    original: "engine-v1",
+    current: "engine-v1",
+    differs: false,
+  },
+  parser_version_difference: [
+    { side: "boa", original: "1", current: "1", differs: false },
+    { side: "dealertrack", original: "1", current: "1", differs: false },
+  ],
+};
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }

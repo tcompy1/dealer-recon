@@ -5,10 +5,11 @@ export type { SourceFileSummary } from "./sourceFile";
 
 export type ReconciledTransaction = {
   id: number;
+  dealership_id: number;
   source_type: SourceType;
   transaction_date: string | null;
   post_date: string | null;
-  amount: string | number;
+  amount: string;
   amount_cents: number;
   reference_number: string | null;
   description: string | null;
@@ -152,6 +153,7 @@ export type ReconciliationExceptionCarryForward = {
 
 export type ReconciliationRunDetailException = {
   exception_id: number;
+  dealership_id: number;
   exception_type: ReconciliationException["exception_type"];
   exception_category: ReconciliationExceptionCategory;
   status: ReconciliationExceptionStatus;

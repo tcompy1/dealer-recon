@@ -29,7 +29,7 @@ import type {
 } from "../types/sourceFile";
 import type { CurrentUser } from "../types/auth";
 import type { DealerGroup, DealershipStoreWithRooftopSupport } from "../types/store";
-import { isAccountingMonth } from "../utils/accountingMonth";
+import { formatAccountingMonth, isAccountingMonth } from "../utils/accountingMonth";
 import { formatRunIdentity } from "../utils/formatRunId";
 
 type UploadSlot = {
@@ -72,6 +72,11 @@ const ARTIFACT_SORT_ORDER: ReconciliationArtifactType[] = [
 
 export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }) {
   const workflowContextVersion = useRef(0);
+  const uploadRequestVersions = useRef<Record<SourceKind, number>>({ boa: 0, dealertrack: 0 });
+  const reconciliationRequestVersion = useRef(0);
+  const activeReconciliationRequest = useRef<number | null>(null);
+  const replayRequestVersion = useRef(0);
+  const activeReplayRequest = useRef<number | null>(null);
   const [boaUpload, setBoaUpload] = useState<UploadSlot>(initialUploadSlot);
   const [dealertrackUpload, setDealertrackUpload] = useState<UploadSlot>(initialUploadSlot);
   const [dealerGroups, setDealerGroups] = useState<DealerGroup[]>([]);
@@ -104,6 +109,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
   useEffect(() => {
     void refreshLists();
+    return invalidateWorkflowRequests;
     // Initial load only; store changes are handled explicitly in handleStoreChange.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -134,6 +140,8 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       return;
     }
     const contextVersion = workflowContextVersion.current;
+    const requestVersion = uploadRequestVersions.current[kind] + 1;
+    uploadRequestVersions.current[kind] = requestVersion;
 
     setWorkflowError(null);
     setWorkflowRecovery(null);
@@ -153,7 +161,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         dealershipStoreId: selectedStoreId,
         accountingMonth: selectedAccountingMonth,
       });
-      if (workflowContextVersion.current !== contextVersion) {
+      if (!isCurrentUploadRequest(kind, contextVersion, requestVersion)) {
         return;
       }
       setSlot((current) => ({
@@ -163,7 +171,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         errorPreprocessing: null,
       }));
     } catch (error) {
-      if (workflowContextVersion.current !== contextVersion) {
+      if (!isCurrentUploadRequest(kind, contextVersion, requestVersion)) {
         return;
       }
       const errorPreprocessing =
@@ -183,11 +191,15 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       !boaUpload.upload ||
       !dealertrackUpload.upload ||
       !canUseRooftop ||
-      selectedStoreId === null
+      selectedStoreId === null ||
+      activeReconciliationRequest.current !== null
     ) {
       return;
     }
     const contextVersion = workflowContextVersion.current;
+    const requestVersion = reconciliationRequestVersion.current + 1;
+    reconciliationRequestVersion.current = requestVersion;
+    activeReconciliationRequest.current = requestVersion;
 
     setIsReconciling(true);
     setWorkflowError(null);
@@ -202,27 +214,47 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         dealershipStoreId: selectedStoreId,
         accountingMonth: selectedAccountingMonth,
       });
-      if (workflowContextVersion.current !== contextVersion) {
+      if (!isCurrentReconciliationRequest(contextVersion, requestVersion)) {
         return;
       }
       const detail = await getReconciliationRun(result.reconciliation_run_id);
-      if (workflowContextVersion.current !== contextVersion) {
+      if (!isCurrentReconciliationRequest(contextVersion, requestVersion)) {
         return;
       }
       setActiveRun(detail);
       setActiveRunDiagnostics(result.vin_presence_diagnostics);
       setActiveRunReplay(null);
-      await loadRunArtifacts(result.reconciliation_run_id, contextVersion);
+      await loadRunArtifacts(result.reconciliation_run_id, contextVersion, requestVersion);
+      if (!isCurrentReconciliationRequest(contextVersion, requestVersion)) {
+        return;
+      }
       setIsReconciliationStale(false);
     } catch (error) {
-      if (workflowContextVersion.current !== contextVersion) {
+      if (!isCurrentReconciliationRequest(contextVersion, requestVersion)) {
         return;
       }
       setWorkflowError(error instanceof Error ? error.message : "Reconciliation failed.");
       setWorkflowRecovery(error instanceof ApiError ? error.details?.recovery ?? null : null);
     } finally {
-      setIsReconciling(false);
+      if (isCurrentReconciliationRequest(contextVersion, requestVersion)) {
+        activeReconciliationRequest.current = null;
+        setIsReconciling(false);
+      }
     }
+  }
+
+  function handleUploadFileChange(kind: SourceKind, file: File | null) {
+    uploadRequestVersions.current[kind] += 1;
+    const setSlot = kind === "boa" ? setBoaUpload : setDealertrackUpload;
+    setSlot((current) => ({
+      ...current,
+      file,
+      upload: null,
+      isUploading: false,
+      error: null,
+      errorRecovery: null,
+      errorPreprocessing: null,
+    }));
   }
 
   function handleStoreChange(storeId: number | null) {
@@ -236,7 +268,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
   }
 
   function resetWorkflowSelection() {
-    workflowContextVersion.current += 1;
+    invalidateWorkflowRequests();
     setActiveRun(null);
     setActiveRunDiagnostics(null);
     setActiveRunReplay(null);
@@ -249,6 +281,16 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     setIsReconciliationStale(false);
     setBoaUpload(initialUploadSlot);
     setDealertrackUpload(initialUploadSlot);
+  }
+
+  function invalidateWorkflowRequests() {
+    workflowContextVersion.current += 1;
+    uploadRequestVersions.current.boa += 1;
+    uploadRequestVersions.current.dealertrack += 1;
+    reconciliationRequestVersion.current += 1;
+    activeReconciliationRequest.current = null;
+    replayRequestVersion.current += 1;
+    activeReplayRequest.current = null;
   }
 
   async function handleCreateStore() {
@@ -272,33 +314,76 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
   }
 
   async function handleReplayRun() {
-    if (!activeRun) {
+    if (!activeRun || activeReplayRequest.current !== null) {
       return;
     }
+    const contextVersion = workflowContextVersion.current;
+    const requestVersion = replayRequestVersion.current + 1;
+    replayRequestVersion.current = requestVersion;
+    activeReplayRequest.current = requestVersion;
     setIsReplaying(true);
     setWorkflowError(null);
     try {
-      setActiveRunReplay(await replayReconciliationRun(activeRun.reconciliation_run_id));
+      const replay = await replayReconciliationRun(activeRun.reconciliation_run_id);
+      if (isCurrentReplayRequest(contextVersion, requestVersion)) {
+        setActiveRunReplay(replay);
+      }
     } catch (error) {
-      setWorkflowError(error instanceof Error ? error.message : "Historical replay could not be run.");
+      if (isCurrentReplayRequest(contextVersion, requestVersion)) {
+        setWorkflowError(error instanceof Error ? error.message : "Historical replay could not be run.");
+      }
     } finally {
-      setIsReplaying(false);
+      if (isCurrentReplayRequest(contextVersion, requestVersion)) {
+        activeReplayRequest.current = null;
+        setIsReplaying(false);
+      }
     }
   }
 
-  async function loadRunArtifacts(reconciliationRunId: number, contextVersion: number) {
+  async function loadRunArtifacts(
+    reconciliationRunId: number,
+    contextVersion: number,
+    requestVersion: number,
+  ) {
     setActiveRunArtifacts([]);
     setActiveRunArtifactsError(null);
     try {
       const artifacts = await listReconciliationArtifacts(reconciliationRunId);
-      if (workflowContextVersion.current === contextVersion) {
+      if (isCurrentReconciliationRequest(contextVersion, requestVersion)) {
         setActiveRunArtifacts(artifacts);
       }
     } catch (error) {
-      if (workflowContextVersion.current === contextVersion) {
+      if (isCurrentReconciliationRequest(contextVersion, requestVersion)) {
         setActiveRunArtifactsError(error instanceof Error ? error.message : "Artifacts could not be loaded.");
       }
     }
+  }
+
+  function isCurrentUploadRequest(
+    kind: SourceKind,
+    contextVersion: number,
+    requestVersion: number,
+  ) {
+    return (
+      workflowContextVersion.current === contextVersion &&
+      uploadRequestVersions.current[kind] === requestVersion
+    );
+  }
+
+  function isCurrentReconciliationRequest(contextVersion: number, requestVersion: number) {
+    return (
+      workflowContextVersion.current === contextVersion &&
+      reconciliationRequestVersion.current === requestVersion &&
+      activeReconciliationRequest.current === requestVersion
+    );
+  }
+
+  function isCurrentReplayRequest(contextVersion: number, requestVersion: number) {
+    return (
+      workflowContextVersion.current === contextVersion &&
+      replayRequestVersion.current === requestVersion &&
+      activeReplayRequest.current === requestVersion
+    );
   }
 
   return (
@@ -346,16 +431,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
             kind="boa"
             label="BOA input"
             slot={boaUpload}
-            onFileChange={(file) =>
-              setBoaUpload((current) => ({
-                ...current,
-                file,
-                upload: null,
-                error: null,
-                errorRecovery: null,
-                errorPreprocessing: null,
-              }))
-            }
+            onFileChange={(file) => handleUploadFileChange("boa", file)}
             onUpload={() => void handleUpload("boa")}
             canModify={canModify && canUseRooftop}
           />
@@ -364,16 +440,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
             kind="dealertrack"
             label="Dealertrack input"
             slot={dealertrackUpload}
-            onFileChange={(file) =>
-              setDealertrackUpload((current) => ({
-                ...current,
-                file,
-                upload: null,
-                error: null,
-                errorRecovery: null,
-                errorPreprocessing: null,
-              }))
-            }
+            onFileChange={(file) => handleUploadFileChange("dealertrack", file)}
             onUpload={() => void handleUpload("dealertrack")}
             canModify={canModify && canUseRooftop}
             onVinEnriched={() => setIsReconciliationStale(true)}
@@ -462,7 +529,7 @@ function WorkbenchOverview({
     },
     {
       label: "Month",
-      title: hasAccountingMonth ? selectedAccountingMonth : "Select month",
+      title: hasAccountingMonth ? formatAccountingMonth(selectedAccountingMonth) : "Select month",
       detail: "Authoritative accounting period",
       state: hasAccountingMonth ? "complete" : profileEnabled ? "current" : "waiting",
     },
