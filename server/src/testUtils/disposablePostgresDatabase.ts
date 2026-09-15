@@ -7,7 +7,6 @@ const DISPOSABLE_DATABASE_NAME = /^dealer_recon_task10_[a-z0-9_]+$/;
 const LOCAL_DATABASE_TARGETS = new Map([
   ["localhost", "5433"],
   ["127.0.0.1", "5433"],
-  ["[::1]", "5433"],
   ["db", "5432"],
 ]);
 const SAFE_BASE_DATABASE_PATH = "/dealer_recon";
@@ -18,7 +17,7 @@ export async function withDisposablePostgresDatabase<T>(
   baseDatabaseUrl: string,
   callback: (databaseUrl: string, databaseName: string) => Promise<T>,
 ): Promise<T> {
-  const baseUrl = validatedLocalTestDatabaseUrl(baseDatabaseUrl);
+  const baseUrl = validateDisposablePostgresBaseUrl(baseDatabaseUrl);
   const databaseName = disposableDatabaseName();
   const quotedDatabaseName = quoteDisposableDatabaseName(databaseName);
   const adminPool = createPool(baseUrl.toString());
@@ -68,7 +67,7 @@ export async function withDisposablePostgresDatabase<T>(
   return result as T;
 }
 
-function validatedLocalTestDatabaseUrl(value: string): URL {
+export function validateDisposablePostgresBaseUrl(value: string): URL {
   let url: URL;
   try {
     url = new URL(value);

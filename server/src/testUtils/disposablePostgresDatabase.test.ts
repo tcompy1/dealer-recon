@@ -8,7 +8,10 @@ vi.mock("../repositories/postgresTransactionRepository.js", () => ({
   createPool: createPoolMock,
 }));
 
-import { withDisposablePostgresDatabase } from "./disposablePostgresDatabase.js";
+import {
+  validateDisposablePostgresBaseUrl,
+  withDisposablePostgresDatabase,
+} from "./disposablePostgresDatabase.js";
 
 const VALIDATION_ERROR =
   "Disposable PostgreSQL databases require an exact local test database URL.";
@@ -61,6 +64,10 @@ const unsafeTargets = [
     "an unapproved local port",
     "postgresql://dealer_recon:dealer_recon@localhost:5432/dealer_recon",
   ],
+  [
+    "an IPv6 authority",
+    "postgresql://dealer_recon:dealer_recon@[::1]:5433/dealer_recon",
+  ],
 ] as const;
 
 describe("disposable PostgreSQL database target validation", () => {
@@ -75,6 +82,15 @@ describe("disposable PostgreSQL database target validation", () => {
     await expect(
       withDisposablePostgresDatabase(databaseUrl, async () => undefined),
     ).rejects.toThrow(VALIDATION_ERROR);
+    expect(createPoolMock).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["localhost", "postgresql://dealer_recon:dealer_recon@localhost:5433/dealer_recon"],
+    ["IPv4 loopback", "postgresql://dealer_recon:dealer_recon@127.0.0.1:5433/dealer_recon"],
+    ["the Compose database service", "postgresql://dealer_recon:dealer_recon@db:5432/dealer_recon"],
+  ] as const)("accepts %s as an exact supported target", (_case, supportedUrl) => {
+    expect(validateDisposablePostgresBaseUrl(supportedUrl).toString()).toBe(supportedUrl);
     expect(createPoolMock).not.toHaveBeenCalled();
   });
 });

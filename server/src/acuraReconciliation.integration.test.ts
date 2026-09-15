@@ -32,12 +32,51 @@ import {
   ACURA_SANITIZED_FIXTURE_PATHS,
   loadAcuraSanitizedContract,
 } from "./testFixtures/acura/index.js";
-import { withDisposablePostgresDatabase } from "./testUtils/disposablePostgresDatabase.js";
+import {
+  validateDisposablePostgresBaseUrl,
+  withDisposablePostgresDatabase,
+} from "./testUtils/disposablePostgresDatabase.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeIfDatabase = databaseUrl ? describe : describe.skip;
 const accountingMonth = "2026-04";
 const sessionSecret = "task-10-integration-session-secret";
+
+type PoolFactory = (databaseUrl: string) => ReturnType<typeof createPool>;
+
+function createTask10DatabaseSetup(
+  baseDatabaseUrl: string,
+  poolFactory: PoolFactory = createPool,
+): { baseDatabaseUrl: string; adminPool: ReturnType<typeof createPool> } {
+  const validatedBaseDatabaseUrl = validateDisposablePostgresBaseUrl(baseDatabaseUrl).toString();
+
+  return {
+    baseDatabaseUrl: validatedBaseDatabaseUrl,
+    adminPool: poolFactory(validatedBaseDatabaseUrl),
+  };
+}
+
+describe("Acura reconciliation PostgreSQL integration setup", () => {
+  test.each([
+    [
+      "a host query override",
+      "postgresql://dealer_recon:dealer_recon@localhost:5433/dealer_recon?host=prod.example.com",
+    ],
+    [
+      "an encoded host query override",
+      "postgresql://dealer_recon:dealer_recon@localhost:5433/dealer_recon?%68ost=prod.example.com",
+    ],
+  ] as const)("rejects %s before opening an admin pool", (_case, unsafeDatabaseUrl) => {
+    const poolFactory: PoolFactory = vi.fn(() => {
+      throw new Error("pool factory was reached");
+    });
+
+    expect(() => createTask10DatabaseSetup(unsafeDatabaseUrl, poolFactory)).toThrow(
+      "Disposable PostgreSQL databases require an exact local test database URL.",
+    );
+    expect(poolFactory).not.toHaveBeenCalled();
+  });
+});
 
 class ForcedBatchFailureRepository extends PostgresTransactionRepository {
   private readonly batchStarted: Promise<number>;
@@ -93,7 +132,8 @@ describeIfDatabase("Acura reconciliation PostgreSQL vertical slice", () => {
       throw new Error("DATABASE_URL is required for the Acura reconciliation integration test.");
     }
 
-    const adminPool = createPool(databaseUrl);
+    const task10DatabaseSetup = createTask10DatabaseSetup(databaseUrl);
+    const { adminPool, baseDatabaseUrl } = task10DatabaseSetup;
     const disposableDatabaseNames: string[] = [];
     try {
       await expect(
@@ -105,7 +145,7 @@ describeIfDatabase("Acura reconciliation PostgreSQL vertical slice", () => {
 
       for (let execution = 0; execution < 2; execution += 1) {
         await withDisposablePostgresDatabase(
-          databaseUrl,
+          baseDatabaseUrl,
           async (disposableDatabaseUrl, disposableDatabaseName) => {
             disposableDatabaseNames.push(disposableDatabaseName);
             await runAcuraVerticalSlice(disposableDatabaseUrl, disposableDatabaseName);
