@@ -9,6 +9,7 @@ import {
   RECONCILIATION_ENGINE_VERSION,
   reconcileTransactionSets,
 } from "./reconciliationEngine.js";
+import { ROOFTOP_PROFILES } from "../config/storeWorkflowConfig.js";
 import { TRANSACTION_NORMALIZER_VERSION } from "./transactionNormalizer.js";
 
 export async function buildReconciliationReplay(
@@ -82,13 +83,59 @@ export function replaySnapshot(
       current: RECONCILIATION_ENGINE_VERSION,
       differs: snapshot.engine_version !== RECONCILIATION_ENGINE_VERSION,
     },
-    parser_version_difference: snapshot.inputs.map((input) => ({
-      side: input.side,
-      original: input.parser_version,
-      current: TRANSACTION_NORMALIZER_VERSION,
-      differs: input.parser_version !== TRANSACTION_NORMALIZER_VERSION,
-    })),
+    parser_version_difference: snapshot.inputs.map((input) => {
+      const current = currentParserVersion(input);
+      return {
+        side: input.side,
+        original: input.parser_version,
+        current,
+        differs: input.parser_version !== current,
+      };
+    }),
   };
+}
+
+function currentParserVersion(input: ReconciliationRunInputSnapshot["inputs"][number]): string {
+  const { parser_metadata: parserMetadata } = input;
+  const parserName = stringMetadataValue(parserMetadata, "parser_name");
+  const profileId = stringMetadataValue(parserMetadata, "rooftop_profile_id");
+  const profileVersion = stringMetadataValue(parserMetadata, "rooftop_profile_version");
+  const sourceType = stringMetadataValue(parserMetadata, "source_type");
+
+  if (!parserName && !profileId && !profileVersion) {
+    return TRANSACTION_NORMALIZER_VERSION;
+  }
+  if (
+    !parserName ||
+    !profileId ||
+    !profileVersion ||
+    (sourceType !== "boa" && sourceType !== "dealertrack") ||
+    sourceType !== input.source_type
+  ) {
+    throw new Error(
+      `Cannot resolve the current parser identity for reconciliation snapshot input ${input.side}.`,
+    );
+  }
+
+  const profile = Object.values(ROOFTOP_PROFILES).find(
+    (candidate) =>
+      candidate.profileId === profileId &&
+      candidate.profileVersion === profileVersion,
+  );
+  const parserIdentities = profile?.parserIdentities[sourceType].filter(
+    (identity) => identity.name === parserName,
+  ) ?? [];
+  if (parserIdentities.length !== 1) {
+    throw new Error(
+      `Cannot resolve the current parser identity for reconciliation snapshot input ${input.side}.`,
+    );
+  }
+  return parserIdentities[0]!.version;
+}
+
+function stringMetadataValue(metadata: Record<string, unknown>, key: string): string | null {
+  const value = metadata[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function exceptionKey(transaction: TransactionSummary): string {

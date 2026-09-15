@@ -1,12 +1,49 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, test } from "vitest";
 
-import { preprocessUpload } from "./index.js";
+import { ROOFTOP_PROFILES, type RooftopProfile } from "../../config/storeWorkflowConfig.js";
+import { type AccountingMonth, parseAccountingMonth } from "../../domain/accountingMonth.js";
+import { preprocessUpload as runPreprocessUpload } from "./index.js";
 
 const REPO_ROOT = new URL("../../../../", import.meta.url);
 
 async function loadFixture(relativePath: string): Promise<Buffer> {
   return readFile(new URL(relativePath, REPO_ROOT));
+}
+
+function accountingMonth(value: string): AccountingMonth {
+  const parsed = parseAccountingMonth(value);
+  if (!parsed) throw new Error(`Invalid accounting month in test: ${value}`);
+  return parsed;
+}
+
+function preprocessUpload(
+  buffer: Buffer,
+  sourceType: Parameters<typeof runPreprocessUpload>[1],
+  originalFilename: string | null,
+  rooftopProfile: RooftopProfile = ROOFTOP_PROFILES.hurst,
+) {
+  return runPreprocessUpload(buffer, sourceType, originalFilename, {
+    accountingMonth: accountingMonth("2026-04"),
+    rooftopProfile,
+  });
+}
+
+function boaHtmlStatement(...bannerMonths: string[]): Buffer {
+  const bannerRows = bannerMonths
+    .map((month) => `<tr><td colspan="5">Dealer Billing Statement for ${month}</td></tr>`)
+    .join("");
+  return Buffer.from(`<!doctype html><html><body><table>
+    ${bannerRows}
+    <tr>
+      <th>VIN / Serial Number</th><th>Stock / Lease Number</th>
+      <th>Original Amount</th><th>Ending Balance</th><th>Maturity Date</th>
+    </tr>
+    <tr>
+      <td>1HGCM82633A004352</td><td>M30101</td>
+      <td>$301.00</td><td>$301.00</td><td>05/31/2027</td>
+    </tr>
+  </table></body></html>`);
 }
 
 describe("preprocessUpload orchestrator", () => {
@@ -20,6 +57,66 @@ describe("preprocessUpload orchestrator", () => {
     expect(decision.output.transactions.length).toBeGreaterThan(0);
     // zero-balance row INV-1003 (ending balance 0) must be removed
     expect(decision.output.summary.rows_removed_zero_balance).toBeGreaterThanOrEqual(1);
+  });
+
+  test("confirms a BOA HTML route from its matching statement banner", () => {
+    const decision = preprocessUpload(
+      boaHtmlStatement("April 2026"),
+      "boa",
+      "statement.xls",
+    );
+
+    expect(decision.kind).toBe("preprocessed");
+    if (decision.kind !== "preprocessed") return;
+    expect(decision.output.route.kind).toBe("boa_html");
+    expect(decision.output.periodValidation).toMatchObject({
+      ok: true,
+      evidence: {
+        selectedMonth: "2026-04",
+        explicitMonths: ["2026-04"],
+        status: "confirmed",
+      },
+    });
+  });
+
+  test("rejects a BOA HTML route whose statement banner names another month", () => {
+    const decision = preprocessUpload(
+      boaHtmlStatement("March 2026"),
+      "boa",
+      "statement.xls",
+    );
+
+    expect(decision.kind).toBe("preprocessed");
+    if (decision.kind !== "preprocessed") return;
+    expect(decision.output.periodValidation).toMatchObject({
+      ok: false,
+      code: "SOURCE_PERIOD_MISMATCH",
+      evidence: {
+        selectedMonth: "2026-04",
+        explicitMonths: ["2026-03"],
+        status: "contradictory",
+      },
+    });
+  });
+
+  test("rejects a BOA HTML route with conflicting statement banners", () => {
+    const decision = preprocessUpload(
+      boaHtmlStatement("March 2026", "April 2026"),
+      "boa",
+      "statement.xls",
+    );
+
+    expect(decision.kind).toBe("preprocessed");
+    if (decision.kind !== "preprocessed") return;
+    expect(decision.output.periodValidation).toMatchObject({
+      ok: false,
+      code: "SOURCE_PERIOD_CONTRADICTORY",
+      evidence: {
+        selectedMonth: "2026-04",
+        explicitMonths: ["2026-03", "2026-04"],
+        status: "contradictory",
+      },
+    });
   });
 
   test("routes a real Dealertrack SpreadsheetML fixture through the DT preprocessor", async () => {
@@ -50,6 +147,12 @@ describe("preprocessUpload orchestrator", () => {
     if (decision.kind !== "preprocessed") return;
     expect(decision.output.route.kind).toBe("boa_csv");
     expect(decision.output.detection.format).toBe("csv");
+    expect(decision.output.summary).toMatchObject({
+      parser_name: "boa-csv",
+      parser_version: "1",
+      preprocessor_name: "boa-floorplan",
+      preprocessor_version: "preprocessing-v1",
+    });
     expect(decision.output.transactions.length).toBe(1);
     expect(decision.output.summary.rows_removed_zero_balance).toBe(1);
     expect(decision.output.summary.rows_removed_straightline).toBe(1);
@@ -84,6 +187,12 @@ describe("preprocessUpload orchestrator", () => {
     if (decision.kind !== "preprocessed") return;
     expect(decision.output.route.kind).toBe("dealertrack_csv");
     expect(decision.output.detection.format).toBe("csv");
+    expect(decision.output.summary).toMatchObject({
+      parser_name: "dealertrack-csv",
+      parser_version: "1",
+      preprocessor_name: "dealertrack-floorplan",
+      preprocessor_version: "preprocessing-v1",
+    });
     // Only the three real M-prefix vehicle rows should be accepted; both the
     // "BOA, BANK OF AMERICA, 0, -500000" offset row and the trailing Final
     // Totals row must be filtered out.
@@ -108,9 +217,12 @@ describe("preprocessUpload orchestrator", () => {
       "M20148,BOA FLOORPLAN 1HGCM82633A004352,-25746",
     ];
     const buffer = Buffer.from(lines.join("\n") + "\n");
-    const decision = preprocessUpload(buffer, "dealertrack", "acura-dt.csv", {
-      dealertrack: { accountColumn: "324", accountLabel: "324" },
-    });
+    const decision = preprocessUpload(
+      buffer,
+      "dealertrack",
+      "acura-dt.csv",
+      ROOFTOP_PROFILES.acura,
+    );
 
     expect(decision.kind).toBe("preprocessed");
     if (decision.kind !== "preprocessed") return;
@@ -156,6 +268,21 @@ describe("preprocessUpload orchestrator", () => {
     expect(decision.output.route.kind).toBe("dealertrack_csv");
     expect(decision.output.diagnostics.length).toBeGreaterThan(0);
     expect(decision.output.summary.preprocessing_version).toBe("preprocessing-v1");
+  });
+
+  test("keeps CSV parser provenance truthful for a profiled upload", () => {
+    const dt = Buffer.from(
+      "Control,Description,2100\nM10001,FLOORPLAN 1FAKEVN0000A0001X,-25000\n",
+    );
+    const decision = preprocessUpload(dt, "dealertrack", "dt.csv");
+
+    expect(decision.kind).toBe("preprocessed");
+    if (decision.kind !== "preprocessed") return;
+    expect(decision.output.summary).toMatchObject({
+      parser_name: "dealertrack-csv",
+      parser_version: "1",
+      parser_format: "csv",
+    });
   });
 
   test("falls back to legacy CSV path only for non-floorplan source types", () => {

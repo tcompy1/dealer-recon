@@ -1,3 +1,7 @@
+import type { RooftopProfileId } from "../config/storeWorkflowConfig.js";
+import type { UploadPreprocessingMetadata } from "../services/preprocessing/types.js";
+import type { AccountingMonth } from "./accountingMonth.js";
+
 export const sourceTypes = ["bank", "boa", "dealertrack", "dms", "gl", "oem"] as const;
 
 export type SourceType = (typeof sourceTypes)[number];
@@ -65,6 +69,14 @@ export type DealershipStore = {
   created_at: string;
 };
 
+export type DealershipStoreWithRooftopSupport = DealershipStore & {
+  rooftop_profile: {
+    id: RooftopProfileId;
+    version: string;
+    enabled: boolean;
+  } | null;
+};
+
 export type NewDealershipStore = {
   name: string;
   dealer_group_id?: number | null;
@@ -87,6 +99,14 @@ export type SourceFile = {
   file_hash: string;
   row_count: number;
   validation_error_count: number;
+  accounting_month: AccountingMonth | null;
+  rooftop_profile_id: RooftopProfileId | null;
+  rooftop_profile_version: string | null;
+  parser_name: string | null;
+  parser_version: string | null;
+  preprocessor_name: string | null;
+  preprocessor_version: string | null;
+  preprocessing_metadata: UploadPreprocessingMetadata | null;
   created_at: string;
 };
 
@@ -110,9 +130,47 @@ export type NewSourceFileUploadContent = Omit<
 
 export type NewSourceFile = Omit<
   SourceFile,
-  "id" | "dealership_id" | "dealership_store_id" | "created_at"
+  | "id"
+  | "dealership_id"
+  | "dealership_store_id"
+  | "accounting_month"
+  | "rooftop_profile_id"
+  | "rooftop_profile_version"
+  | "parser_name"
+  | "parser_version"
+  | "preprocessor_name"
+  | "preprocessor_version"
+  | "preprocessing_metadata"
+  | "created_at"
 > &
-  Partial<Pick<SourceFile, "dealership_store_id">>;
+  Partial<
+    Pick<
+      SourceFile,
+      | "dealership_store_id"
+      | "accounting_month"
+      | "rooftop_profile_id"
+      | "rooftop_profile_version"
+      | "parser_name"
+      | "parser_version"
+      | "preprocessor_name"
+      | "preprocessor_version"
+      | "preprocessing_metadata"
+    >
+  >;
+
+export type SourceProcessingIdentity = {
+  accounting_month: AccountingMonth;
+  rooftop_profile_id: RooftopProfileId;
+  rooftop_profile_version: string;
+  parser_name: string;
+  parser_version: string;
+  preprocessor_name: string;
+  preprocessor_version: string;
+};
+
+export type ProfiledNewSourceFile = NewSourceFile & SourceProcessingIdentity & {
+  preprocessing_metadata: UploadPreprocessingMetadata;
+};
 
 export type SourceFileSummary = {
   source_file_id: number;
@@ -123,19 +181,27 @@ export type SourceFileSummary = {
   filename: string;
   row_count: number;
   validation_error_count: number;
+  accounting_month: AccountingMonth | null;
+  rooftop_profile_id: RooftopProfileId | null;
+  rooftop_profile_version: string | null;
+  parser_name: string | null;
+  parser_version: string | null;
+  preprocessor_name: string | null;
+  preprocessor_version: string | null;
+  preprocessing_metadata: UploadPreprocessingMetadata | null;
   created_at: string;
 };
 
-export type UploadResponse = {
+type UploadResponseBase = {
   source_file_id: number;
   dealership_store_id: number | null;
   store_name: string | null;
-  source_type: SourceType;
   filename: string;
   transaction_count: number;
   stored_row_count: number;
   stored_validation_error_count: number;
   validation_errors: ValidationError[];
+  preprocessing: UploadPreprocessingMetadata;
   automated_reconciliation_run_id?: number | null;
   reused_existing_file: boolean;
   source_file_health: {
@@ -155,6 +221,23 @@ export type UploadResponse = {
     created_at: string;
   };
 };
+
+export type FloorplanUploadResponse = UploadResponseBase & SourceProcessingIdentity & {
+  source_type: "boa" | "dealertrack";
+};
+
+export type LegacyUploadResponse = UploadResponseBase & {
+  source_type: Exclude<SourceType, "boa" | "dealertrack">;
+  accounting_month?: never;
+  rooftop_profile_id?: never;
+  rooftop_profile_version?: never;
+  parser_name?: never;
+  parser_version?: never;
+  preprocessor_name?: never;
+  preprocessor_version?: never;
+};
+
+export type UploadResponse = FloorplanUploadResponse | LegacyUploadResponse;
 
 export const scheduledReconciliationCadences = ["daily", "weekly", "monthly"] as const;
 
@@ -281,6 +364,7 @@ export type ReconciliationRequest = {
   boa_source_file_id?: unknown;
   dealertrack_source_file_id?: unknown;
   dealership_store_id?: unknown;
+  accounting_month?: unknown;
 };
 
 export type TransactionSummary = {
@@ -399,14 +483,20 @@ export type VinPresenceDiagnostics = {
   transaction_unmatched_shared_vins: VinPresenceTransactionUnmatchedEntry[];
 };
 
-export type ReconciliationResponse = {
-  reconciliation_run_id?: number;
+export type ReconciliationResult = {
   matched_count: number;
   exception_count: number;
   duplicate_count: number;
   match_groups: MatchGroup[];
   exceptions: ReconciliationException[];
   vin_presence_diagnostics: VinPresenceDiagnostics;
+};
+
+export type ReconciliationResponse = ReconciliationResult & {
+  reconciliation_run_id: number;
+  accounting_month: AccountingMonth;
+  rooftop_profile_id: RooftopProfileId;
+  rooftop_profile_version: string;
 };
 
 export type ReconciliationRun = {
@@ -419,6 +509,10 @@ export type ReconciliationRun = {
   exception_count: number;
   duplicate_count: number;
   status: string;
+  automated: boolean;
+  accounting_month: AccountingMonth | null;
+  rooftop_profile_id: RooftopProfileId | null;
+  rooftop_profile_version: string | null;
   created_at: string;
 };
 
@@ -463,9 +557,13 @@ export type PersistReconciliationRunInput = {
   dealership_store_id?: number | null;
   boa_source_file_id: number;
   dealertrack_source_file_id: number;
-  result: ReconciliationResponse;
+  accounting_month: AccountingMonth | null;
+  rooftop_profile_id: RooftopProfileId | null;
+  rooftop_profile_version: string | null;
+  result: ReconciliationResult;
   input_snapshot?: PersistReconciliationRunSnapshotInput;
   status?: string;
+  automated?: boolean;
 };
 
 export type ReconciliationRunInputSnapshotSide = "boa" | "dealertrack";
@@ -531,6 +629,9 @@ export type ReconciliationRunListItem = {
   exception_count: number;
   duplicate_count: number;
   status: string;
+  accounting_month: AccountingMonth | null;
+  rooftop_profile_id: RooftopProfileId | null;
+  rooftop_profile_version: string | null;
   created_at: string;
 };
 

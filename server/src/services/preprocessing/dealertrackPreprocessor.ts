@@ -23,16 +23,20 @@ import { parseAmountToCents } from "../../domain/money.js";
 import type { NewTransaction, ValidationError } from "../../domain/types.js";
 import { computeVin6, extractVin6FromDescription } from "../../domain/vin6.js";
 import type { ParsedTable } from "../parsers/types.js";
+import { deriveDealertrackPeriodEvidence } from "../sourcePeriodEvidence.js";
 import {
   LINEAGE_RAW_DATA_KEY,
   PREPROCESSING_VERSION,
   type PreprocessingDiagnostic,
   type PreprocessingResult,
   type PreprocessingSummary,
+  type DealertrackPreprocessOptions,
   type RawDataLineage,
   type RowLineageEntry,
   type VinProvenance,
 } from "./types.js";
+
+export type { DealertrackPreprocessOptions } from "./types.js";
 
 const VIN_FULL_RE = /\b(?=[A-HJ-NPR-Z0-9]{17}\b)(?=[A-HJ-NPR-Z0-9]*[A-Z])(?=[A-HJ-NPR-Z0-9]*\d)[A-HJ-NPR-Z0-9]{17}\b/i;
 const STOCK_RE = /\bM\d{3,6}\b/i;
@@ -70,17 +74,9 @@ type DealertrackWorkingRow = {
   lineage: RowLineageEntry[];
 };
 
-export type DealertrackPreprocessOptions = {
-  amountColumns?: string[];
-  accountColumn?: string;
-  accountLabel?: string;
-  excludedAccountColumns?: string[];
-  removedAccountColumns?: string[];
-};
-
 export function preprocessDealertrack(
   parsed: ParsedTable,
-  options: DealertrackPreprocessOptions = {},
+  options: DealertrackPreprocessOptions,
 ): PreprocessingResult {
   const requestedAmountColumns =
     options.amountColumns && options.amountColumns.length > 0
@@ -152,6 +148,19 @@ export function preprocessDealertrack(
   parsed.rows.forEach((rawRow, index) => {
     rowsScanned += 1;
     const sourceRowNumber = index + (header ? 2 : 1);
+    if (header && rawRow.length !== header.length) {
+      rowsSkippedUnknown += 1;
+      diagnostics.push({
+        kind: "row_skipped_malformed",
+        message: "Row removed: column count does not match the Dealertrack header.",
+        source_row_number: sourceRowNumber,
+        details: {
+          expected_columns: header.length,
+          actual_columns: rawRow.length,
+        },
+      });
+      return;
+    }
     const cleaned = rawRow.map(cleanCell);
     if (cleaned.every((cell) => cell.length === 0)) {
       rowsSkippedUnknown += 1;
@@ -400,8 +409,16 @@ export function preprocessDealertrack(
   const summary: PreprocessingSummary = {
     source_kind: "dealertrack",
     preprocessing_version: PREPROCESSING_VERSION,
-    parser_version: "dealertrack-xml-v1",
-    parser_format: "xml_spreadsheet",
+    parser_name: options.parserIdentity.name,
+    parser_version: options.parserIdentity.version,
+    parser_format: options.parserIdentity.format,
+    preprocessor_name: options.preprocessorIdentity.name,
+    preprocessor_version: options.preprocessorIdentity.version,
+    period_evidence: deriveDealertrackPeriodEvidence(
+      parsed,
+      null,
+      options.accountingMonth,
+    ).evidence,
     rows_scanned: rowsScanned,
     rows_accepted: transactions.length,
     rows_removed_zero_balance: rowsRemovedZero,

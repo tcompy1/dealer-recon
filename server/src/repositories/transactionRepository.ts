@@ -33,6 +33,7 @@ import type {
   ScheduledReconciliationJob,
   ScheduledReconciliationJobUpdate,
   SourceFile,
+  SourceProcessingIdentity,
   SourceFileUploadContent,
   SourceFileSummary,
   SourceType,
@@ -54,6 +55,12 @@ export class DuplicateSourceFileError extends Error {
   }
 }
 
+export class AutomatedReconciliationAlreadyExistsError extends Error {
+  constructor() {
+    super("An automated reconciliation already exists for this immutable source pair.");
+  }
+}
+
 export interface TransactionRepository {
   createSourceFileWithTransactions(
     dealershipId: number,
@@ -70,7 +77,14 @@ export interface TransactionRepository {
   ): Promise<SourceFileImport | null>;
   insertMany(transactions: NewTransaction[]): Promise<Transaction[]>;
   getSourceFile(sourceFileId: number): Promise<SourceFile | null>;
-  getSourceFileByHash(
+  getReusableSourceFile(
+    dealershipId: number,
+    dealershipStoreId: number,
+    sourceType: SourceType,
+    fileHash: string,
+    identity: SourceProcessingIdentity,
+  ): Promise<SourceFile | null>;
+  getReusableLegacySourceFile(
     dealershipId: number,
     dealershipStoreId: number | null,
     sourceType: SourceType,
@@ -119,7 +133,11 @@ export interface TransactionRepository {
     limit?: number,
   ): Promise<OperationalEvent[]>;
   createAuditEvent(dealershipId: number, event: NewAuditEvent): Promise<AuditEvent>;
-  listAuditEvents(dealershipId: number, limit?: number): Promise<AuditEvent[]>;
+  listAuditEvents(
+    dealershipId: number,
+    limit?: number,
+    authorizedStoreIds?: readonly number[] | null,
+  ): Promise<AuditEvent[]>;
   listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]>;
   listBySourceFile(dealershipId: number, sourceFileId: number): Promise<Transaction[]>;
   getTransactionById(
@@ -131,8 +149,15 @@ export interface TransactionRepository {
     transactionId: number,
     update: { vin: string; raw_data: Record<string, unknown> },
   ): Promise<Transaction | null>;
-  listAccountsSummary(dealershipId: number): Promise<AccountSummary[]>;
-  getAccountDetail(dealershipId: number, accountIdentifier: string): Promise<AccountDetail | null>;
+  listAccountsSummary(
+    dealershipId: number,
+    authorizedStoreIds?: readonly number[] | null,
+  ): Promise<AccountSummary[]>;
+  getAccountDetail(
+    dealershipId: number,
+    accountIdentifier: string,
+    authorizedStoreIds?: readonly number[] | null,
+  ): Promise<AccountDetail | null>;
   getMonthEndReport(
     dealershipId: number,
     startDate: string,
@@ -152,6 +177,10 @@ export interface TransactionRepository {
     dealershipId: number,
     artifact: NewReconciliationArtifact,
   ): Promise<ReconciliationArtifactMetadata>;
+  createReconciliationArtifactBatch(
+    dealershipId: number,
+    artifacts: NewReconciliationArtifact[],
+  ): Promise<ReconciliationArtifactMetadata[]>;
   listReconciliationArtifacts(
     dealershipId: number,
     reconciliationRunId: number,
@@ -285,11 +314,31 @@ export class MemoryTransactionRepository implements TransactionRepository {
     transactions: NewTransaction[],
     uploadContent?: NewSourceFileUploadContent,
   ): Promise<SourceFileImport> {
+    const dealershipStoreId =
+      sourceFileInput.dealership_store_id ?? this.getDefaultStoreId(dealershipId);
+    if (
+      hasDuplicateMemorySourceIdentity(
+        this.sourceFiles,
+        dealershipId,
+        dealershipStoreId,
+        sourceFileInput,
+      )
+    ) {
+      throw new DuplicateSourceFileError();
+    }
     const sourceFile: SourceFile = {
       ...sourceFileInput,
       id: this.nextSourceFileId++,
       dealership_id: dealershipId,
-      dealership_store_id: sourceFileInput.dealership_store_id ?? this.getDefaultStoreId(dealershipId),
+      dealership_store_id: dealershipStoreId,
+      accounting_month: sourceFileInput.accounting_month ?? null,
+      rooftop_profile_id: sourceFileInput.rooftop_profile_id ?? null,
+      rooftop_profile_version: sourceFileInput.rooftop_profile_version ?? null,
+      parser_name: sourceFileInput.parser_name ?? null,
+      parser_version: sourceFileInput.parser_version ?? null,
+      preprocessor_name: sourceFileInput.preprocessor_name ?? null,
+      preprocessor_version: sourceFileInput.preprocessor_version ?? null,
+      preprocessing_metadata: cloneNullableJson(sourceFileInput.preprocessing_metadata ?? null),
       created_at: new Date().toISOString(),
     };
     this.sourceFiles.push(sourceFile);
@@ -304,7 +353,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     }));
     const inserted = await this.insertMany(scopedTransactions);
 
-    return { sourceFile, transactions: inserted };
+    return { sourceFile: cloneSourceFile(sourceFile), transactions: inserted };
   }
 
   async replaceSourceFileWithTransactions(
@@ -321,14 +370,35 @@ export class MemoryTransactionRepository implements TransactionRepository {
       return null;
     }
 
+    const dealershipStoreId =
+      sourceFileInput.dealership_store_id ?? sourceFile.dealership_store_id;
+    if (
+      hasDuplicateMemorySourceIdentity(
+        this.sourceFiles,
+        dealershipId,
+        dealershipStoreId,
+        sourceFileInput,
+        sourceFileId,
+      )
+    ) {
+      throw new DuplicateSourceFileError();
+    }
     Object.assign(sourceFile, {
-      dealership_store_id: sourceFileInput.dealership_store_id ?? sourceFile.dealership_store_id,
+      dealership_store_id: dealershipStoreId,
       source_type: sourceFileInput.source_type,
       original_filename: sourceFileInput.original_filename,
       stored_filename: sourceFileInput.stored_filename,
       file_hash: sourceFileInput.file_hash,
       row_count: sourceFileInput.row_count,
       validation_error_count: sourceFileInput.validation_error_count,
+      accounting_month: sourceFileInput.accounting_month ?? null,
+      rooftop_profile_id: sourceFileInput.rooftop_profile_id ?? null,
+      rooftop_profile_version: sourceFileInput.rooftop_profile_version ?? null,
+      parser_name: sourceFileInput.parser_name ?? null,
+      parser_version: sourceFileInput.parser_version ?? null,
+      preprocessor_name: sourceFileInput.preprocessor_name ?? null,
+      preprocessor_version: sourceFileInput.preprocessor_version ?? null,
+      preprocessing_metadata: cloneNullableJson(sourceFileInput.preprocessing_metadata ?? null),
     });
     if (uploadContent) {
       this.upsertSourceFileUploadContent(sourceFile, uploadContent);
@@ -345,7 +415,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     }));
     const inserted = await this.insertMany(scopedTransactions);
 
-    return { sourceFile, transactions: inserted };
+    return { sourceFile: cloneSourceFile(sourceFile), transactions: inserted };
   }
 
   async insertMany(transactions: NewTransaction[]): Promise<Transaction[]> {
@@ -364,24 +434,55 @@ export class MemoryTransactionRepository implements TransactionRepository {
   }
 
   async getSourceFile(sourceFileId: number): Promise<SourceFile | null> {
-    return this.sourceFiles.find((sourceFile) => sourceFile.id === sourceFileId) ?? null;
+    const sourceFile = this.sourceFiles.find((candidate) => candidate.id === sourceFileId);
+    return sourceFile ? cloneSourceFile(sourceFile) : null;
   }
 
-  async getSourceFileByHash(
+  async getReusableSourceFile(
+    dealershipId: number,
+    dealershipStoreId: number,
+    sourceType: SourceType,
+    fileHash: string,
+    identity: SourceProcessingIdentity,
+  ): Promise<SourceFile | null> {
+    const sourceFile = this.sourceFiles.find(
+      (sourceFile) =>
+        sourceFile.dealership_id === dealershipId &&
+        sourceFile.dealership_store_id === dealershipStoreId &&
+        sourceFile.source_type === sourceType &&
+        sourceFile.file_hash === fileHash &&
+        sourceFile.accounting_month === identity.accounting_month &&
+        sourceFile.rooftop_profile_id === identity.rooftop_profile_id &&
+        sourceFile.rooftop_profile_version === identity.rooftop_profile_version &&
+        sourceFile.parser_name === identity.parser_name &&
+        sourceFile.parser_version === identity.parser_version &&
+        sourceFile.preprocessor_name === identity.preprocessor_name &&
+        sourceFile.preprocessor_version === identity.preprocessor_version,
+    );
+    return sourceFile ? cloneSourceFile(sourceFile) : null;
+  }
+
+  async getReusableLegacySourceFile(
     dealershipId: number,
     dealershipStoreId: number | null,
     sourceType: SourceType,
     fileHash: string,
   ): Promise<SourceFile | null> {
-    return (
-      this.sourceFiles.find(
-        (sourceFile) =>
-          sourceFile.dealership_id === dealershipId &&
-          sourceFile.dealership_store_id === dealershipStoreId &&
-          sourceFile.source_type === sourceType &&
-          sourceFile.file_hash === fileHash,
-      ) ?? null
+    const sourceFile = this.sourceFiles.find(
+      (candidate) =>
+        candidate.dealership_id === dealershipId &&
+        candidate.dealership_store_id === dealershipStoreId &&
+        candidate.source_type === sourceType &&
+        candidate.file_hash === fileHash &&
+        candidate.accounting_month === null &&
+        candidate.rooftop_profile_id === null &&
+        candidate.rooftop_profile_version === null &&
+        candidate.parser_name === null &&
+        candidate.parser_version === null &&
+        candidate.preprocessor_name === null &&
+        candidate.preprocessor_version === null,
     );
+    return sourceFile ? cloneSourceFile(sourceFile) : null;
   }
 
   async listSourceFiles(
@@ -553,9 +654,17 @@ export class MemoryTransactionRepository implements TransactionRepository {
     return cloneAuditEvent(event);
   }
 
-  async listAuditEvents(dealershipId: number, limit = 100): Promise<AuditEvent[]> {
+  async listAuditEvents(
+    dealershipId: number,
+    limit = 100,
+    authorizedStoreIds: readonly number[] | null = null,
+  ): Promise<AuditEvent[]> {
     return this.auditEvents
-      .filter((event) => event.dealership_id === dealershipId)
+      .filter(
+        (event) =>
+          event.dealership_id === dealershipId &&
+          isAuthorizedStore(this.auditEventStoreId(event), authorizedStoreIds),
+      )
       .slice()
       .sort((left, right) => right.id - left.id)
       .slice(0, limit)
@@ -608,21 +717,35 @@ export class MemoryTransactionRepository implements TransactionRepository {
     return cloneTransaction(transaction);
   }
 
-  async listAccountsSummary(dealershipId: number): Promise<AccountSummary[]> {
+  async listAccountsSummary(
+    dealershipId: number,
+    authorizedStoreIds: readonly number[] | null = null,
+  ): Promise<AccountSummary[]> {
+    const transactions = this.transactions.filter(
+      (transaction) =>
+        transaction.dealership_id === dealershipId &&
+        isAuthorizedStore(this.transactionStoreId(transaction), authorizedStoreIds),
+    );
+    const transactionIds = new Set(transactions.map((transaction) => transaction.id));
     return buildAccountSummaries(
-      this.transactions.filter((transaction) => transaction.dealership_id === dealershipId),
-      this.reconciliationExceptions.filter((exception) => exception.dealership_id === dealershipId),
+      transactions,
+      this.reconciliationExceptions.filter(
+        (exception) =>
+          exception.dealership_id === dealershipId && transactionIds.has(exception.transaction_id),
+      ),
     );
   }
 
   async getAccountDetail(
     dealershipId: number,
     accountIdentifier: string,
+    authorizedStoreIds: readonly number[] | null = null,
   ): Promise<AccountDetail | null> {
     const accountTransactions = this.transactions.filter(
       (transaction) =>
         transaction.dealership_id === dealershipId &&
-        transaction.account_identifier === accountIdentifier,
+        transaction.account_identifier === accountIdentifier &&
+        isAuthorizedStore(this.transactionStoreId(transaction), authorizedStoreIds),
     );
     if (accountTransactions.length === 0) {
       return null;
@@ -720,6 +843,18 @@ export class MemoryTransactionRepository implements TransactionRepository {
   }
 
   async createReconciliationRun(input: PersistReconciliationRunInput): Promise<ReconciliationRun> {
+    if (
+      input.automated &&
+      this.reconciliationRuns.some(
+        (run) =>
+          run.dealership_id === input.dealership_id &&
+          run.automated &&
+          run.boa_source_file_id === input.boa_source_file_id &&
+          run.dealertrack_source_file_id === input.dealertrack_source_file_id,
+      )
+    ) {
+      throw new AutomatedReconciliationAlreadyExistsError();
+    }
     const createdAt = new Date().toISOString();
     const run: ReconciliationRun = {
       id: this.nextReconciliationRunId++,
@@ -731,6 +866,10 @@ export class MemoryTransactionRepository implements TransactionRepository {
       exception_count: input.result.exception_count,
       duplicate_count: input.result.duplicate_count,
       status: input.status ?? "completed",
+      automated: input.automated ?? false,
+      accounting_month: input.accounting_month ?? null,
+      rooftop_profile_id: input.rooftop_profile_id ?? null,
+      rooftop_profile_version: input.rooftop_profile_version ?? null,
       created_at: createdAt,
     };
     this.reconciliationRuns.push(run);
@@ -791,6 +930,33 @@ export class MemoryTransactionRepository implements TransactionRepository {
     return run;
   }
 
+  private transactionStoreId(transaction: Transaction): number | null {
+    return this.sourceFiles.find((sourceFile) => sourceFile.id === transaction.source_file_id)
+      ?.dealership_store_id ?? null;
+  }
+
+  private auditEventStoreId(event: AuditEvent): number | null {
+    const stateStoreId = storeIdFromAuditState(event.new_state) ?? storeIdFromAuditState(event.previous_state);
+    if (stateStoreId !== null) return stateStoreId;
+    const entityId = Number(event.entity_id);
+    if (event.entity_type === "dealership_store" && Number.isInteger(entityId)) return entityId;
+    if (event.entity_type === "reconciliation_run" && Number.isInteger(entityId)) {
+      return this.reconciliationRuns.find((run) => run.id === entityId)?.dealership_store_id ?? null;
+    }
+    if (event.entity_type === "reconciliation_exception" && Number.isInteger(entityId)) {
+      const exception = this.reconciliationExceptions.find((candidate) => candidate.id === entityId);
+      return this.reconciliationRuns.find((run) => run.id === exception?.reconciliation_run_id)
+        ?.dealership_store_id ?? null;
+    }
+    if (event.entity_type === "reconciliation_artifact" && Number.isInteger(entityId)) {
+      return this.reconciliationArtifacts.find((artifact) => artifact.id === entityId)?.store_id ?? null;
+    }
+    if (event.entity_type === "scheduled_reconciliation_job" && Number.isInteger(entityId)) {
+      return this.scheduledReconciliationJobs.find((job) => job.id === entityId)?.dealership_store_id ?? null;
+    }
+    return null;
+  }
+
   async updateReconciliationRunStatus(
     dealershipId: number,
     reconciliationRunId: number,
@@ -837,6 +1003,64 @@ export class MemoryTransactionRepository implements TransactionRepository {
     );
     this.reconciliationArtifacts.push(artifact);
     return toArtifactMetadata(artifact);
+  }
+
+  async createReconciliationArtifactBatch(
+    dealershipId: number,
+    artifactInputs: NewReconciliationArtifact[],
+  ): Promise<ReconciliationArtifactMetadata[]> {
+    const batchKeys = new Set<string>();
+    const artifacts = artifactInputs.map((artifactInput, index) => {
+      const run = this.reconciliationRuns.find(
+        (candidate) =>
+          candidate.id === artifactInput.reconciliation_run_id &&
+          candidate.dealership_id === dealershipId,
+      );
+      if (!run) {
+        throw new Error(
+          `Cannot persist reconciliation artifact batch: run ${artifactInput.reconciliation_run_id} does not belong to dealership ${dealershipId}.`,
+        );
+      }
+      if (run.status !== "artifact_pending") {
+        throw new Error(
+          `Cannot persist reconciliation artifact batch: run ${artifactInput.reconciliation_run_id} must be artifact_pending.`,
+        );
+      }
+
+      const key = `${artifactInput.reconciliation_run_id}:${artifactInput.artifact_type}`;
+      if (batchKeys.has(key)) {
+        throw new Error(
+          `Cannot persist reconciliation artifact batch: duplicate artifact type ${artifactInput.artifact_type} for run ${artifactInput.reconciliation_run_id}.`,
+        );
+      }
+      batchKeys.add(key);
+
+      if (
+        this.reconciliationArtifacts.some(
+          (candidate) =>
+            candidate.dealership_id === dealershipId &&
+            candidate.reconciliation_run_id === artifactInput.reconciliation_run_id &&
+            candidate.artifact_type === artifactInput.artifact_type,
+        )
+      ) {
+        throw new Error(
+          `Cannot persist reconciliation artifact batch: artifact type ${artifactInput.artifact_type} already exists for run ${artifactInput.reconciliation_run_id}.`,
+        );
+      }
+
+      return {
+        ...artifactInput,
+        id: this.nextReconciliationArtifactId + index,
+        dealership_id: dealershipId,
+        file_size: artifactInput.file_size ?? artifactInput.content.byteLength,
+        content: Buffer.from(artifactInput.content),
+        created_at: new Date().toISOString(),
+      } satisfies ReconciliationArtifact;
+    });
+
+    this.nextReconciliationArtifactId += artifacts.length;
+    this.reconciliationArtifacts.push(...artifacts);
+    return artifacts.map(toArtifactMetadata);
   }
 
   async listReconciliationArtifacts(
@@ -1199,6 +1423,9 @@ export class MemoryTransactionRepository implements TransactionRepository {
       exception_count: run.exception_count,
       duplicate_count: run.duplicate_count,
       status: run.status,
+      accounting_month: run.accounting_month,
+      rooftop_profile_id: run.rooftop_profile_id,
+      rooftop_profile_version: run.rooftop_profile_version,
       created_at: run.created_at,
     };
   }
@@ -1213,6 +1440,14 @@ export class MemoryTransactionRepository implements TransactionRepository {
       filename: sourceFile.original_filename,
       row_count: sourceFile.row_count,
       validation_error_count: sourceFile.validation_error_count,
+      accounting_month: sourceFile.accounting_month,
+      rooftop_profile_id: sourceFile.rooftop_profile_id,
+      rooftop_profile_version: sourceFile.rooftop_profile_version,
+      parser_name: sourceFile.parser_name,
+      parser_version: sourceFile.parser_version,
+      preprocessor_name: sourceFile.preprocessor_name,
+      preprocessor_version: sourceFile.preprocessor_version,
+      preprocessing_metadata: cloneNullableJson(sourceFile.preprocessing_metadata),
       created_at: sourceFile.created_at,
     };
   }
@@ -1307,6 +1542,14 @@ function _toSourceFileSummary(sourceFile: SourceFile): SourceFileSummary {
     filename: sourceFile.original_filename,
     row_count: sourceFile.row_count,
     validation_error_count: sourceFile.validation_error_count,
+    accounting_month: sourceFile.accounting_month,
+    rooftop_profile_id: sourceFile.rooftop_profile_id,
+    rooftop_profile_version: sourceFile.rooftop_profile_version,
+    parser_name: sourceFile.parser_name,
+    parser_version: sourceFile.parser_version,
+    preprocessor_name: sourceFile.preprocessor_name,
+    preprocessor_version: sourceFile.preprocessor_version,
+    preprocessing_metadata: cloneNullableJson(sourceFile.preprocessing_metadata),
     created_at: sourceFile.created_at,
   };
 }
@@ -1653,6 +1896,68 @@ function cloneSourceFileUploadContent(
   };
 }
 
+const sourceProcessingIdentityKeys: Array<keyof SourceProcessingIdentity> = [
+  "accounting_month",
+  "rooftop_profile_id",
+  "rooftop_profile_version",
+  "parser_name",
+  "parser_version",
+  "preprocessor_name",
+  "preprocessor_version",
+];
+
+type NullableSourceProcessingIdentity = Pick<SourceFile, keyof SourceProcessingIdentity>;
+
+function hasDuplicateMemorySourceIdentity(
+  sourceFiles: SourceFile[],
+  dealershipId: number,
+  dealershipStoreId: number | null,
+  sourceFileInput: NewSourceFile,
+  excludedSourceFileId?: number,
+): boolean {
+  const identity = nullableSourceProcessingIdentity(sourceFileInput);
+  const isLegacyIdentity = sourceProcessingIdentityKeys.every((key) => identity[key] === null);
+  const isCompleteIdentity = sourceProcessingIdentityKeys.every((key) => identity[key] !== null);
+  if (!isLegacyIdentity && !isCompleteIdentity) {
+    return false;
+  }
+
+  return sourceFiles.some(
+    (sourceFile) =>
+      sourceFile.id !== excludedSourceFileId &&
+      sourceFile.dealership_id === dealershipId &&
+      sourceFile.dealership_store_id === dealershipStoreId &&
+      sourceFile.source_type === sourceFileInput.source_type &&
+      sourceFile.file_hash === sourceFileInput.file_hash &&
+      sourceProcessingIdentityKeys.every((key) => sourceFile[key] === identity[key]),
+  );
+}
+
+function nullableSourceProcessingIdentity(
+  sourceFile: NewSourceFile,
+): NullableSourceProcessingIdentity {
+  return {
+    accounting_month: sourceFile.accounting_month ?? null,
+    rooftop_profile_id: sourceFile.rooftop_profile_id ?? null,
+    rooftop_profile_version: sourceFile.rooftop_profile_version ?? null,
+    parser_name: sourceFile.parser_name ?? null,
+    parser_version: sourceFile.parser_version ?? null,
+    preprocessor_name: sourceFile.preprocessor_name ?? null,
+    preprocessor_version: sourceFile.preprocessor_version ?? null,
+  };
+}
+
+function cloneSourceFile(sourceFile: SourceFile): SourceFile {
+  return {
+    ...sourceFile,
+    preprocessing_metadata: cloneNullableJson(sourceFile.preprocessing_metadata),
+  };
+}
+
+function cloneNullableJson<T>(value: T | null): T | null {
+  return value === null ? null : cloneJson(value);
+}
+
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -1663,4 +1968,17 @@ function cloneAuditEvent(event: AuditEvent): AuditEvent {
     previous_state: cloneJson(event.previous_state),
     new_state: cloneJson(event.new_state),
   };
+}
+
+function isAuthorizedStore(
+  storeId: number | null,
+  authorizedStoreIds: readonly number[] | null,
+): boolean {
+  return authorizedStoreIds === null || (storeId !== null && authorizedStoreIds.includes(storeId));
+}
+
+function storeIdFromAuditState(state: Record<string, unknown> | null): number | null {
+  if (!state) return null;
+  const candidate = state.dealership_store_id ?? state.store_id;
+  return typeof candidate === "number" && Number.isInteger(candidate) ? candidate : null;
 }

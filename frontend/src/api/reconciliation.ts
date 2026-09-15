@@ -16,11 +16,13 @@ export async function reconcileSourceFiles({
   boaSourceFileId,
   dealertrackSourceFileId,
   dealershipStoreId,
+  accountingMonth,
 }: ReconcileSourceFilesInput): Promise<ReconciliationResponse> {
   return apiPost<ReconciliationResponse>("/reconcile", {
     boa_source_file_id: boaSourceFileId,
     dealertrack_source_file_id: dealertrackSourceFileId,
-    ...(dealershipStoreId ? { dealership_store_id: dealershipStoreId } : {}),
+    dealership_store_id: dealershipStoreId,
+    accounting_month: accountingMonth,
   });
 }
 

@@ -1,16 +1,24 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parse } from "csv-parse/sync";
 import { describe, expect, test } from "vitest";
 
-import { STORE_WORKFLOW_CONFIGS } from "../config/storeWorkflowConfig.js";
+import {
+  ROOFTOP_PROFILES,
+  STORE_WORKFLOW_CONFIGS,
+} from "../config/storeWorkflowConfig.js";
+import { type AccountingMonth, parseAccountingMonth } from "../domain/accountingMonth.js";
 import { parseAmountToCents } from "../domain/money.js";
 import type { NewTransaction, TransactionSummary } from "../domain/types.js";
 import { parseCsvToTable } from "../services/parsers/csvTableParser.js";
 import { preprocessBoa } from "../services/preprocessing/boaPreprocessor.js";
 import { preprocessDealertrack } from "../services/preprocessing/dealertrackPreprocessor.js";
+import {
+  ACURA_SANITIZED_FIXTURE_PATHS,
+  loadAcuraSanitizedContract,
+} from "../testFixtures/acura/index.js";
 import {
   buildMergedFloorplanWorkbook,
   toMergedFloorplanFilename,
@@ -29,16 +37,14 @@ const HURST_HEADERS = [
   "Control",
 ];
 
-const ACURA_HEADERS = [
-  "ACURA",
-  "Serial No/VIN",
-  "VIN6",
-  "Ending Balance",
-  "324",
-  "VIN6",
-  "Description",
-  "Control",
-];
+const ACURA_SANITIZED_CONTRACT = loadAcuraSanitizedContract();
+const ACURA_HEADERS = ACURA_SANITIZED_CONTRACT.mergedHeaders;
+
+function accountingMonth(value: string): AccountingMonth {
+  const parsed = parseAccountingMonth(value);
+  if (!parsed) throw new Error(`Invalid accounting month in test: ${value}`);
+  return parsed;
+}
 
 const FW_HEADERS = [
   "FW",
@@ -52,7 +58,6 @@ const FW_HEADERS = [
 ];
 
 const presenterDir = dirname(fileURLToPath(import.meta.url));
-const fixtureDir = join(presenterDir, "__fixtures__", "acura");
 const fwFixtureDir = join(presenterDir, "__fixtures__", "fw");
 
 type AcuraMergedFixtureCase = {
@@ -97,53 +102,17 @@ type AcuraMergedFixture = {
   };
 };
 
-const ACURA_MERGED_FIXTURE_CASES: AcuraMergedFixtureCase[] = [
-  {
-    month: "FEB",
-    mergedFilename: "ACURA FEB MERGED(BillingStatementFebruary2026).csv",
-    rawBoaFilename: "ACURA BOA FEB(in).csv",
-    rawDealertrackFilename: "ACURA DT FEB(in).csv",
-    expected: {
-      detailRows: 129,
-      matched: 114,
-      boaOnly: 0,
-      dealertrackOnly: 15,
-      amountMismatchSplitRows: 0,
-      boaTotalCents: 546_981_440,
-      dealertrackTotalCents: -618_816_030,
-    },
-  },
-  {
-    month: "MARCH",
-    mergedFilename: "ACURA MARCH MERGED(BillingStatementMarch2026).csv",
-    rawBoaFilename: "ACURA BOA MARCH(in).csv",
-    rawDealertrackFilename: "ACURA DT MARCH(in).csv",
-    expected: {
-      detailRows: 213,
-      matched: 204,
-      boaOnly: 0,
-      dealertrackOnly: 9,
-      amountMismatchSplitRows: 0,
-      boaTotalCents: 980_937_310,
-      dealertrackTotalCents: -1_027_649_870,
-    },
-  },
-  {
-    month: "APRIL",
-    mergedFilename: "ACURA APRIL MERGED(BillingStatementApril2026).csv",
-    rawBoaFilename: "ACURA BOA APRIL(in).csv",
-    rawDealertrackFilename: "ACURA DT APRIL(in).csv",
-    expected: {
-      detailRows: 208,
-      matched: 199,
-      boaOnly: 0,
-      dealertrackOnly: 9,
-      amountMismatchSplitRows: 0,
-      boaTotalCents: 1_005_665_140,
-      dealertrackTotalCents: -1_039_411_200,
-    },
-  },
-];
+test("uses only sanitized Acura fixtures", () => {
+  const absoluteRoot = resolve(presenterDir, "..", "testFixtures", "acura");
+  const rootPrefix = `${absoluteRoot}${sep}`;
+  const actualAcuraFixturePaths = Object.values(ACURA_SANITIZED_FIXTURE_PATHS);
+
+  for (const fixturePath of actualAcuraFixturePaths) {
+    const absoluteFixture = realpathSync(fixturePath);
+    expect(isAbsolute(absoluteFixture)).toBe(true);
+    expect(absoluteFixture.startsWith(rootPrefix)).toBe(true);
+  }
+});
 
 const FW_MERGED_FIXTURE_CASES: AcuraMergedFixtureCase[] = [
   {
@@ -369,6 +338,7 @@ describe("merged floorplan presenter", () => {
     expect(html).not.toContain("<th>HURST</th>");
     expect(html).not.toContain("<th>2100</th>");
     expect(html).not.toContain("2100 total");
+    expect(toMergedFloorplanFilename(workbook)).toBe("acura-merged-floorplan-2026-04.xls");
   });
 
   test("uses FW merged headers and display account label from store config", () => {
@@ -487,108 +457,88 @@ describe("merged floorplan presenter", () => {
       dealertrack_control: "A1001",
     });
   });
+
+  test("preserves the Dealertrack sequence when Acura rows share an amount", () => {
+    const matchedVin = "5NPE24AF7KH700001";
+    const dealertrackOnlyVin = "5NPE24AF7KH700009";
+    const workbook = buildMergedFloorplanWorkbook({
+      storeConfig: STORE_WORKFLOW_CONFIGS.acura,
+      storeName: "Hiley Acura",
+      periodDate: "04-30-26",
+      boaRecords: [boa(101, 1_000_000, matchedVin, "MATCHED")],
+      dealertrackRecords: [
+        dealertrack(201, 1_000_000, matchedVin, "MATCHED", "A1001", "324"),
+        dealertrack(202, 1_000_000, dealertrackOnlyVin, "DT ONLY", "A1009", "324"),
+      ],
+    });
+
+    expect(workbook.rows.map((row) => row.dealertrack_vin6)).toEqual(["700001", "700009"]);
+  });
 });
 
-describe("Acura merged floorplan golden fixtures", () => {
-  test.each(ACURA_MERGED_FIXTURE_CASES)(
-    "parses Tara's $month merged CSV structure, counts, and totals",
-    (fixtureCase) => {
-      const fixture = parseAcuraMergedFixture(fixtureCase.mergedFilename);
+describe("sanitized Acura merged floorplan fixtures", () => {
+  test("parses the structural contract without client rows", () => {
+    const fixture = parseAcuraMergedFixture();
 
-      expect(readFixture(fixtureCase.rawBoaFilename).length).toBeGreaterThan(0);
-      expect(readFixture(fixtureCase.rawDealertrackFilename).length).toBeGreaterThan(0);
-      expect(fixture.headers).toEqual(ACURA_HEADERS);
-      expect(fixture.rows).toHaveLength(fixtureCase.expected.detailRows);
-      expect(fixture.counts).toEqual({
-        matched: fixtureCase.expected.matched,
-        boaOnly: fixtureCase.expected.boaOnly,
-        dealertrackOnly: fixtureCase.expected.dealertrackOnly,
-        amountMismatchSplitRows: fixtureCase.expected.amountMismatchSplitRows,
-      });
-      expect(fixture.totals).toEqual({
-        boaTotalCents: fixtureCase.expected.boaTotalCents,
-        dealertrackTotalCents: fixtureCase.expected.dealertrackTotalCents,
-      });
-    },
-  );
+    expect(fixture.headers).toEqual(ACURA_SANITIZED_CONTRACT.mergedHeaders);
+    expect(fixture.rows).toHaveLength(8);
+    expect(fixture.counts).toEqual({
+      matched: ACURA_SANITIZED_CONTRACT.counts.matched,
+      boaOnly: 2,
+      dealertrackOnly: 4,
+      amountMismatchSplitRows: ACURA_SANITIZED_CONTRACT.counts.amountMismatchRows,
+    });
+    expect(fixture.totals).toEqual({
+      boaTotalCents: ACURA_SANITIZED_CONTRACT.totals.boaCents,
+      dealertrackTotalCents: ACURA_SANITIZED_CONTRACT.totals.dealertrackCents,
+    });
+  });
 
-  test.each(ACURA_MERGED_FIXTURE_CASES)(
-    "generates Acura merged presenter output matching $month fixture-derived expectations",
-    (fixtureCase) => {
-      const fixture = parseAcuraMergedFixture(fixtureCase.mergedFilename);
-      const { boaRecords, dealertrackRecords } = fixtureRowsToCleanedRecords(fixture.rows);
+  test("preprocesses synthetic Acura inputs into the deterministic presenter order", () => {
+    const { boaResult, dealertrackResult, boaRecords, dealertrackRecords } =
+      preprocessRawAcuraFixtures();
+    const workbook = buildMergedFloorplanWorkbook({
+      storeConfig: STORE_WORKFLOW_CONFIGS.acura,
+      storeName: "Acura",
+      periodDate: "04-30-26",
+      boaRecords,
+      dealertrackRecords,
+    });
+    const htmlRows = extractTableRows(toMergedFloorplanXlsHtml(workbook));
+    const headerRow = htmlRows.find((row) => row.join("|") === ACURA_HEADERS.join("|"));
+    const totalsRow = htmlRows.find((row) => row[0] === "BOA total");
 
-      const workbook = buildMergedFloorplanWorkbook({
-        storeConfig: STORE_WORKFLOW_CONFIGS.acura,
-        storeName: "Acura",
-        periodDate: fixtureCase.month,
-        boaRecords,
-        dealertrackRecords,
-      });
-      const htmlRows = extractTableRows(toMergedFloorplanXlsHtml(workbook));
-      const headerRow = htmlRows.find((row) => row.join("|") === ACURA_HEADERS.join("|"));
-      const totalsRow = htmlRows.find((row) => row[0] === "BOA total");
+    expect(boaResult.validationErrors).toEqual([]);
+    expect(boaResult.summary).toMatchObject({
+      rows_accepted: ACURA_SANITIZED_CONTRACT.counts.boaAccepted,
+      rows_removed_zero_balance: 1,
+      rows_removed_straightline: 1,
+    });
+    expect(boaResult.diagnostics.some((diagnostic) => diagnostic.kind === "ambiguous_amount_column")).toBe(true);
+    expect(dealertrackResult.validationErrors).toEqual([]);
+    expect(dealertrackResult.summary).toMatchObject({
+      rows_accepted: ACURA_SANITIZED_CONTRACT.counts.dealertrackAccepted,
+      duplicate_vin6_count: ACURA_SANITIZED_CONTRACT.counts.duplicateCandidates,
+      rows_requiring_manual_enrichment: 1,
+    });
 
-      expect(workbook.headers).toEqual(ACURA_HEADERS);
-      expect(headerRow).toEqual(ACURA_HEADERS);
-      expect(countWorkbookRows(workbook)).toEqual({
-        matched: fixtureCase.expected.matched,
-        boaOnly: fixtureCase.expected.boaOnly,
-        dealertrackOnly: fixtureCase.expected.dealertrackOnly,
-      });
-      expect(countAmountMismatchSplitRows(workbook.rows)).toBe(
-        fixtureCase.expected.amountMismatchSplitRows,
-      );
-      expect(workbook.boa_total_amount_cents).toBe(fixtureCase.expected.boaTotalCents);
-      expect(workbook.dealertrack_total_amount_cents).toBe(
-        fixtureCase.expected.dealertrackTotalCents,
-      );
-      expect(totalsRow?.[3]).toBe(formatAccountingCents(fixtureCase.expected.boaTotalCents));
-      expect(totalsRow?.[4]).toBe(
-        formatAccountingCents(fixtureCase.expected.dealertrackTotalCents),
-      );
-      expect(totalsRow?.[6]).toBe("324 total");
-    },
-  );
-});
-
-describe("Acura raw preprocessing to merged floorplan", () => {
-  test.each(ACURA_MERGED_FIXTURE_CASES)(
-    "preprocesses raw Acura $month BOA/DT files into presenter inputs matching Tara's merged CSV",
-    (fixtureCase) => {
-      const expectedFixture = parseAcuraMergedFixture(fixtureCase.mergedFilename);
-      const { boaResult, dealertrackResult, boaRecords, dealertrackRecords } =
-        preprocessRawAcuraFixtures(fixtureCase);
-
-      expect(boaResult.validationErrors).toEqual([]);
-      expect(dealertrackResult.validationErrors).toEqual([]);
-      expect(boaResult.transactions).toHaveLength(
-        fixtureCase.expected.matched + fixtureCase.expected.boaOnly,
-      );
-      expect(dealertrackResult.transactions).toHaveLength(
-        fixtureCase.expected.matched + fixtureCase.expected.dealertrackOnly,
-      );
-
-      const workbook = buildMergedFloorplanWorkbook({
-        storeConfig: STORE_WORKFLOW_CONFIGS.acura,
-        storeName: "Acura",
-        periodDate: fixtureCase.month,
-        boaRecords,
-        dealertrackRecords,
-      });
-
-      expect(workbook.headers).toEqual(ACURA_HEADERS);
-      expect(countWorkbookRows(workbook)).toEqual({
-        matched: expectedFixture.counts.matched,
-        boaOnly: expectedFixture.counts.boaOnly,
-        dealertrackOnly: expectedFixture.counts.dealertrackOnly,
-      });
-      expect(workbook.boa_total_amount_cents).toBe(expectedFixture.totals.boaTotalCents);
-      expect(workbook.dealertrack_total_amount_cents).toBe(
-        expectedFixture.totals.dealertrackTotalCents,
-      );
-    },
-  );
+    expect(workbook.headers).toEqual(ACURA_SANITIZED_CONTRACT.mergedHeaders);
+    expect(headerRow).toEqual(ACURA_SANITIZED_CONTRACT.mergedHeaders);
+    expect(countWorkbookRows(workbook)).toEqual({ matched: 2, boaOnly: 2, dealertrackOnly: 4 });
+    expect(countAmountMismatchSplitRows(workbook.rows)).toBe(
+      ACURA_SANITIZED_CONTRACT.counts.amountMismatchRows,
+    );
+    expect(workbook.boa_total_amount_cents).toBe(ACURA_SANITIZED_CONTRACT.totals.boaCents);
+    expect(workbook.dealertrack_total_amount_cents).toBe(
+      ACURA_SANITIZED_CONTRACT.totals.dealertrackCents,
+    );
+    expect(workbook.rows.map(rowOrderToken)).toEqual(ACURA_SANITIZED_CONTRACT.rowOrder);
+    expect(totalsRow?.[3]).toBe(formatAccountingCents(ACURA_SANITIZED_CONTRACT.totals.boaCents));
+    expect(totalsRow?.[4]).toBe(
+      formatAccountingCents(ACURA_SANITIZED_CONTRACT.totals.dealertrackCents),
+    );
+    expect(totalsRow?.[6]).toBe("324 total");
+  });
 });
 
 describe("FW merged floorplan golden fixtures", () => {
@@ -662,12 +612,8 @@ describe("FW raw preprocessing to merged floorplan", () => {
   );
 });
 
-// The accepted merged worksheet tests derive cleaned presenter inputs from
-// Tara's clerk workbook. The raw preprocessing tests above prove Acura CSV
-// preprocessors can now produce the same input counts and totals; remaining
-// wiring work is choosing the store config from upload/run context.
-function parseAcuraMergedFixture(filename: string): AcuraMergedFixture {
-  const records = parse(readFixture(filename), {
+function parseAcuraMergedFixture(): AcuraMergedFixture {
+  const records = parse(readFileSync(ACURA_SANITIZED_FIXTURE_PATHS.mergedCsv, "utf8"), {
     relax_column_count: true,
     skip_empty_lines: false,
   }) as string[][];
@@ -675,7 +621,7 @@ function parseAcuraMergedFixture(filename: string): AcuraMergedFixture {
   const nonEmptyRows = dataRows.filter((row) => row.some(hasText));
   const totalRowIndex = nonEmptyRows.findIndex((row) => text(row[6]) === "Final Totals:");
   if (totalRowIndex === -1) {
-    throw new Error(`${filename} is missing the Acura Final Totals row`);
+    throw new Error("Sanitized Acura merged fixture is missing the Final Totals row");
   }
 
   const totalRow = nonEmptyRows[totalRowIndex];
@@ -688,22 +634,37 @@ function parseAcuraMergedFixture(filename: string): AcuraMergedFixture {
     rows: detailRows,
     counts: countFixtureRows(detailRows),
     totals: {
-      boaTotalCents: requireParsedAmount(totalRow[3], filename, "BOA total"),
-      dealertrackTotalCents: requireParsedAmount(totalRow[4], filename, "Dealertrack total"),
+      boaTotalCents: requireParsedAmount(totalRow[3], "sanitized Acura fixture", "BOA total"),
+      dealertrackTotalCents: requireParsedAmount(
+        totalRow[4],
+        "sanitized Acura fixture",
+        "Dealertrack total",
+      ),
     },
   };
 }
 
-function preprocessRawAcuraFixtures(fixtureCase: AcuraMergedFixtureCase): {
+function preprocessRawAcuraFixtures(): {
   boaResult: ReturnType<typeof preprocessBoa>;
   dealertrackResult: ReturnType<typeof preprocessDealertrack>;
   boaRecords: TransactionSummary[];
   dealertrackRecords: TransactionSummary[];
 } {
-  const boaParsed = parseCsvToTable(readFixture(fixtureCase.rawBoaFilename), "no_header");
-  const dealertrackParsed = parseCsvToTable(readFixture(fixtureCase.rawDealertrackFilename), "with_header");
-  const boaResult = preprocessBoa(boaParsed);
+  const boaParsed = parseCsvToTable(readFileSync(ACURA_SANITIZED_FIXTURE_PATHS.boaCsv), "no_header");
+  const dealertrackParsed = parseCsvToTable(
+    readFileSync(ACURA_SANITIZED_FIXTURE_PATHS.dealertrackCsv),
+    "with_header",
+  );
+  const selectedMonth = accountingMonth("2026-04");
+  const boaResult = preprocessBoa(boaParsed, {
+    accountingMonth: selectedMonth,
+    parserIdentity: ROOFTOP_PROFILES.acura.parserIdentities.boa[0],
+    preprocessorIdentity: ROOFTOP_PROFILES.acura.preprocessorIdentities.boa,
+  });
   const dealertrackResult = preprocessDealertrack(dealertrackParsed, {
+    accountingMonth: selectedMonth,
+    parserIdentity: ROOFTOP_PROFILES.acura.parserIdentities.dealertrack[0],
+    preprocessorIdentity: ROOFTOP_PROFILES.acura.preprocessorIdentities.dealertrack,
     amountColumns: STORE_WORKFLOW_CONFIGS.acura.dealertrackAmountColumns,
     accountColumn: STORE_WORKFLOW_CONFIGS.acura.dealertrackAccountColumn,
     accountLabel: STORE_WORKFLOW_CONFIGS.acura.dealertrackAccountLabel,
@@ -761,8 +722,22 @@ function preprocessRawFwFixtures(fixtureCase: AcuraMergedFixtureCase): {
     readFwFixture("raw", fixtureCase.rawDealertrackFilename),
     "with_header",
   );
-  const boaResult = preprocessBoa(boaParsed);
+  const selectedMonth = accountingMonth(
+    fixtureCase.month === "FEB"
+      ? "2026-02"
+      : fixtureCase.month === "MARCH"
+        ? "2026-03"
+        : "2026-04",
+  );
+  const boaResult = preprocessBoa(boaParsed, {
+    accountingMonth: selectedMonth,
+    parserIdentity: ROOFTOP_PROFILES.fw.parserIdentities.boa[0],
+    preprocessorIdentity: ROOFTOP_PROFILES.fw.preprocessorIdentities.boa,
+  });
   const dealertrackResult = preprocessDealertrack(dealertrackParsed, {
+    accountingMonth: selectedMonth,
+    parserIdentity: ROOFTOP_PROFILES.fw.parserIdentities.dealertrack[0],
+    preprocessorIdentity: ROOFTOP_PROFILES.fw.preprocessorIdentities.dealertrack,
     amountColumns: STORE_WORKFLOW_CONFIGS.fw.dealertrackAmountColumns,
     accountColumn: STORE_WORKFLOW_CONFIGS.fw.dealertrackAccountColumn,
     accountLabel: STORE_WORKFLOW_CONFIGS.fw.dealertrackAccountLabel,
@@ -792,55 +767,6 @@ function toAcuraMergedFixtureRow(row: string[]): AcuraMergedFixtureRow {
     dealertrackDescription: text(row[6]),
     dealertrackControl: text(row[7]),
   };
-}
-
-function fixtureRowsToCleanedRecords(rows: AcuraMergedFixtureRow[]): {
-  boaRecords: TransactionSummary[];
-  dealertrackRecords: TransactionSummary[];
-} {
-  const boaRecords: TransactionSummary[] = [];
-  const dealertrackRecords: TransactionSummary[] = [];
-  let id = 1;
-
-  for (const row of rows) {
-    if (hasBoaSide(row)) {
-      boaRecords.push(
-        transaction({
-          id: id++,
-          source_type: "boa",
-          transaction_date: null,
-          amount: String((row.endingBalanceCents ?? 0) / 100),
-          amount_cents: row.endingBalanceCents ?? 0,
-          description: row.storeDescription,
-          account: null,
-          account_identifier: "floorplan",
-          reference_number: null,
-          stock_number: null,
-          vin: row.serialNoVin,
-        }),
-      );
-    }
-
-    if (hasDealertrackSide(row)) {
-      dealertrackRecords.push(
-        transaction({
-          id: id++,
-          source_type: "dealertrack",
-          transaction_date: null,
-          amount: String((row.dealertrackAccountAmountCents ?? 0) / 100),
-          amount_cents: row.dealertrackAccountAmountCents ?? 0,
-          description: row.dealertrackDescription,
-          account: "324",
-          account_identifier: "324",
-          reference_number: row.dealertrackControl || null,
-          stock_number: row.dealertrackControl || null,
-          vin: finalVinToken(row.dealertrackDescription),
-        }),
-      );
-    }
-  }
-
-  return { boaRecords, dealertrackRecords };
 }
 
 function toTransactionSummary(
@@ -913,6 +839,11 @@ function countAmountMismatchSplitRows(
   return splitRows;
 }
 
+function rowOrderToken(row: MergedFloorplanWorkbook["rows"][number]): string {
+  const vin6 = row.boa_vin6 || row.dealertrack_vin6 || "missing";
+  return `${row.classification}:${vin6}`;
+}
+
 function normalizeAcuraHeaders(row: string[]): string[] {
   return row.map((cell) => {
     const value = text(cell);
@@ -937,10 +868,6 @@ function hasDealertrackSide(row: AcuraMergedFixtureRow): boolean {
     row.dealertrackAccountAmountCents !== null;
 }
 
-function readFixture(filename: string): string {
-  return readFileSync(join(fixtureDir, filename), "utf8");
-}
-
 function readFwFixture(_kind: "raw" | "merged", filename: string): string {
   return readFileSync(join(fwFixtureDir, filename), "utf8");
 }
@@ -963,12 +890,6 @@ function text(value: string | null | undefined): string {
 
 function hasText(value: string | null | undefined): boolean {
   return text(value).length > 0;
-}
-
-function finalVinToken(description: string | null | undefined): string | null {
-  const tokens = text(description).toUpperCase().split(/\s+/);
-  const lastToken = tokens[tokens.length - 1];
-  return /^[A-HJ-NPR-Z0-9]{17}$/.test(lastToken ?? "") ? lastToken : null;
 }
 
 function formatAccountingCents(amountCents: number): string {

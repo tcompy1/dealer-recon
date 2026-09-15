@@ -1,21 +1,65 @@
 import { describe, expect, test } from "vitest";
 
-import type { NewReconciliationArtifact, NewTransaction, SourceFile } from "../domain/types.js";
+import {
+  getRooftopProfile,
+  type RooftopProfileId,
+} from "../config/storeWorkflowConfig.js";
+import {
+  parseAccountingMonth,
+  type AccountingMonth,
+} from "../domain/accountingMonth.js";
+import type {
+  NewReconciliationArtifact,
+  NewTransaction,
+  ProfiledNewSourceFile,
+  SourceFile,
+} from "../domain/types.js";
 import { MemoryTransactionRepository } from "../repositories/transactionRepository.js";
-import { createReconciliationRunFromSourceFiles } from "./reconciliationAutomation.js";
+import {
+  createReconciliationRunFromSourceFiles,
+  evaluateAutoRunAfterUpload,
+  findLatestSourceFilePair,
+} from "./reconciliationAutomation.js";
+import type { UploadPreprocessingMetadata } from "./preprocessing/types.js";
 
 class FailingArtifactRepository extends MemoryTransactionRepository {
-  private artifactWrites = 0;
+  batchAttempts = 0;
 
-  override async createReconciliationArtifact(
+  override async createReconciliationArtifactBatch(
     dealershipId: number,
-    artifact: NewReconciliationArtifact,
+    artifacts: NewReconciliationArtifact[],
+  ): Promise<never> {
+    this.batchAttempts += 1;
+    throw new Error(`artifact batch write failed for dealership ${dealershipId} (${artifacts.length})`);
+  }
+}
+
+class ObservingArtifactBatchRepository extends MemoryTransactionRepository {
+  statusWhenBatchStarted: string | null = null;
+  createdArtifactTypes: string[] = [];
+
+  override async createReconciliationArtifactBatch(
+    dealershipId: number,
+    artifacts: NewReconciliationArtifact[],
   ) {
-    this.artifactWrites += 1;
-    if (this.artifactWrites === 2) {
-      throw new Error("artifact write failed");
+    const runs = await this.listReconciliationRuns(dealershipId);
+    this.statusWhenBatchStarted = runs[0]?.status ?? null;
+    const created = await super.createReconciliationArtifactBatch(dealershipId, artifacts);
+    this.createdArtifactTypes = created.map((artifact) => artifact.artifact_type);
+    return created;
+  }
+}
+
+class NullCompletionStatusRepository extends MemoryTransactionRepository {
+  override async updateReconciliationRunStatus(
+    dealershipId: number,
+    reconciliationRunId: number,
+    status: string,
+  ) {
+    if (status === "completed" || status === "completed_auto") {
+      return null;
     }
-    return super.createReconciliationArtifact(dealershipId, artifact);
+    return super.updateReconciliationRunStatus(dealershipId, reconciliationRunId, status);
   }
 }
 
@@ -30,13 +74,19 @@ describe("createReconciliationRunFromSourceFiles", () => {
         dealershipId: 1,
         boaSourceFile,
         dealertrackSourceFile,
+        accountingMonth: accountingMonth("2026-04"),
+        rooftopProfile: getRooftopProfile("hurst"),
         automated: false,
       }),
-    ).rejects.toThrow("artifact write failed");
+    ).rejects.toThrow("artifact batch write failed");
 
     const runs = await repository.listReconciliationRuns(1);
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({ status: "artifact_failed" });
+    expect(repository.batchAttempts).toBe(1);
+    await expect(
+      repository.listReconciliationArtifacts(1, runs[0].reconciliation_run_id),
+    ).resolves.toEqual([]);
   });
 
   test("requires raw BOA and Dealertrack artifacts for Hurst v1 runs", async () => {
@@ -49,6 +99,8 @@ describe("createReconciliationRunFromSourceFiles", () => {
         dealershipId: 1,
         boaSourceFile,
         dealertrackSourceFile,
+        accountingMonth: accountingMonth("2026-04"),
+        rooftopProfile: getRooftopProfile("hurst"),
         automated: false,
       }),
     ).rejects.toThrow("RAW_BOA");
@@ -59,6 +111,302 @@ describe("createReconciliationRunFromSourceFiles", () => {
     await expect(
       repository.listReconciliationArtifacts(1, runs[0].reconciliation_run_id),
     ).resolves.toEqual([]);
+  });
+
+  test("persists the selected source identity and the stored preprocessing provenance", async () => {
+    const repository = new MemoryTransactionRepository();
+    const { boaSourceFile, dealertrackSourceFile } = await seedHurstSourcePair(repository, true);
+    const accountingMonthValue = accountingMonth("2026-04");
+    const rooftopProfile = getRooftopProfile("hurst");
+
+    const { run, result } = await createReconciliationRunFromSourceFiles({
+      repository,
+      dealershipId: 1,
+      boaSourceFile,
+      dealertrackSourceFile,
+      accountingMonth: accountingMonthValue,
+      rooftopProfile,
+      automated: false,
+    });
+
+    expect(run).toMatchObject({
+      accounting_month: accountingMonthValue,
+      rooftop_profile_id: "hurst-v1",
+      rooftop_profile_version: "1",
+    });
+    expect(result).toMatchObject({
+      reconciliation_run_id: run.id,
+      accounting_month: accountingMonthValue,
+      rooftop_profile_id: "hurst-v1",
+      rooftop_profile_version: "1",
+    });
+    await expect(repository.getReconciliationRunSnapshot(1, run.id)).resolves.toMatchObject({
+      inputs: [
+        expect.objectContaining({
+          side: "boa",
+          parser_version: boaSourceFile.parser_version,
+          parser_metadata: {
+            source_type: "boa",
+            source_file_id: boaSourceFile.id,
+            parser_name: boaSourceFile.parser_name,
+            parser_version: boaSourceFile.parser_version,
+            preprocessor_name: boaSourceFile.preprocessor_name,
+            preprocessor_version: boaSourceFile.preprocessor_version,
+            accounting_month: accountingMonthValue,
+            rooftop_profile_id: "hurst-v1",
+            rooftop_profile_version: "1",
+            preprocessing_metadata: boaSourceFile.preprocessing_metadata,
+          },
+        }),
+        expect.objectContaining({
+          side: "dealertrack",
+          parser_version: dealertrackSourceFile.parser_version,
+          parser_metadata: {
+            source_type: "dealertrack",
+            source_file_id: dealertrackSourceFile.id,
+            parser_name: dealertrackSourceFile.parser_name,
+            parser_version: dealertrackSourceFile.parser_version,
+            preprocessor_name: dealertrackSourceFile.preprocessor_name,
+            preprocessor_version: dealertrackSourceFile.preprocessor_version,
+            accounting_month: accountingMonthValue,
+            rooftop_profile_id: "hurst-v1",
+            rooftop_profile_version: "1",
+            preprocessing_metadata: dealertrackSourceFile.preprocessing_metadata,
+          },
+        }),
+      ],
+    });
+  });
+
+  test("keeps a run artifact_pending until its complete profile-required batch has been created", async () => {
+    const repository = new ObservingArtifactBatchRepository();
+    const { boaSourceFile, dealertrackSourceFile } = await seedHurstSourcePair(repository, true);
+    const rooftopProfile = getRooftopProfile("hurst");
+
+    const { run } = await createReconciliationRunFromSourceFiles({
+      repository,
+      dealershipId: 1,
+      boaSourceFile,
+      dealertrackSourceFile,
+      accountingMonth: accountingMonth("2026-04"),
+      rooftopProfile,
+      automated: false,
+    });
+
+    expect(repository.statusWhenBatchStarted).toBe("artifact_pending");
+    expect(repository.createdArtifactTypes).toEqual(rooftopProfile.requiredArtifactTypes);
+    await expect(repository.listReconciliationRuns(1)).resolves.toEqual([
+      expect.objectContaining({
+        reconciliation_run_id: run.id,
+        status: "completed",
+      }),
+    ]);
+    await expect(repository.listReconciliationArtifacts(1, run.id)).resolves.toEqual(
+      rooftopProfile.requiredArtifactTypes.map((artifact_type) =>
+        expect.objectContaining({ artifact_type }),
+      ),
+    );
+  });
+
+  test("marks artifacts failed and emits no completion events when the completed status write is missing", async () => {
+    const repository = new NullCompletionStatusRepository();
+    const { boaSourceFile, dealertrackSourceFile } = await seedHurstSourcePair(repository, true);
+
+    await expect(
+      createReconciliationRunFromSourceFiles({
+        repository,
+        dealershipId: 1,
+        boaSourceFile,
+        dealertrackSourceFile,
+        accountingMonth: accountingMonth("2026-04"),
+        rooftopProfile: getRooftopProfile("hurst"),
+        automated: false,
+      }),
+    ).rejects.toThrow("completed status transition was not persisted");
+
+    const runs = await repository.listReconciliationRuns(1);
+    expect(runs).toEqual([
+      expect.objectContaining({ status: "artifact_failed" }),
+    ]);
+    await expect(repository.listIngestionEvents(1, 1)).resolves.toEqual([]);
+    await expect(repository.listOperationalEvents(1, 1)).resolves.toEqual([]);
+  });
+
+  test.each([
+    {
+      name: "month",
+      accountingMonth: accountingMonth("2026-05"),
+      expectedCode: "RECONCILIATION_SOURCE_IDENTITY_MISMATCH",
+    },
+    {
+      name: "profile",
+      boa: { rooftop_profile_id: "acura-v1" as RooftopProfileId },
+      expectedCode: "RECONCILIATION_SOURCE_IDENTITY_MISMATCH",
+    },
+    {
+      name: "profile version",
+      dealertrack: { rooftop_profile_version: "2" },
+      expectedCode: "RECONCILIATION_SOURCE_IDENTITY_MISMATCH",
+    },
+    {
+      name: "store",
+      dealertrack: { dealership_store_id: 2 },
+      expectedCode: "RECONCILIATION_STORE_MISMATCH",
+    },
+    {
+      name: "source type",
+      boa: { source_type: "bank" as SourceFile["source_type"] },
+      expectedCode: "RECONCILIATION_SOURCE_TYPE_MISMATCH",
+    },
+    {
+      name: "disabled profile",
+      rooftopProfile: getRooftopProfile("fw"),
+      expectedCode: "ROOFTOP_PROFILE_UNSUPPORTED",
+    },
+    {
+      name: "stored parser provenance",
+      boa: { parser_name: null },
+      expectedCode: "RECONCILIATION_SOURCE_IDENTITY_MISMATCH",
+    },
+  ])("rejects a direct service call with an invalid $name identity", async (fixture) => {
+    const repository = new MemoryTransactionRepository();
+    const { boaSourceFile, dealertrackSourceFile } = await seedHurstSourcePair(repository, true);
+
+    await expect(
+      createReconciliationRunFromSourceFiles({
+        repository,
+        dealershipId: 1,
+        boaSourceFile: { ...boaSourceFile, ...fixture.boa },
+        dealertrackSourceFile: { ...dealertrackSourceFile, ...fixture.dealertrack },
+        accountingMonth: fixture.accountingMonth ?? accountingMonth("2026-04"),
+        rooftopProfile: fixture.rooftopProfile ?? getRooftopProfile("hurst"),
+        automated: false,
+      }),
+    ).rejects.toMatchObject({ code: fixture.expectedCode });
+    await expect(repository.listReconciliationRuns(1)).resolves.toEqual([]);
+  });
+});
+
+describe("findLatestSourceFilePair", () => {
+  test("pairs only sources with the exact non-null accounting period and profile identity", async () => {
+    const repository = new MemoryTransactionRepository();
+    const april = accountingMonth("2026-04");
+    const may = accountingMonth("2026-05");
+    const boa = await seedProfiledSource(repository, "boa", april, "hurst-v1", "1");
+    await seedProfiledSource(repository, "dealertrack", may, "hurst-v1", "1");
+    await seedProfiledSource(repository, "dealertrack", april, "hurst-v1", "2");
+    await repository.createSourceFileWithTransactions(
+      1,
+      {
+        dealership_store_id: 1,
+        source_type: "dealertrack",
+        original_filename: "legacy-dealertrack.csv",
+        stored_filename: null,
+        file_hash: "legacy-dealertrack-hash",
+        row_count: 1,
+        validation_error_count: 0,
+      },
+      [sourceTransaction("dealertrack", -25_000_00)],
+    );
+
+    await expect(
+      findLatestSourceFilePair(repository, 1, 1, april, "hurst-v1", "1"),
+    ).resolves.toBeNull();
+
+    const dealertrack = await seedProfiledSource(
+      repository,
+      "dealertrack",
+      april,
+      "hurst-v1",
+      "1",
+    );
+
+    await expect(
+      findLatestSourceFilePair(repository, 1, 1, april, "hurst-v1", "1"),
+    ).resolves.toEqual({
+      boa: expect.objectContaining({
+        source_file_id: boa.id,
+        accounting_month: "2026-04",
+        rooftop_profile_id: "hurst-v1",
+        rooftop_profile_version: "1",
+      }),
+      dealertrack: expect.objectContaining({
+        source_file_id: dealertrack.id,
+        accounting_month: "2026-04",
+        rooftop_profile_id: "hurst-v1",
+        rooftop_profile_version: "1",
+      }),
+    });
+  });
+});
+
+describe("evaluateAutoRunAfterUpload", () => {
+  test.each([
+    {
+      name: "accounting period",
+      month: "2026-05",
+      profileId: "hurst-v1",
+      profileVersion: "1",
+    },
+    {
+      name: "rooftop profile",
+      month: "2026-04",
+      profileId: "acura-v1",
+      profileVersion: "1",
+    },
+    {
+      name: "rooftop profile version",
+      month: "2026-04",
+      profileId: "hurst-v1",
+      profileVersion: "2",
+    },
+  ] as const)("records identity-aware diagnostics for a mismatched $name", async ({
+    month,
+    profileId,
+    profileVersion,
+  }) => {
+    const repository = new MemoryTransactionRepository();
+    await repository.createScheduledReconciliationJob(1, {
+      dealership_store_id: 1,
+      cadence: "daily",
+      expected_source_types: ["boa", "dealertrack"],
+      enabled: true,
+      auto_run_on_pair: true,
+    });
+    const trigger = await seedProfiledSource(
+      repository,
+      "boa",
+      accountingMonth("2026-04"),
+      "hurst-v1",
+      "1",
+    );
+    await seedProfiledSource(
+      repository,
+      "dealertrack",
+      accountingMonth(month),
+      profileId,
+      profileVersion,
+    );
+
+    await expect(evaluateAutoRunAfterUpload(repository, 1, trigger)).resolves.toBeNull();
+
+    await expect(repository.listOperationalEvents(1, 1)).resolves.toEqual([
+      expect.objectContaining({
+        event_type: "missing_expected_file",
+        severity: "warning",
+        message: "No DEALERTRACK file matches the uploaded source processing identity.",
+        metadata: {
+          source_type: "dealertrack",
+          reason: "identity_mismatch",
+          expected_accounting_month: "2026-04",
+          expected_rooftop_profile_id: "hurst-v1",
+          expected_rooftop_profile_version: "1",
+          available_accounting_month: month,
+          available_rooftop_profile_id: profileId,
+          available_rooftop_profile_version: profileVersion,
+        },
+      }),
+    ]);
   });
 });
 
@@ -76,6 +424,19 @@ async function seedHurstSourcePair(
       file_hash: "boa-hash",
       row_count: 1,
       validation_error_count: 0,
+      accounting_month: accountingMonth("2026-04"),
+      rooftop_profile_id: "hurst-v1",
+      rooftop_profile_version: "1",
+      parser_name: "boa-csv",
+      parser_version: "1",
+      preprocessor_name: "boa-floorplan",
+      preprocessor_version: "preprocessing-v1",
+      preprocessing_metadata: profiledReceipt(
+        "boa",
+        accountingMonth("2026-04"),
+        "boa-csv",
+        "boa-floorplan",
+      ),
     },
     [sourceTransaction("boa", 25_000_00)],
     includeRawUploads
@@ -96,6 +457,19 @@ async function seedHurstSourcePair(
       file_hash: "dealertrack-hash",
       row_count: 1,
       validation_error_count: 0,
+      accounting_month: accountingMonth("2026-04"),
+      rooftop_profile_id: "hurst-v1",
+      rooftop_profile_version: "1",
+      parser_name: "dealertrack-csv",
+      parser_version: "1",
+      preprocessor_name: "dealertrack-floorplan",
+      preprocessor_version: "preprocessing-v1",
+      preprocessing_metadata: profiledReceipt(
+        "dealertrack",
+        accountingMonth("2026-04"),
+        "dealertrack-csv",
+        "dealertrack-floorplan",
+      ),
     },
     [sourceTransaction("dealertrack", -25_000_00)],
     includeRawUploads
@@ -125,5 +499,108 @@ function sourceTransaction(sourceType: "boa" | "dealertrack", amountCents: numbe
     stock_number: "H123",
     vin: "1HGCM82633A004352",
     raw_data: { sourceType },
+  };
+}
+
+function accountingMonth(value: string): AccountingMonth {
+  const month = parseAccountingMonth(value);
+  if (!month) {
+    throw new Error(`Invalid accounting month in test: ${value}`);
+  }
+  return month;
+}
+
+async function seedProfiledSource(
+  repository: MemoryTransactionRepository,
+  sourceType: "boa" | "dealertrack",
+  month: AccountingMonth,
+  profileId: RooftopProfileId,
+  profileVersion: string,
+): Promise<SourceFile> {
+  const identity: {
+    parser_name: "boa-csv" | "dealertrack-csv";
+    preprocessor_name: "boa-floorplan" | "dealertrack-floorplan";
+  } = sourceType === "boa"
+    ? {
+        parser_name: "boa-csv",
+        preprocessor_name: "boa-floorplan",
+      }
+    : {
+        parser_name: "dealertrack-csv",
+        preprocessor_name: "dealertrack-floorplan",
+      };
+  const sourceFile: ProfiledNewSourceFile = {
+    dealership_store_id: 1,
+    source_type: sourceType,
+    original_filename: `${sourceType}-${month}-${profileVersion}.csv`,
+    stored_filename: null,
+    file_hash: `${sourceType}-${month}-${profileVersion}-hash`,
+    row_count: 1,
+    validation_error_count: 0,
+    accounting_month: month,
+    rooftop_profile_id: profileId,
+    rooftop_profile_version: profileVersion,
+    parser_name: identity.parser_name,
+    parser_version: "1",
+    preprocessor_name: identity.preprocessor_name,
+    preprocessor_version: "preprocessing-v1",
+    preprocessing_metadata: profiledReceipt(
+      sourceType,
+      month,
+      identity.parser_name,
+      identity.preprocessor_name,
+    ),
+  };
+  const result = await repository.createSourceFileWithTransactions(
+    1,
+    sourceFile,
+    [sourceTransaction(sourceType, sourceType === "boa" ? 25_000_00 : -25_000_00)],
+  );
+  return result.sourceFile;
+}
+
+function profiledReceipt(
+  sourceType: "boa" | "dealertrack",
+  month: AccountingMonth,
+  parserName: "boa-csv" | "dealertrack-csv",
+  preprocessorName: "boa-floorplan" | "dealertrack-floorplan",
+): UploadPreprocessingMetadata {
+  return {
+    detected_format: "csv",
+    detection_confidence: "high",
+    detection_reason: "Synthetic profiled source receipt.",
+    parser_route: sourceType === "boa" ? "boa_csv" : "dealertrack_csv",
+    preprocessing_version: "preprocessing-v1",
+    summary: {
+      source_kind: sourceType,
+      preprocessing_version: "preprocessing-v1",
+      parser_name: parserName,
+      parser_version: "1",
+      parser_format: "csv",
+      preprocessor_name: preprocessorName,
+      preprocessor_version: "preprocessing-v1",
+      period_evidence: {
+        source: sourceType,
+        selectedMonth: month,
+        explicitMonths: [],
+        observedDateRange: null,
+        filenameHint: null,
+        status: "compatible_incomplete",
+        safeEvidence: { filename_hint_present: false },
+      },
+      rows_scanned: 1,
+      rows_accepted: 1,
+      rows_removed_zero_balance: 0,
+      rows_removed_straightline: 0,
+      rows_removed_banner: 0,
+      rows_skipped_unknown: 0,
+      rows_requiring_manual_enrichment: 0,
+      duplicate_vin6_count: 0,
+      preprocessed_at: "2026-04-30T00:00:00.000Z",
+    },
+    diagnostics: [],
+    removed_rows: [],
+    legacy_csv_path: false,
+    unsupported_reason: null,
   };
 }

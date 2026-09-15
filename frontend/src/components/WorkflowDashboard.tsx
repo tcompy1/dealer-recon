@@ -1,4 +1,4 @@
-import { type ChangeEvent, useEffect, useState } from "react";
+import { type ChangeEvent, useEffect, useRef, useState } from "react";
 
 import {
   getArtifactDownloadUrl,
@@ -9,6 +9,7 @@ import {
   reconcileSourceFiles,
   replayReconciliationRun,
 } from "../api/reconciliation";
+import { ApiError } from "../api/errorMessage";
 import { createDealershipStore, listDealerGroups, listDealershipStores } from "../api/stores";
 import { UploadError, uploadSourceFile } from "../api/uploads";
 import { PreprocessingDiagnosticsPanel } from "./preprocessing/PreprocessingDiagnosticsPanel";
@@ -27,14 +28,16 @@ import type {
   UploadValidationError,
 } from "../types/sourceFile";
 import type { CurrentUser } from "../types/auth";
-import type { DealerGroup, DealershipStore } from "../types/store";
-import { formatRunId } from "../utils/formatRunId";
+import type { DealerGroup, DealershipStoreWithRooftopSupport } from "../types/store";
+import { formatAccountingMonth, isAccountingMonth } from "../utils/accountingMonth";
+import { formatRunIdentity } from "../utils/formatRunId";
 
 type UploadSlot = {
   file: File | null;
   upload: UploadResponse | null;
   isUploading: boolean;
   error: string | null;
+  errorRecovery: string | null;
   errorPreprocessing: UploadPreprocessingMetadata | null;
 };
 
@@ -45,6 +48,7 @@ const initialUploadSlot: UploadSlot = {
   upload: null,
   isUploading: false,
   error: null,
+  errorRecovery: null,
   errorPreprocessing: null,
 };
 
@@ -67,11 +71,19 @@ const ARTIFACT_SORT_ORDER: ReconciliationArtifactType[] = [
 ];
 
 export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }) {
+  const workflowContextVersion = useRef(0);
+  const uploadRequestVersions = useRef<Record<SourceKind, number>>({ boa: 0, dealertrack: 0 });
+  const reconciliationRequestVersion = useRef(0);
+  const activeReconciliationRequest = useRef<number | null>(null);
+  const replayRequestVersion = useRef(0);
+  const activeReplayRequest = useRef<number | null>(null);
+  const activeRunId = useRef<number | null>(null);
   const [boaUpload, setBoaUpload] = useState<UploadSlot>(initialUploadSlot);
   const [dealertrackUpload, setDealertrackUpload] = useState<UploadSlot>(initialUploadSlot);
   const [dealerGroups, setDealerGroups] = useState<DealerGroup[]>([]);
-  const [stores, setStores] = useState<DealershipStore[]>([]);
+  const [stores, setStores] = useState<DealershipStoreWithRooftopSupport[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState<number | null>(null);
+  const [selectedAccountingMonth, setSelectedAccountingMonth] = useState("");
   const [newStoreName, setNewStoreName] = useState("");
   const [activeRun, setActiveRun] = useState<ReconciliationRunDetail | null>(null);
   const [activeRunDiagnostics, setActiveRunDiagnostics] = useState<VinPresenceDiagnostics | null>(null);
@@ -81,15 +93,24 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
   const [isReconciling, setIsReconciling] = useState(false);
   const [isReplaying, setIsReplaying] = useState(false);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [workflowRecovery, setWorkflowRecovery] = useState<string | null>(null);
   const [isReconciliationStale, setIsReconciliationStale] = useState(false);
 
-  const canReconcile = Boolean(boaUpload.upload?.source_file_id && dealertrackUpload.upload?.source_file_id);
   const canModify = currentUser?.role !== "read_only_auditor";
+  const selectedStore = stores.find((store) => store.id === selectedStoreId) ?? null;
+  const selectedProfile = selectedStore?.rooftop_profile ?? null;
+  const canUseRooftop = Boolean(
+    selectedProfile?.enabled && isAccountingMonth(selectedAccountingMonth),
+  );
+  const canReconcile = Boolean(
+    canUseRooftop && boaUpload.upload?.source_file_id && dealertrackUpload.upload?.source_file_id,
+  );
   const selectedStoreName =
-    stores.find((store) => store.id === selectedStoreId)?.name ?? activeRun?.store_name ?? null;
+    selectedStore?.name ?? activeRun?.store_name ?? null;
 
   useEffect(() => {
     void refreshLists();
+    return invalidateWorkflowRequests;
     // Initial load only; store changes are handled explicitly in handleStoreChange.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -109,15 +130,27 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     const setSlot = kind === "boa" ? setBoaUpload : setDealertrackUpload;
 
     if (!slot.file) {
-      setSlot((current) => ({ ...current, error: "Choose a CSV file." }));
+      setSlot((current) => ({
+        ...current,
+        error: "Choose a CSV file.",
+        errorRecovery: null,
+      }));
       return;
     }
+    if (!canUseRooftop || selectedStoreId === null) {
+      return;
+    }
+    const contextVersion = workflowContextVersion.current;
+    const requestVersion = uploadRequestVersions.current[kind] + 1;
+    uploadRequestVersions.current[kind] = requestVersion;
 
     setWorkflowError(null);
+    setWorkflowRecovery(null);
     setSlot((current) => ({
       ...current,
       isUploading: true,
       error: null,
+      errorRecovery: null,
       errorPreprocessing: null,
       upload: null,
     }));
@@ -127,7 +160,11 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         sourceType: kind,
         file: slot.file,
         dealershipStoreId: selectedStoreId,
+        accountingMonth: selectedAccountingMonth,
       });
+      if (!isCurrentUploadRequest(kind, contextVersion, requestVersion)) {
+        return;
+      }
       setSlot((current) => ({
         ...current,
         upload,
@@ -135,24 +172,40 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         errorPreprocessing: null,
       }));
     } catch (error) {
+      if (!isCurrentUploadRequest(kind, contextVersion, requestVersion)) {
+        return;
+      }
       const errorPreprocessing =
         error instanceof UploadError ? error.preprocessing : null;
       setSlot((current) => ({
         ...current,
         isUploading: false,
         error: error instanceof Error ? error.message : "Upload failed.",
+        errorRecovery: error instanceof ApiError ? error.details?.recovery ?? null : null,
         errorPreprocessing,
       }));
     }
   }
 
   async function handleReconcile() {
-    if (!boaUpload.upload || !dealertrackUpload.upload) {
+    if (
+      !boaUpload.upload ||
+      !dealertrackUpload.upload ||
+      !canUseRooftop ||
+      selectedStoreId === null ||
+      activeReconciliationRequest.current !== null ||
+      activeReplayRequest.current !== null
+    ) {
       return;
     }
+    const contextVersion = workflowContextVersion.current;
+    const requestVersion = reconciliationRequestVersion.current + 1;
+    reconciliationRequestVersion.current = requestVersion;
+    activeReconciliationRequest.current = requestVersion;
 
     setIsReconciling(true);
     setWorkflowError(null);
+    setWorkflowRecovery(null);
     setActiveRunArtifacts([]);
     setActiveRunArtifactsError(null);
 
@@ -161,29 +214,87 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         boaSourceFileId: boaUpload.upload.source_file_id,
         dealertrackSourceFileId: dealertrackUpload.upload.source_file_id,
         dealershipStoreId: selectedStoreId,
+        accountingMonth: selectedAccountingMonth,
       });
+      if (!isCurrentReconciliationRequest(contextVersion, requestVersion)) {
+        return;
+      }
       const detail = await getReconciliationRun(result.reconciliation_run_id);
+      if (!isCurrentReconciliationRequest(contextVersion, requestVersion)) {
+        return;
+      }
+      activeRunId.current = detail.reconciliation_run_id;
       setActiveRun(detail);
       setActiveRunDiagnostics(result.vin_presence_diagnostics);
       setActiveRunReplay(null);
-      await loadRunArtifacts(result.reconciliation_run_id);
+      await loadRunArtifacts(result.reconciliation_run_id, contextVersion, requestVersion);
+      if (!isCurrentReconciliationRequest(contextVersion, requestVersion)) {
+        return;
+      }
       setIsReconciliationStale(false);
     } catch (error) {
+      if (!isCurrentReconciliationRequest(contextVersion, requestVersion)) {
+        return;
+      }
       setWorkflowError(error instanceof Error ? error.message : "Reconciliation failed.");
+      setWorkflowRecovery(error instanceof ApiError ? error.details?.recovery ?? null : null);
     } finally {
-      setIsReconciling(false);
+      if (isCurrentReconciliationRequest(contextVersion, requestVersion)) {
+        activeReconciliationRequest.current = null;
+        setIsReconciling(false);
+      }
     }
+  }
+
+  function handleUploadFileChange(kind: SourceKind, file: File | null) {
+    uploadRequestVersions.current[kind] += 1;
+    const setSlot = kind === "boa" ? setBoaUpload : setDealertrackUpload;
+    setSlot((current) => ({
+      ...current,
+      file,
+      upload: null,
+      isUploading: false,
+      error: null,
+      errorRecovery: null,
+      errorPreprocessing: null,
+    }));
   }
 
   function handleStoreChange(storeId: number | null) {
     setSelectedStoreId(storeId);
+    resetWorkflowSelection();
+  }
+
+  function handleAccountingMonthChange(accountingMonth: string) {
+    setSelectedAccountingMonth(accountingMonth);
+    resetWorkflowSelection();
+  }
+
+  function resetWorkflowSelection() {
+    invalidateWorkflowRequests();
+    activeRunId.current = null;
     setActiveRun(null);
     setActiveRunDiagnostics(null);
     setActiveRunReplay(null);
     setActiveRunArtifacts([]);
     setActiveRunArtifactsError(null);
+    setWorkflowError(null);
+    setWorkflowRecovery(null);
+    setIsReconciling(false);
+    setIsReplaying(false);
+    setIsReconciliationStale(false);
     setBoaUpload(initialUploadSlot);
     setDealertrackUpload(initialUploadSlot);
+  }
+
+  function invalidateWorkflowRequests() {
+    workflowContextVersion.current += 1;
+    uploadRequestVersions.current.boa += 1;
+    uploadRequestVersions.current.dealertrack += 1;
+    reconciliationRequestVersion.current += 1;
+    activeReconciliationRequest.current = null;
+    replayRequestVersion.current += 1;
+    activeReplayRequest.current = null;
   }
 
   async function handleCreateStore() {
@@ -192,6 +303,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
       return;
     }
     setWorkflowError(null);
+    setWorkflowRecovery(null);
     try {
       const store = await createDealershipStore({
         name,
@@ -206,28 +318,88 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
   }
 
   async function handleReplayRun() {
-    if (!activeRun) {
+    if (
+      !activeRun ||
+      activeReplayRequest.current !== null ||
+      activeReconciliationRequest.current !== null
+    ) {
       return;
     }
+    const contextVersion = workflowContextVersion.current;
+    const requestVersion = replayRequestVersion.current + 1;
+    const replayRunId = activeRun.reconciliation_run_id;
+    replayRequestVersion.current = requestVersion;
+    activeReplayRequest.current = requestVersion;
     setIsReplaying(true);
     setWorkflowError(null);
+    setWorkflowRecovery(null);
     try {
-      setActiveRunReplay(await replayReconciliationRun(activeRun.reconciliation_run_id));
+      const replay = await replayReconciliationRun(replayRunId);
+      if (isCurrentReplayRequest(contextVersion, requestVersion, replayRunId)) {
+        setActiveRunReplay(replay);
+      }
     } catch (error) {
-      setWorkflowError(error instanceof Error ? error.message : "Historical replay could not be run.");
+      if (isCurrentReplayRequest(contextVersion, requestVersion, replayRunId)) {
+        setWorkflowError(error instanceof Error ? error.message : "Historical replay could not be run.");
+        setWorkflowRecovery(error instanceof ApiError ? error.details?.recovery ?? null : null);
+      }
     } finally {
-      setIsReplaying(false);
+      if (isCurrentReplayRequest(contextVersion, requestVersion, replayRunId)) {
+        activeReplayRequest.current = null;
+        setIsReplaying(false);
+      }
     }
   }
 
-  async function loadRunArtifacts(reconciliationRunId: number) {
+  async function loadRunArtifacts(
+    reconciliationRunId: number,
+    contextVersion: number,
+    requestVersion: number,
+  ) {
     setActiveRunArtifacts([]);
     setActiveRunArtifactsError(null);
     try {
-      setActiveRunArtifacts(await listReconciliationArtifacts(reconciliationRunId));
+      const artifacts = await listReconciliationArtifacts(reconciliationRunId);
+      if (isCurrentReconciliationRequest(contextVersion, requestVersion)) {
+        setActiveRunArtifacts(artifacts);
+      }
     } catch (error) {
-      setActiveRunArtifactsError(error instanceof Error ? error.message : "Artifacts could not be loaded.");
+      if (isCurrentReconciliationRequest(contextVersion, requestVersion)) {
+        setActiveRunArtifactsError(error instanceof Error ? error.message : "Artifacts could not be loaded.");
+      }
     }
+  }
+
+  function isCurrentUploadRequest(
+    kind: SourceKind,
+    contextVersion: number,
+    requestVersion: number,
+  ) {
+    return (
+      workflowContextVersion.current === contextVersion &&
+      uploadRequestVersions.current[kind] === requestVersion
+    );
+  }
+
+  function isCurrentReconciliationRequest(contextVersion: number, requestVersion: number) {
+    return (
+      workflowContextVersion.current === contextVersion &&
+      reconciliationRequestVersion.current === requestVersion &&
+      activeReconciliationRequest.current === requestVersion
+    );
+  }
+
+  function isCurrentReplayRequest(
+    contextVersion: number,
+    requestVersion: number,
+    reconciliationRunId: number,
+  ) {
+    return (
+      workflowContextVersion.current === contextVersion &&
+      replayRequestVersion.current === requestVersion &&
+      activeReplayRequest.current === requestVersion &&
+      activeRunId.current === reconciliationRunId
+    );
   }
 
   return (
@@ -238,6 +410,8 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         hasDealertrackUpload={Boolean(dealertrackUpload.upload)}
         hasRun={Boolean(activeRun)}
         hasStore={Boolean(selectedStoreId)}
+        profileEnabled={Boolean(selectedProfile?.enabled)}
+        selectedAccountingMonth={selectedAccountingMonth}
         selectedStoreName={selectedStoreName}
       />
 
@@ -245,6 +419,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         <StoreManagementPanel
           newStoreName={newStoreName}
           selectedStoreId={selectedStoreId}
+          selectedStore={selectedStore}
           stores={stores}
           onCreateStore={() => void handleCreateStore()}
           onNewStoreNameChange={setNewStoreName}
@@ -253,6 +428,11 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
         <TaskSelectionPanel />
       </div>
+
+      <AccountingMonthPanel
+        selectedAccountingMonth={selectedAccountingMonth}
+        onAccountingMonthChange={handleAccountingMonthChange}
+      />
 
       <section className="forge-panel forge-panel-pad forge-primary-station grid gap-3">
         <StationHeading
@@ -263,36 +443,22 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
 
         <div className="grid gap-4 lg:grid-cols-2">
           <UploadPanel
+            key={`${selectedStoreId ?? "none"}:${selectedAccountingMonth}:boa`}
             kind="boa"
             label="BOA input"
             slot={boaUpload}
-            onFileChange={(file) =>
-              setBoaUpload((current) => ({
-                ...current,
-                file,
-                upload: null,
-                error: null,
-                errorPreprocessing: null,
-              }))
-            }
+            onFileChange={(file) => handleUploadFileChange("boa", file)}
             onUpload={() => void handleUpload("boa")}
-            canModify={canModify}
+            canModify={canModify && canUseRooftop}
           />
           <UploadPanel
+            key={`${selectedStoreId ?? "none"}:${selectedAccountingMonth}:dealertrack`}
             kind="dealertrack"
             label="Dealertrack input"
             slot={dealertrackUpload}
-            onFileChange={(file) =>
-              setDealertrackUpload((current) => ({
-                ...current,
-                file,
-                upload: null,
-                error: null,
-                errorPreprocessing: null,
-              }))
-            }
+            onFileChange={(file) => handleUploadFileChange("dealertrack", file)}
             onUpload={() => void handleUpload("dealertrack")}
-            canModify={canModify}
+            canModify={canModify && canUseRooftop}
             onVinEnriched={() => setIsReconciliationStale(true)}
           />
         </div>
@@ -317,7 +483,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         />
         <button
           className="forge-button-primary w-full md:w-auto md:flex-shrink-0"
-          disabled={!canModify || !canReconcile || isReconciling}
+          disabled={!canModify || !canReconcile || isReconciling || isReplaying}
           type="button"
           onClick={() => void handleReconcile()}
         >
@@ -325,7 +491,9 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
         </button>
       </section>
 
-      {workflowError ? <ErrorBanner message={workflowError} /> : null}
+      {workflowError ? (
+        <ErrorBanner message={workflowError} recovery={workflowRecovery} />
+      ) : null}
 
       <ResultsSection
         artifacts={activeRunArtifacts}
@@ -347,6 +515,8 @@ function WorkbenchOverview({
   hasBoaUpload,
   hasDealertrackUpload,
   hasRun,
+  profileEnabled,
+  selectedAccountingMonth,
   selectedStoreName,
 }: {
   activeRun: ReconciliationRunDetail | null;
@@ -354,9 +524,12 @@ function WorkbenchOverview({
   hasBoaUpload: boolean;
   hasDealertrackUpload: boolean;
   hasRun: boolean;
+  profileEnabled: boolean;
+  selectedAccountingMonth: string;
   selectedStoreName: string | null;
 }) {
   const hasInputs = hasBoaUpload && hasDealertrackUpload;
+  const hasAccountingMonth = profileEnabled && isAccountingMonth(selectedAccountingMonth);
   const stations = [
     {
       label: "Store",
@@ -368,17 +541,23 @@ function WorkbenchOverview({
       label: "Task",
       title: "Floorplan Reconciliation",
       detail: "Fixed v1 task",
-      state: hasStore ? "complete" : "waiting",
+      state: profileEnabled ? "complete" : hasStore ? "current" : "waiting",
+    },
+    {
+      label: "Month",
+      title: hasAccountingMonth ? formatAccountingMonth(selectedAccountingMonth) : "Select month",
+      detail: "Authoritative accounting period",
+      state: hasAccountingMonth ? "complete" : profileEnabled ? "current" : "waiting",
     },
     {
       label: "Inputs",
       title: "BOA + Dealertrack",
       detail: "BOA and Dealertrack files",
-      state: hasInputs ? "complete" : hasStore ? "current" : "waiting",
+      state: hasInputs ? "complete" : hasAccountingMonth ? "current" : "waiting",
     },
     {
       label: "Processing",
-      title: hasRun && activeRun ? formatRunId(activeRun.created_at) : "Run workflow",
+      title: hasRun && activeRun ? formatDashboardRunIdentity(activeRun) : "Run workflow",
       detail: "Generate the workpaper outputs",
       state: hasRun ? "complete" : hasInputs ? "current" : "waiting",
     },
@@ -400,7 +579,7 @@ function WorkbenchOverview({
           files, run processing, then download the merged export and FP REC final workpaper.
         </p>
       </div>
-      <div className="forge-workflow-map md:grid-cols-5">
+      <div className="forge-workflow-map md:grid-cols-6">
         {stations.map((station) => (
           <WorkbenchStationCard
             detail={station.detail}
@@ -473,6 +652,7 @@ function StationHeading({
 function StoreManagementPanel({
   newStoreName,
   selectedStoreId,
+  selectedStore,
   stores,
   onCreateStore,
   onNewStoreNameChange,
@@ -480,7 +660,8 @@ function StoreManagementPanel({
 }: {
   newStoreName: string;
   selectedStoreId: number | null;
-  stores: DealershipStore[];
+  selectedStore: DealershipStoreWithRooftopSupport | null;
+  stores: DealershipStoreWithRooftopSupport[];
   onCreateStore: () => void;
   onNewStoreNameChange: (name: string) => void;
   onStoreChange: (storeId: number | null) => void;
@@ -503,11 +684,20 @@ function StoreManagementPanel({
             {stores.length === 0 ? <option value="">No stores</option> : null}
             {stores.map((store) => (
               <option key={store.id} value={store.id}>
-                {store.name}
+                {store.name} — {store.rooftop_profile?.enabled ? "Enabled" : "Unsupported"}
               </option>
             ))}
           </select>
         </label>
+        {selectedStore?.rooftop_profile?.enabled ? (
+          <p className="forge-notice forge-notice-success text-sm font-medium">
+            {selectedStore.rooftop_profile.id.replace(/-v\d+$/i, "").toUpperCase()} profile enabled
+          </p>
+        ) : selectedStore ? (
+          <p className="forge-notice forge-notice-warning text-sm font-medium">
+            This store is not enabled for floorplan reconciliation.
+          </p>
+        ) : null}
       </div>
       <details className="forge-disclosure" open={stores.length === 0}>
         <summary className="forge-summary">
@@ -557,6 +747,35 @@ function TaskSelectionPanel() {
   );
 }
 
+function AccountingMonthPanel({
+  selectedAccountingMonth,
+  onAccountingMonthChange,
+}: {
+  selectedAccountingMonth: string;
+  onAccountingMonthChange: (accountingMonth: string) => void;
+}) {
+  return (
+    <section className="forge-panel forge-panel-pad grid gap-3">
+      <StationHeading
+        station="Accounting Month"
+        title="Accounting Period"
+        description="Choose the authoritative month used for both source uploads and reconciliation."
+      />
+      <label className="forge-field max-w-xs">
+        Accounting month
+        <input
+          aria-label="Accounting month"
+          className="forge-control"
+          required
+          type="month"
+          value={selectedAccountingMonth}
+          onChange={(event) => onAccountingMonthChange(event.target.value)}
+        />
+      </label>
+    </section>
+  );
+}
+
 function UploadPanel({
   kind,
   label,
@@ -588,6 +807,7 @@ function UploadPanel({
       </div>
 
       <input
+        aria-label={`${label} file`}
         accept=".csv,.xls,.xml,.html,.htm,text/csv,application/vnd.ms-excel,text/xml,text/html"
         className="forge-file-input"
         disabled={!canModify}
@@ -615,7 +835,9 @@ function UploadPanel({
           onVinEnriched={onVinEnriched}
         />
       ) : null}
-      {slot.error ? <ErrorBanner message={slot.error} /> : null}
+      {slot.error ? (
+        <ErrorBanner message={slot.error} recovery={slot.errorRecovery} />
+      ) : null}
       {slot.errorPreprocessing ? (
         <PreprocessingDiagnosticsPanel
           preprocessing={slot.errorPreprocessing}
@@ -743,7 +965,7 @@ function ResultsSection({
           title="Artifact Explorer"
           description={
             run
-              ? `Run ${formatRunId(run.created_at)} for ${
+              ? `${formatDashboardRunIdentity(run)} for ${
                   run.store_name ?? "Unassigned store"
                 } from ${formatDateTime(run.created_at)} is ready for its merged export and FP REC final workpaper.`
               : "Download the merged export and FP REC final workpaper when the run is ready."
@@ -794,6 +1016,7 @@ function ResultsSection({
               <ExceptionBreakdown run={run} />
               <HistoricalReplayPanel
                 replay={replay}
+                isReconciling={isReconciling}
                 isReplaying={isReplaying}
                 onReplay={onReplay}
               />
@@ -813,7 +1036,7 @@ function RunSummaryMetrics({ run }: { run: ReconciliationRunDetail }) {
       <Metric label="Clean matches (VIN + amount)" value={run.matched_count} />
       <Metric label="Unmatched items" value={run.exception_count} />
       <Metric label="Duplicates" value={run.duplicate_count} />
-      <Metric label="Run ID" value={formatRunId(run.created_at)} />
+      <Metric label="Run ID" value={formatDashboardRunIdentity(run)} />
     </div>
   );
 }
@@ -909,10 +1132,12 @@ function ExceptionBreakdown({ run }: { run: ReconciliationRunDetail }) {
 
 function HistoricalReplayPanel({
   replay,
+  isReconciling,
   isReplaying,
   onReplay,
 }: {
   replay: ReconciliationReplayResponse | null;
+  isReconciling: boolean;
   isReplaying: boolean;
   onReplay: () => void;
 }) {
@@ -927,7 +1152,7 @@ function HistoricalReplayPanel({
         </div>
         <button
           className="forge-button-primary"
-          disabled={isReplaying}
+          disabled={isReplaying || isReconciling}
           type="button"
           onClick={onReplay}
         >
@@ -1117,12 +1342,30 @@ function Metric({ label, value }: { label: string; value: number | string }) {
   );
 }
 
-function ErrorBanner({ message }: { message: string }) {
+function ErrorBanner({
+  message,
+  recovery,
+}: {
+  message: string;
+  recovery?: string | null;
+}) {
   return (
     <div className="forge-notice forge-notice-danger font-medium">
-      {message}
+      <p>{message}</p>
+      {recovery ? <p className="mt-1">{recovery}</p> : null}
     </div>
   );
+}
+
+function formatDashboardRunIdentity(run: ReconciliationRunDetail): string {
+  if (run.rooftop_profile_id && run.accounting_month) {
+    return formatRunIdentity(
+      run.rooftop_profile_id,
+      run.accounting_month,
+      run.reconciliation_run_id,
+    );
+  }
+  return `Run #${run.reconciliation_run_id}`;
 }
 
 function formatReason(value: string) {

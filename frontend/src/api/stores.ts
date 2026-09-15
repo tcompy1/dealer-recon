@@ -1,12 +1,17 @@
 import { apiGet, apiPost } from "./client";
-import type { DealerGroup, DealerGroupAnalytics, DealershipStore } from "../types/store";
+import type {
+  DealerGroup,
+  DealerGroupAnalytics,
+  DealershipStore,
+  DealershipStoreWithRooftopSupport,
+} from "../types/store";
 
 export async function listDealerGroups(): Promise<DealerGroup[]> {
   return apiGet<DealerGroup[]>("/dealer-groups");
 }
 
-export async function listDealershipStores(): Promise<DealershipStore[]> {
-  return apiGet<DealershipStore[]>("/stores");
+export async function listDealershipStores(): Promise<DealershipStoreWithRooftopSupport[]> {
+  return apiGet<DealershipStoreWithRooftopSupport[]>("/stores");
 }
 
 export async function createDealershipStore(input: {

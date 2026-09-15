@@ -1,4 +1,4 @@
-import { getErrorMessage } from "./errorMessage";
+import { readApiError } from "./errorMessage";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
@@ -8,7 +8,7 @@ export async function apiGet<T>(path: string): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(await getErrorMessage(response, "API request failed"));
+    throw await readApiError(response, "API request failed");
   }
 
   return response.json() as Promise<T>;
@@ -25,7 +25,7 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(await getErrorMessage(response, "API request failed"));
+    throw await readApiError(response, "API request failed");
   }
 
   return response.json() as Promise<T>;
@@ -42,7 +42,7 @@ export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(await getErrorMessage(response, "API request failed"));
+    throw await readApiError(response, "API request failed");
   }
 
   return response.json() as Promise<T>;

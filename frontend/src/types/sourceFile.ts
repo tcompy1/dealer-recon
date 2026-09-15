@@ -1,9 +1,19 @@
+import type { RooftopProfileId } from "./store";
+
 export type SourceType = "bank" | "boa" | "dealertrack" | "dms" | "gl" | "oem";
 
 export type UploadValidationError = {
   row: number | null;
   field: string | null;
   message: string;
+};
+
+export type RooftopFailureDetails = {
+  source: "boa" | "dealertrack" | null;
+  accounting_month: string | null;
+  rooftop_profile_id: string | null;
+  evidence?: Record<string, string | number | boolean | null>;
+  recovery: string;
 };
 
 export type PreprocessingDiagnosticKind =
@@ -38,8 +48,12 @@ export type PreprocessingDiagnostic = {
 export type PreprocessingSummary = {
   source_kind: "boa" | "dealertrack";
   preprocessing_version: string;
-  parser_version: string | null;
+  parser_name: "boa-csv" | "boa-html-xls" | "dealertrack-csv" | "dealertrack-spreadsheetml";
+  parser_version: string;
   parser_format: string | null;
+  preprocessor_name: "boa-floorplan" | "dealertrack-floorplan";
+  preprocessor_version: string;
+  period_evidence: SourcePeriodEvidence;
   rows_scanned: number;
   rows_accepted: number;
   rows_removed_zero_balance: number;
@@ -52,6 +66,16 @@ export type PreprocessingSummary = {
   ending_balance_autosum_cents?: number;
   ending_balance_autosum_amount?: string;
   preprocessed_at: string;
+};
+
+export type SourcePeriodEvidence = {
+  source: "boa" | "dealertrack";
+  selectedMonth: string;
+  explicitMonths: string[];
+  observedDateRange: { min: string; max: string } | null;
+  filenameHint: string | null;
+  status: "confirmed" | "compatible_incomplete" | "contradictory";
+  safeEvidence: Record<string, string | number | boolean | null>;
 };
 
 export type RemovedRow = {
@@ -74,11 +98,10 @@ export type UploadPreprocessingMetadata = {
   unsupported_reason: string | null;
 };
 
-export type UploadResponse = {
+type UploadResponseBase = {
   source_file_id: number;
   dealership_store_id: number | null;
   store_name: string | null;
-  source_type: SourceType;
   filename: string;
   transaction_count: number;
   stored_row_count: number;
@@ -102,16 +125,49 @@ export type UploadResponse = {
     source_type: SourceType;
     created_at: string;
   };
-  preprocessing?: UploadPreprocessingMetadata | null;
+  preprocessing: UploadPreprocessingMetadata;
 };
+
+export type FloorplanUploadResponse = UploadResponseBase & {
+  source_type: "boa" | "dealertrack";
+  accounting_month: string;
+  rooftop_profile_id: RooftopProfileId;
+  rooftop_profile_version: string;
+  parser_name: string;
+  parser_version: string;
+  preprocessor_name: string;
+  preprocessor_version: string;
+};
+
+export type LegacyUploadResponse = UploadResponseBase & {
+  source_type: Exclude<SourceType, "boa" | "dealertrack">;
+  accounting_month?: never;
+  rooftop_profile_id?: never;
+  rooftop_profile_version?: never;
+  parser_name?: never;
+  parser_version?: never;
+  preprocessor_name?: never;
+  preprocessor_version?: never;
+};
+
+export type UploadResponse = FloorplanUploadResponse | LegacyUploadResponse;
 
 export type SourceFileSummary = {
   source_file_id: number;
+  dealership_id: number;
   dealership_store_id: number | null;
   store_name: string | null;
   source_type: SourceType;
   filename: string;
   row_count: number;
   validation_error_count: number;
+  accounting_month: string | null;
+  rooftop_profile_id: RooftopProfileId | null;
+  rooftop_profile_version: string | null;
+  parser_name: string | null;
+  parser_version: string | null;
+  preprocessor_name: string | null;
+  preprocessor_version: string | null;
+  preprocessing_metadata: UploadPreprocessingMetadata | null;
   created_at: string;
 };

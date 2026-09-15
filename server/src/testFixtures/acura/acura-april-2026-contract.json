@@ -1,0 +1,47 @@
+{
+  "profileId": "acura-v1",
+  "accountingMonth": "2026-04",
+  "counts": {
+    "boaAccepted": 4,
+    "dealertrackAccepted": 6,
+    "matched": 2,
+    "boaOnly": 1,
+    "dealertrackOnly": 2,
+    "duplicateCandidates": 1,
+    "amountMismatchRows": 2
+  },
+  "totals": {
+    "boaCents": 100000,
+    "dealertrackCents": -205000,
+    "differenceCents": -105000,
+    "netAdjustmentsCents": -105000,
+    "varianceCents": 0
+  },
+  "rowOrder": [
+    "dealertrack_only:000001",
+    "matched:000001",
+    "boa_only:000002",
+    "boa_only:000003",
+    "dealertrack_only:000003",
+    "matched:000004",
+    "dealertrack_only:000005",
+    "dealertrack_only:missing"
+  ],
+  "mergedHeaders": [
+    "ACURA",
+    "Serial No/VIN",
+    "VIN6",
+    "Ending Balance",
+    "324",
+    "VIN6",
+    "Description",
+    "Control"
+  ],
+  "fpRec": {
+    "statementLabel": "Outstanding STMT",
+    "glLabel": "Total GL",
+    "differenceFormula": "statement_plus_gl",
+    "netAdjustmentsFormula": "schedule_only_plus_statement_only",
+    "varianceFormula": "net_adjustments_minus_difference"
+  }
+}

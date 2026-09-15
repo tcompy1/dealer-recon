@@ -1,3 +1,5 @@
+export type RooftopProfileId = "hurst-v1" | "acura-v1" | "fw-v0";
+
 export type DealerGroup = {
   id: number;
   dealership_id: number;
@@ -11,6 +13,14 @@ export type DealershipStore = {
   dealer_group_id: number | null;
   name: string;
   created_at: string;
+};
+
+export type DealershipStoreWithRooftopSupport = DealershipStore & {
+  rooftop_profile: {
+    id: RooftopProfileId;
+    version: string;
+    enabled: boolean;
+  } | null;
 };
 
 export type DealerGroupAnalytics = {

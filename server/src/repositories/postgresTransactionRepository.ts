@@ -39,6 +39,7 @@ import type {
   ScheduledReconciliationJob,
   ScheduledReconciliationJobUpdate,
   SourceFile,
+  SourceProcessingIdentity,
   SourceFileUploadContent,
   SourceFileSummary,
   SourceType,
@@ -46,6 +47,7 @@ import type {
   TransactionSummary,
 } from "../domain/types.js";
 import {
+  AutomatedReconciliationAlreadyExistsError,
   DuplicateSourceFileError,
   type SourceFileImport,
   type TransactionRepository,
@@ -63,6 +65,14 @@ type SourceFileRow = {
   file_hash: string;
   row_count: number;
   validation_error_count: number;
+  accounting_month: SourceFile["accounting_month"];
+  rooftop_profile_id: SourceFile["rooftop_profile_id"];
+  rooftop_profile_version: string | null;
+  parser_name: string | null;
+  parser_version: string | null;
+  preprocessor_name: string | null;
+  preprocessor_version: string | null;
+  preprocessing_metadata: SourceFile["preprocessing_metadata"];
   created_at: Date | string;
 };
 
@@ -120,6 +130,10 @@ type ReconciliationRunRow = {
   exception_count: number;
   duplicate_count: number;
   status: string;
+  automated: boolean;
+  accounting_month: ReconciliationRun["accounting_month"];
+  rooftop_profile_id: ReconciliationRun["rooftop_profile_id"];
+  rooftop_profile_version: string | null;
   created_at: Date | string;
 };
 
@@ -334,7 +348,15 @@ export class PostgresTransactionRepository implements TransactionRepository {
              stored_filename = $6,
              file_hash = $7,
              row_count = $8,
-             validation_error_count = $9
+             validation_error_count = $9,
+             accounting_month = $10,
+             rooftop_profile_id = $11,
+             rooftop_profile_version = $12,
+             parser_name = $13,
+             parser_version = $14,
+             preprocessor_name = $15,
+             preprocessor_version = $16,
+             preprocessing_metadata = $17
          WHERE dealership_id = $1
            AND id = $2
          RETURNING *`,
@@ -348,6 +370,14 @@ export class PostgresTransactionRepository implements TransactionRepository {
           sourceFileInput.file_hash,
           sourceFileInput.row_count,
           sourceFileInput.validation_error_count,
+          sourceFileInput.accounting_month ?? null,
+          sourceFileInput.rooftop_profile_id ?? null,
+          sourceFileInput.rooftop_profile_version ?? null,
+          sourceFileInput.parser_name ?? null,
+          sourceFileInput.parser_version ?? null,
+          sourceFileInput.preprocessor_name ?? null,
+          sourceFileInput.preprocessor_version ?? null,
+          sourceFileInput.preprocessing_metadata ?? null,
         ],
       );
       const sourceFile = toSourceFile(updated.rows[0]);
@@ -396,14 +426,66 @@ export class PostgresTransactionRepository implements TransactionRepository {
     return result.rows[0] ? toSourceFile(result.rows[0]) : null;
   }
 
-  async getSourceFileByHash(
+  async getReusableSourceFile(
+    dealershipId: number,
+    dealershipStoreId: number,
+    sourceType: SourceType,
+    fileHash: string,
+    identity: SourceProcessingIdentity,
+  ): Promise<SourceFile | null> {
+    const result = await this.pool.query<SourceFileRow>(
+      `SELECT sf.*, ds.name AS store_name
+       FROM source_files sf
+       LEFT JOIN dealership_stores ds ON ds.id = sf.dealership_store_id
+       WHERE sf.dealership_id = $1
+         AND sf.dealership_store_id = $2
+         AND sf.source_type = $3
+         AND sf.file_hash = $4
+         AND sf.accounting_month = $5
+         AND sf.rooftop_profile_id = $6
+         AND sf.rooftop_profile_version = $7
+         AND sf.parser_name = $8
+         AND sf.parser_version = $9
+         AND sf.preprocessor_name = $10
+         AND sf.preprocessor_version = $11`,
+      [
+        dealershipId,
+        dealershipStoreId,
+        sourceType,
+        fileHash,
+        identity.accounting_month,
+        identity.rooftop_profile_id,
+        identity.rooftop_profile_version,
+        identity.parser_name,
+        identity.parser_version,
+        identity.preprocessor_name,
+        identity.preprocessor_version,
+      ],
+    );
+    return result.rows[0] ? toSourceFile(result.rows[0]) : null;
+  }
+
+  async getReusableLegacySourceFile(
     dealershipId: number,
     dealershipStoreId: number | null,
     sourceType: SourceType,
     fileHash: string,
   ): Promise<SourceFile | null> {
     const result = await this.pool.query<SourceFileRow>(
-      "SELECT sf.*, ds.name AS store_name FROM source_files sf LEFT JOIN dealership_stores ds ON ds.id = sf.dealership_store_id WHERE sf.dealership_id = $1 AND sf.dealership_store_id IS NOT DISTINCT FROM $2 AND sf.source_type = $3 AND sf.file_hash = $4",
+      `SELECT sf.*, ds.name AS store_name
+       FROM source_files sf
+       LEFT JOIN dealership_stores ds ON ds.id = sf.dealership_store_id
+       WHERE sf.dealership_id = $1
+         AND sf.dealership_store_id IS NOT DISTINCT FROM $2
+         AND sf.source_type = $3
+         AND sf.file_hash = $4
+         AND sf.accounting_month IS NULL
+         AND sf.rooftop_profile_id IS NULL
+         AND sf.rooftop_profile_version IS NULL
+         AND sf.parser_name IS NULL
+         AND sf.parser_version IS NULL
+         AND sf.preprocessor_name IS NULL
+         AND sf.preprocessor_version IS NULL`,
       [dealershipId, dealershipStoreId, sourceType, fileHash],
     );
     return result.rows[0] ? toSourceFile(result.rows[0]) : null;
@@ -657,14 +739,33 @@ export class PostgresTransactionRepository implements TransactionRepository {
     return toAuditEvent(result.rows[0]);
   }
 
-  async listAuditEvents(dealershipId: number, limit = 100): Promise<AuditEvent[]> {
+  async listAuditEvents(
+    dealershipId: number,
+    limit = 100,
+    authorizedStoreIds: readonly number[] | null = null,
+  ): Promise<AuditEvent[]> {
     const result = await this.pool.query<AuditEventRow>(
       `SELECT *
-       FROM audit_events
-       WHERE dealership_id = $1
-       ORDER BY timestamp DESC, id DESC
+       FROM audit_events ae
+       WHERE ae.dealership_id = $1
+         AND ($3::integer[] IS NULL OR
+           CASE
+             WHEN COALESCE(ae.new_state->>'dealership_store_id', ae.new_state->>'store_id', ae.previous_state->>'dealership_store_id', ae.previous_state->>'store_id') ~ '^[0-9]+$'
+               THEN COALESCE(ae.new_state->>'dealership_store_id', ae.new_state->>'store_id', ae.previous_state->>'dealership_store_id', ae.previous_state->>'store_id')::integer
+             WHEN ae.entity_type = 'dealership_store' AND ae.entity_id ~ '^[0-9]+$' THEN ae.entity_id::integer
+             WHEN ae.entity_type = 'reconciliation_run' AND ae.entity_id ~ '^[0-9]+$'
+               THEN (SELECT rr.dealership_store_id FROM reconciliation_runs rr WHERE rr.id = ae.entity_id::integer AND rr.dealership_id = ae.dealership_id)
+             WHEN ae.entity_type = 'reconciliation_exception' AND ae.entity_id ~ '^[0-9]+$'
+               THEN (SELECT rr.dealership_store_id FROM reconciliation_exceptions re JOIN reconciliation_runs rr ON rr.id = re.reconciliation_run_id WHERE re.id = ae.entity_id::integer AND re.dealership_id = ae.dealership_id)
+             WHEN ae.entity_type = 'reconciliation_artifact' AND ae.entity_id ~ '^[0-9]+$'
+               THEN (SELECT ra.dealership_store_id FROM reconciliation_artifacts ra WHERE ra.id = ae.entity_id::integer AND ra.dealership_id = ae.dealership_id)
+             WHEN ae.entity_type = 'scheduled_reconciliation_job' AND ae.entity_id ~ '^[0-9]+$'
+               THEN (SELECT srj.dealership_store_id FROM scheduled_reconciliation_jobs srj WHERE srj.id = ae.entity_id::integer AND srj.dealership_id = ae.dealership_id)
+             ELSE NULL
+           END = ANY($3::integer[]))
+       ORDER BY ae.timestamp DESC, ae.id DESC
        LIMIT $2`,
-      [dealershipId, limit],
+      [dealershipId, limit, authorizedStoreIds === null ? null : [...authorizedStoreIds]],
     );
     return result.rows.map(toAuditEvent);
   }
@@ -711,24 +812,30 @@ export class PostgresTransactionRepository implements TransactionRepository {
     return result.rows[0] ? toTransaction(result.rows[0]) : null;
   }
 
-  async listAccountsSummary(dealershipId: number): Promise<AccountSummary[]> {
+  async listAccountsSummary(
+    dealershipId: number,
+    authorizedStoreIds: readonly number[] | null = null,
+  ): Promise<AccountSummary[]> {
     return buildAccountSummaries(
-      await this.listAccountSourceTotals(dealershipId),
-      await this.listUnresolvedExceptionCountsByAccount(dealershipId),
+      await this.listAccountSourceTotals(dealershipId, undefined, authorizedStoreIds),
+      await this.listUnresolvedExceptionCountsByAccount(dealershipId, undefined, authorizedStoreIds),
     );
   }
 
   async getAccountDetail(
     dealershipId: number,
     accountIdentifier: string,
+    authorizedStoreIds: readonly number[] | null = null,
   ): Promise<AccountDetail | null> {
     const transactionResult = await this.pool.query<TransactionRow>(
-      `SELECT *
-       FROM transactions
-       WHERE dealership_id = $1
-         AND account_identifier = $2
-       ORDER BY source_type, transaction_date NULLS LAST, id`,
-      [dealershipId, accountIdentifier],
+      `SELECT t.*
+       FROM transactions t
+       LEFT JOIN source_files sf ON sf.id = t.source_file_id AND sf.dealership_id = t.dealership_id
+       WHERE t.dealership_id = $1
+         AND t.account_identifier = $2
+         AND ($3::integer[] IS NULL OR sf.dealership_store_id = ANY($3::integer[]))
+       ORDER BY t.source_type, t.transaction_date NULLS LAST, t.id`,
+      [dealershipId, accountIdentifier, authorizedStoreIds === null ? null : [...authorizedStoreIds]],
     );
     if (transactionResult.rows.length === 0) {
       return null;
@@ -736,8 +843,8 @@ export class PostgresTransactionRepository implements TransactionRepository {
 
     const accountType = transactionResult.rows[0].account_type;
     const summary = buildAccountSummaries(
-      await this.listAccountSourceTotals(dealershipId, accountIdentifier),
-      await this.listUnresolvedExceptionCountsByAccount(dealershipId, accountIdentifier),
+      await this.listAccountSourceTotals(dealershipId, accountIdentifier, authorizedStoreIds),
+      await this.listUnresolvedExceptionCountsByAccount(dealershipId, accountIdentifier, authorizedStoreIds),
     ).find(
       (account) =>
         account.account_identifier === accountIdentifier && account.account_type === accountType,
@@ -755,6 +862,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
       JOIN source_files boa ON boa.id = rr.boa_source_file_id
       JOIN source_files dealertrack ON dealertrack.id = rr.dealertrack_source_file_id
       WHERE rr.dealership_id = $1
+        AND ($3::integer[] IS NULL OR rr.dealership_store_id = ANY($3::integer[]))
         AND (
           EXISTS (
             SELECT 1
@@ -773,7 +881,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
           )
         )
       ORDER BY rr.created_at DESC, rr.id DESC`,
-      [dealershipId, accountIdentifier],
+      [dealershipId, accountIdentifier, authorizedStoreIds === null ? null : [...authorizedStoreIds]],
     );
     const unresolvedExceptions = await this.pool.query<ReconciliationExceptionRow>(
       `SELECT
@@ -794,11 +902,13 @@ export class PostgresTransactionRepository implements TransactionRepository {
         t.*
       FROM reconciliation_exceptions re
       JOIN transactions t ON t.id = re.transaction_id
+      LEFT JOIN source_files sf ON sf.id = t.source_file_id AND sf.dealership_id = t.dealership_id
       WHERE re.dealership_id = $1
         AND re.status = 'unresolved'
         AND t.account_identifier = $2
+        AND ($3::integer[] IS NULL OR sf.dealership_store_id = ANY($3::integer[]))
       ORDER BY re.id`,
-      [dealershipId, accountIdentifier],
+      [dealershipId, accountIdentifier, authorizedStoreIds === null ? null : [...authorizedStoreIds]],
     );
 
     return {
@@ -833,20 +943,23 @@ export class PostgresTransactionRepository implements TransactionRepository {
   private async listAccountSourceTotals(
     dealershipId: number,
     accountIdentifier?: string,
+    authorizedStoreIds: readonly number[] | null = null,
   ): Promise<AccountSourceTotalRow[]> {
     const result = await this.pool.query<AccountSourceTotalRow>(
       `SELECT
-        account_identifier,
-        account_type,
-        source_type,
-        SUM(amount_cents)::text AS amount_cents,
+        t.account_identifier,
+        t.account_type,
+        t.source_type,
+        SUM(t.amount_cents)::text AS amount_cents,
         COUNT(*)::text AS transaction_count
-      FROM transactions
-      WHERE dealership_id = $1
-        AND ($2::text IS NULL OR account_identifier = $2)
-      GROUP BY account_identifier, account_type, source_type
-      ORDER BY account_identifier, account_type, source_type`,
-      [dealershipId, accountIdentifier ?? null],
+      FROM transactions t
+      LEFT JOIN source_files sf ON sf.id = t.source_file_id AND sf.dealership_id = t.dealership_id
+      WHERE t.dealership_id = $1
+        AND ($2::text IS NULL OR t.account_identifier = $2)
+        AND ($3::integer[] IS NULL OR sf.dealership_store_id = ANY($3::integer[]))
+      GROUP BY t.account_identifier, t.account_type, t.source_type
+      ORDER BY t.account_identifier, t.account_type, t.source_type`,
+      [dealershipId, accountIdentifier ?? null, authorizedStoreIds === null ? null : [...authorizedStoreIds]],
     );
     return result.rows;
   }
@@ -882,6 +995,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
   private async listUnresolvedExceptionCountsByAccount(
     dealershipId: number,
     accountIdentifier?: string,
+    authorizedStoreIds: readonly number[] | null = null,
   ): Promise<Map<string, number>> {
     const result = await this.pool.query<{
       account_identifier: string;
@@ -894,11 +1008,13 @@ export class PostgresTransactionRepository implements TransactionRepository {
         COUNT(re.id)::text AS unresolved_exception_count
       FROM reconciliation_exceptions re
       JOIN transactions t ON t.id = re.transaction_id
+      LEFT JOIN source_files sf ON sf.id = t.source_file_id AND sf.dealership_id = t.dealership_id
       WHERE re.dealership_id = $1
         AND re.status = 'unresolved'
         AND ($2::text IS NULL OR t.account_identifier = $2)
+        AND ($3::integer[] IS NULL OR sf.dealership_store_id = ANY($3::integer[]))
       GROUP BY t.account_identifier, t.account_type`,
-      [dealershipId, accountIdentifier ?? null],
+      [dealershipId, accountIdentifier ?? null, authorizedStoreIds === null ? null : [...authorizedStoreIds]],
     );
     return new Map(
       result.rows.map((row) => [
@@ -1092,6 +1208,12 @@ export class PostgresTransactionRepository implements TransactionRepository {
       return run;
     } catch (error) {
       await client.query("ROLLBACK");
+      if (
+        input.automated &&
+        isPostgresUniqueViolation(error, "ux_reconciliation_runs_automated_source_pair")
+      ) {
+        throw new AutomatedReconciliationAlreadyExistsError();
+      }
       throw error;
     } finally {
       client.release();
@@ -1170,6 +1292,71 @@ export class PostgresTransactionRepository implements TransactionRepository {
       ],
     );
     return toReconciliationArtifactMetadata(result.rows[0]);
+  }
+
+  async createReconciliationArtifactBatch(
+    dealershipId: number,
+    artifacts: NewReconciliationArtifact[],
+  ): Promise<ReconciliationArtifactMetadata[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const reconciliationRunIds = [...new Set(
+        artifacts.map((artifact) => artifact.reconciliation_run_id),
+      )].sort((left, right) => left - right);
+      const scopedRuns = await client.query<{ id: number }>(
+        `SELECT id
+         FROM reconciliation_runs
+         WHERE dealership_id = $1
+           AND id = ANY($2::integer[])
+           AND status = 'artifact_pending'
+         FOR UPDATE`,
+        [dealershipId, reconciliationRunIds],
+      );
+      if (scopedRuns.rows.length !== reconciliationRunIds.length) {
+        throw new Error(
+          "Cannot persist reconciliation artifact batch: every run must belong to the dealership and be artifact_pending.",
+        );
+      }
+      const created: ReconciliationArtifactMetadata[] = [];
+      for (const artifact of artifacts) {
+        const result = await client.query<ReconciliationArtifactRow>(
+          `INSERT INTO reconciliation_artifacts (
+            reconciliation_run_id,
+            dealership_id,
+            dealership_store_id,
+            accounting_month,
+            uploaded_by_user_id,
+            artifact_type,
+            filename,
+            content_type,
+            file_size_bytes,
+            content
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          RETURNING *`,
+          [
+            artifact.reconciliation_run_id,
+            dealershipId,
+            artifact.store_id,
+            artifact.accounting_month,
+            artifact.uploaded_by,
+            artifact.artifact_type,
+            artifact.filename,
+            artifact.content_type,
+            artifact.file_size ?? artifact.content.byteLength,
+            artifact.content,
+          ],
+        );
+        created.push(toReconciliationArtifactMetadata(result.rows[0]));
+      }
+      await client.query("COMMIT");
+      return created;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async listReconciliationArtifacts(
@@ -1314,12 +1501,28 @@ export class PostgresTransactionRepository implements TransactionRepository {
         boa_stored_filename: string | null;
         boa_row_count: number;
         boa_validation_error_count: number;
+        boa_accounting_month: SourceFile["accounting_month"];
+        boa_rooftop_profile_id: SourceFile["rooftop_profile_id"];
+        boa_rooftop_profile_version: string | null;
+        boa_parser_name: string | null;
+        boa_parser_version: string | null;
+        boa_preprocessor_name: string | null;
+        boa_preprocessor_version: string | null;
+        boa_preprocessing_metadata: SourceFile["preprocessing_metadata"];
         boa_created_at: Date | string;
         dealertrack_source_type: SourceType;
         dealertrack_original_filename: string;
         dealertrack_stored_filename: string | null;
         dealertrack_row_count: number;
         dealertrack_validation_error_count: number;
+        dealertrack_accounting_month: SourceFile["accounting_month"];
+        dealertrack_rooftop_profile_id: SourceFile["rooftop_profile_id"];
+        dealertrack_rooftop_profile_version: string | null;
+        dealertrack_parser_name: string | null;
+        dealertrack_parser_version: string | null;
+        dealertrack_preprocessor_name: string | null;
+        dealertrack_preprocessor_version: string | null;
+        dealertrack_preprocessing_metadata: SourceFile["preprocessing_metadata"];
         dealertrack_created_at: Date | string;
       }
     >(
@@ -1335,12 +1538,28 @@ export class PostgresTransactionRepository implements TransactionRepository {
         boa.stored_filename AS boa_stored_filename,
         boa.row_count AS boa_row_count,
         boa.validation_error_count AS boa_validation_error_count,
+        boa.accounting_month AS boa_accounting_month,
+        boa.rooftop_profile_id AS boa_rooftop_profile_id,
+        boa.rooftop_profile_version AS boa_rooftop_profile_version,
+        boa.parser_name AS boa_parser_name,
+        boa.parser_version AS boa_parser_version,
+        boa.preprocessor_name AS boa_preprocessor_name,
+        boa.preprocessor_version AS boa_preprocessor_version,
+        boa.preprocessing_metadata AS boa_preprocessing_metadata,
         boa.created_at AS boa_created_at,
         dealertrack.source_type AS dealertrack_source_type,
         dealertrack.original_filename AS dealertrack_original_filename,
         dealertrack.stored_filename AS dealertrack_stored_filename,
         dealertrack.row_count AS dealertrack_row_count,
         dealertrack.validation_error_count AS dealertrack_validation_error_count,
+        dealertrack.accounting_month AS dealertrack_accounting_month,
+        dealertrack.rooftop_profile_id AS dealertrack_rooftop_profile_id,
+        dealertrack.rooftop_profile_version AS dealertrack_rooftop_profile_version,
+        dealertrack.parser_name AS dealertrack_parser_name,
+        dealertrack.parser_version AS dealertrack_parser_version,
+        dealertrack.preprocessor_name AS dealertrack_preprocessor_name,
+        dealertrack.preprocessor_version AS dealertrack_preprocessor_version,
+        dealertrack.preprocessing_metadata AS dealertrack_preprocessing_metadata,
         dealertrack.created_at AS dealertrack_created_at
       FROM reconciliation_runs rr
       JOIN source_files boa ON boa.id = rr.boa_source_file_id
@@ -1466,6 +1685,14 @@ export class PostgresTransactionRepository implements TransactionRepository {
         file_hash: "",
         row_count: Number(runRow.boa_row_count),
         validation_error_count: Number(runRow.boa_validation_error_count),
+        accounting_month: runRow.boa_accounting_month,
+        rooftop_profile_id: runRow.boa_rooftop_profile_id,
+        rooftop_profile_version: runRow.boa_rooftop_profile_version,
+        parser_name: runRow.boa_parser_name,
+        parser_version: runRow.boa_parser_version,
+        preprocessor_name: runRow.boa_preprocessor_name,
+        preprocessor_version: runRow.boa_preprocessor_version,
+        preprocessing_metadata: runRow.boa_preprocessing_metadata,
         created_at: toDateTimeString(runRow.boa_created_at),
       }),
       dealertrack_source_file: toSourceFileSummary({
@@ -1479,6 +1706,14 @@ export class PostgresTransactionRepository implements TransactionRepository {
         file_hash: "",
         row_count: Number(runRow.dealertrack_row_count),
         validation_error_count: Number(runRow.dealertrack_validation_error_count),
+        accounting_month: runRow.dealertrack_accounting_month,
+        rooftop_profile_id: runRow.dealertrack_rooftop_profile_id,
+        rooftop_profile_version: runRow.dealertrack_rooftop_profile_version,
+        parser_name: runRow.dealertrack_parser_name,
+        parser_version: runRow.dealertrack_parser_version,
+        preprocessor_name: runRow.dealertrack_preprocessor_name,
+        preprocessor_version: runRow.dealertrack_preprocessor_version,
+        preprocessing_metadata: runRow.dealertrack_preprocessing_metadata,
         created_at: toDateTimeString(runRow.dealertrack_created_at),
       }),
       match_groups: matchGroups,
@@ -1836,8 +2071,16 @@ async function insertSourceFile(
       stored_filename,
       file_hash,
       row_count,
-      validation_error_count
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      validation_error_count,
+      accounting_month,
+      rooftop_profile_id,
+      rooftop_profile_version,
+      parser_name,
+      parser_version,
+      preprocessor_name,
+      preprocessor_version,
+      preprocessing_metadata
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
     RETURNING *`,
     [
       dealershipId,
@@ -1848,6 +2091,14 @@ async function insertSourceFile(
       sourceFile.file_hash,
       sourceFile.row_count,
       sourceFile.validation_error_count,
+      sourceFile.accounting_month ?? null,
+      sourceFile.rooftop_profile_id ?? null,
+      sourceFile.rooftop_profile_version ?? null,
+      sourceFile.parser_name ?? null,
+      sourceFile.parser_version ?? null,
+      sourceFile.preprocessor_name ?? null,
+      sourceFile.preprocessor_version ?? null,
+      sourceFile.preprocessing_metadata ?? null,
     ],
   );
   return toSourceFile(result.rows[0]);
@@ -1952,8 +2203,12 @@ async function insertReconciliationRun(
       matched_count,
       exception_count,
       duplicate_count,
-      status
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      status,
+      automated,
+      accounting_month,
+      rooftop_profile_id,
+      rooftop_profile_version
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     RETURNING *`,
     [
       input.dealership_id,
@@ -1964,6 +2219,10 @@ async function insertReconciliationRun(
       input.result.exception_count,
       input.result.duplicate_count,
       input.status ?? "completed",
+      input.automated ?? false,
+      input.accounting_month ?? null,
+      input.rooftop_profile_id ?? null,
+      input.rooftop_profile_version ?? null,
     ],
   );
   return toReconciliationRun(result.rows[0]);
@@ -1981,6 +2240,14 @@ function toSourceFile(row: SourceFileRow): SourceFile {
     file_hash: row.file_hash,
     row_count: Number(row.row_count),
     validation_error_count: Number(row.validation_error_count),
+    accounting_month: row.accounting_month,
+    rooftop_profile_id: row.rooftop_profile_id,
+    rooftop_profile_version: row.rooftop_profile_version,
+    parser_name: row.parser_name,
+    parser_version: row.parser_version,
+    preprocessor_name: row.preprocessor_name,
+    preprocessor_version: row.preprocessor_version,
+    preprocessing_metadata: row.preprocessing_metadata,
     created_at: toDateTimeString(row.created_at),
   };
 }
@@ -2033,6 +2300,14 @@ function toSourceFileSummary(sourceFile: SourceFile): SourceFileSummary {
     filename: sourceFile.original_filename,
     row_count: sourceFile.row_count,
     validation_error_count: sourceFile.validation_error_count,
+    accounting_month: sourceFile.accounting_month,
+    rooftop_profile_id: sourceFile.rooftop_profile_id,
+    rooftop_profile_version: sourceFile.rooftop_profile_version,
+    parser_name: sourceFile.parser_name,
+    parser_version: sourceFile.parser_version,
+    preprocessor_name: sourceFile.preprocessor_name,
+    preprocessor_version: sourceFile.preprocessor_version,
+    preprocessing_metadata: sourceFile.preprocessing_metadata,
     created_at: sourceFile.created_at,
   };
 }
@@ -2131,6 +2406,10 @@ function toReconciliationRun(row: ReconciliationRunRow): ReconciliationRun {
     exception_count: Number(row.exception_count),
     duplicate_count: Number(row.duplicate_count),
     status: row.status,
+    automated: row.automated,
+    accounting_month: row.accounting_month,
+    rooftop_profile_id: row.rooftop_profile_id,
+    rooftop_profile_version: row.rooftop_profile_version,
     created_at: toDateTimeString(row.created_at),
   };
 }
@@ -2151,6 +2430,9 @@ function toReconciliationRunListItem(row: ReconciliationRunListRow): Reconciliat
     exception_count: Number(row.exception_count),
     duplicate_count: Number(row.duplicate_count),
     status: row.status,
+    accounting_month: row.accounting_month,
+    rooftop_profile_id: row.rooftop_profile_id,
+    rooftop_profile_version: row.rooftop_profile_version,
     created_at: toDateTimeString(row.created_at),
   };
 }
@@ -2226,8 +2508,16 @@ function isDuplicateSourceFileError(error: unknown): boolean {
     error.code === "23505" &&
     "constraint" in error &&
     (error.constraint === "ux_source_files_source_type_file_hash" ||
-      error.constraint === "ux_source_files_dealership_source_type_file_hash")
+      error.constraint === "ux_source_files_dealership_source_type_file_hash" ||
+      error.constraint === "ux_source_files_legacy_identity" ||
+      error.constraint === "ux_source_files_reusable_identity")
   );
+}
+
+function isPostgresUniqueViolation(error: unknown, constraint: string): boolean {
+  return typeof error === "object" && error !== null &&
+    "code" in error && error.code === "23505" &&
+    "constraint" in error && error.constraint === constraint;
 }
 
 function exceptionTypeFromReason(reason: string): ReconciliationExceptionType {

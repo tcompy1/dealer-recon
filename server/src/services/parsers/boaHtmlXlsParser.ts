@@ -106,9 +106,11 @@ export function parseBoaHtmlXls(
 
   const headerInfo = locateHeaderByFingerprint(chosenRows);
   let header: string[] | null = null;
+  let preambleRows: string[][] | undefined;
   let dataRows: string[][];
   if (headerInfo) {
     header = headerInfo.header;
+    preambleRows = chosenRows.slice(0, headerInfo.index);
     dataRows = chosenRows.slice(headerInfo.index + 1);
   } else {
     warnings.push({
@@ -128,7 +130,7 @@ export function parseBoaHtmlXls(
     });
   }
   const usefulRows = dataRows.filter((row) => row.some((cell) => cell.length > 0));
-  return { header, rows: usefulRows, warnings };
+  return { header, preambleRows, rows: usefulRows, warnings };
 }
 
 function collectTableSpans(text: string, warnings: ParserWarning[]): string[] {
