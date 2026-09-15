@@ -412,6 +412,14 @@ export function compareFpRecSemantics(
     countHtmlColumns(renderedHtml),
     expected.visibleColumnCount,
   );
+  const rowWidthMismatches = renderedRows.filter((row) => row.logicalWidth !== 4).length;
+  if (rowWidthMismatches > 0) {
+    errors.push(
+      rowWidthMismatches === 1
+        ? "fp_rec.row_width: 1 rendered row has logical width other than 4"
+        : `fp_rec.row_width: ${rowWidthMismatches} rendered rows have logical width other than 4`,
+    );
+  }
   compareString(errors, "fp_rec.print_area", actualPrintArea, expected.printArea);
   compareStringArray(
     errors,
@@ -929,6 +937,7 @@ type RenderedFpRecRow = {
   rowNumber: number;
   cells: string[];
   formulas: Array<string | null>;
+  logicalWidth: number;
 };
 
 function parseRenderedFpRecRows(html: string): RenderedFpRecRow[] {
@@ -941,8 +950,18 @@ function parseRenderedFpRecRows(html: string): RenderedFpRecRow[] {
         const formula = cell[1].match(/\bx:fmla="([^"]+)"/i)?.[1];
         return formula ? decodeHtml(formula) : null;
       }),
+      logicalWidth: cells.reduce(
+        (width, cell) => width + renderedCellColspan(cell[1]),
+        0,
+      ),
     };
   });
+}
+
+function renderedCellColspan(attributes: string): number {
+  const match = attributes.match(/\bcolspan\s*=\s*(?:"(\d+)"|'(\d+)'|(\d+))/i);
+  const colspan = Number(match?.[1] ?? match?.[2] ?? match?.[3] ?? 1);
+  return Number.isSafeInteger(colspan) && colspan > 0 ? colspan : 1;
 }
 
 function renderedHeaderCells(rows: RenderedFpRecRow[], label: string): string[] {

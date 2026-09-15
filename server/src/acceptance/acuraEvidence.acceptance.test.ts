@@ -131,6 +131,34 @@ describe("Acura rendered FP REC semantic comparison", () => {
     );
   });
 
+  test("rejects a populated fifth logical cell without exposing its contents", () => {
+    const workbook = syntheticAcuraFpRecWorkbook();
+    const rendered = toFpRecXlsHtml(workbook);
+    const titleRow = requiredRenderedRowByClass(rendered, "title-row");
+    const html = replaceOnce(
+      rendered,
+      titleRow,
+      titleRow.replace("</tr>", "<td>SYNTHETIC_EXTRA_CELL</td></tr>"),
+    );
+
+    const errors = compareRendered(workbook, html);
+
+    expect(errors).toContain(
+      "fp_rec.row_width: 1 rendered row has logical width other than 4",
+    );
+    expect(errors.join("\n")).not.toContain("SYNTHETIC_EXTRA_CELL");
+  });
+
+  test("rejects a rendered row under four logical columns", () => {
+    const workbook = syntheticAcuraFpRecWorkbook();
+    const rendered = toFpRecXlsHtml(workbook);
+    const html = replaceOnce(rendered, 'colspan="4"', 'colspan="3"');
+
+    expect(compareRendered(workbook, html)).toContain(
+      "fp_rec.row_width: 1 rendered row has logical width other than 4",
+    );
+  });
+
   test("rejects wrong workpaper label order without exposing row identifiers", () => {
     const workbook = syntheticAcuraFpRecWorkbook();
     const rendered = toFpRecXlsHtml(workbook);
@@ -192,6 +220,14 @@ function requiredRenderedRow(html: string, label: string): string {
   const row = [...html.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi)]
     .map(([match]) => match)
     .find((match) => match.includes(`<td>${label}</td>`));
+  expect(row).toBeDefined();
+  return row as string;
+}
+
+function requiredRenderedRowByClass(html: string, className: string): string {
+  const row = [...html.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi)]
+    .map(([match]) => match)
+    .find((match) => match.includes(`class="${className}"`));
   expect(row).toBeDefined();
   return row as string;
 }
