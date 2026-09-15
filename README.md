@@ -1,19 +1,20 @@
 # Dealer-Recon
 
-Dealer-Recon v1 automates the Hurst Mazda monthly floorplan reconciliation workflow. The product takes one BOA source file and one Dealertrack source file, cleans and reconciles them, and produces the Hurst FP REC export as the output of record.
+Dealer-Recon automates the Hurst Mazda and Hiley Acura monthly floorplan reconciliation workflows. The product takes one BOA source file and one Dealertrack source file, cleans and reconciles them under an enabled rooftop profile, and produces the profile-specific FP REC export as the output of record.
 
 The dashboard exists to guide that workflow. It is not the v1 product goal, and dashboard analytics, trend metrics, reviewer workload, multi-store reporting, and full accounting-platform expansion are future scope.
 
 ## V1 Workflow
 
-One run represents one Hurst Mazda accounting month.
+One run represents one supported rooftop and one operator-selected accounting month.
 
-1. Upload BOA and Dealertrack source files.
-2. Clean and normalize inputs, including removed-row audit and VIN6 extraction.
-3. Run reconciliation and review exceptions.
-4. Generate and store the Hurst FP REC export.
+1. Select an enabled store, task, and accounting month.
+2. Upload BOA and Dealertrack source files.
+3. Clean and normalize inputs, including removed-row audit and VIN6 extraction.
+4. Run reconciliation and review exceptions.
+5. Generate and store the rooftop's merged and FP REC exports.
 
-See [docs/product/fp-rec-four-step-workflow.md](docs/product/fp-rec-four-step-workflow.md) for the canonical workflow.
+See [docs/product/fp-rec-four-step-workflow.md](docs/product/fp-rec-four-step-workflow.md) for the original Hurst workflow and [docs/operations/acura-rooftop-reconciliation.md](docs/operations/acura-rooftop-reconciliation.md) for the Acura operating contract.
 
 ## V1 Scope
 
@@ -22,6 +23,8 @@ In scope:
 - Hurst Mazda floorplan reconciliation.
 - BOA Dealer Billing Statement style input.
 - Dealertrack floorplan input for Hurst account `2100`, excluding `2110` where applicable.
+- Hiley Acura reconciliation from BOA CSV and Dealertrack CSV account `324` under profile `acura-v1`.
+- Explicit `YYYY-MM` accounting-month selection and source-period validation for enabled rooftop workflows.
 - VIN6 extraction from BOA VINs and Dealertrack descriptions.
 - Matching only when VIN6 and absolute amount both agree.
 - Reviewable exception output for BOA-only rows, Dealertrack-only rows, and VIN6 amount mismatches.
@@ -29,7 +32,7 @@ In scope:
 
 Out of scope for v1:
 
-- Multi-store operation.
+- Rooftops that have not completed their own evidence-onboarding and acceptance gate.
 - Full accounting-platform reconciliation.
 - Generic analytics dashboards.
 - Reviewer productivity or workload reporting.
@@ -56,7 +59,7 @@ Each completed run should store:
 - Cleaned BOA CSV.
 - Cleaned Dealertrack CSV.
 - Merged Floorplan workbook.
-- Hurst FP REC workbook.
+- Profile-specific FP REC workbook.
 
 Normal artifact downloads use stored records. Export routes can regenerate output for JSON/debug or fallback behavior when a stored artifact is absent.
 
@@ -73,7 +76,7 @@ The backend listens on `http://localhost:8000` in local Docker Compose.
 | `GET` | `/reconciliation-runs` | List reconciliation runs. |
 | `GET` | `/reconciliation-runs/:id` | Read run detail and exceptions. |
 | `GET` | `/reconciliation-runs/:id/merged-floorplan` | Download the merged working artifact. |
-| `GET` | `/reconciliation-runs/:id/fp-rec` | Download the Hurst FP REC export. |
+| `GET` | `/reconciliation-runs/:id/fp-rec` | Download the profile-specific FP REC export. |
 | `GET` | `/reconciliation-runs/:id/artifacts` | List stored artifacts for a run. |
 | `GET` | `/artifacts/:artifactId/download` | Download one stored artifact. |
 
@@ -108,8 +111,10 @@ docker compose run --rm frontend npm run build
 
 ## Documentation Map
 
-- [PROJECT_BRIEF.md](PROJECT_BRIEF.md) - v1 scope, future scope, and product boundaries.
+- [PROJECT_BRIEF.md](PROJECT_BRIEF.md) - historical Hurst-only v1 scope, future scope, and product boundaries; it does not define the current multi-rooftop operating contract.
 - [docs/product/fp-rec-four-step-workflow.md](docs/product/fp-rec-four-step-workflow.md) - canonical Hurst workflow.
+- [docs/operations/acura-rooftop-reconciliation.md](docs/operations/acura-rooftop-reconciliation.md) - supported Acura inputs, period validation, errors, artifacts, downloads, and FP REC interpretation.
+- [docs/development/rooftop-onboarding.md](docs/development/rooftop-onboarding.md) - evidence-first gate for later rooftops.
 - [docs/implementation/exception-taxonomy.md](docs/implementation/exception-taxonomy.md) - exception classifications and FP REC placement.
 - [docs/implementation/reconciliation-artifacts.md](docs/implementation/reconciliation-artifacts.md) - artifact persistence, downloads, and review risks.
 - [docs/reviews/v1-security-code-review-packet.md](docs/reviews/v1-security-code-review-packet.md) - v1 security and code review packet, readiness checklist, risks, and validation evidence.
