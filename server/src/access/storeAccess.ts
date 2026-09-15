@@ -56,3 +56,15 @@ export function filterStoresForUser<T extends { id: number; dealer_group_id: num
   }
   return stores.filter((store) => user.store_ids.includes(store.id));
 }
+
+/** `null` means dealership-wide access; an empty list deliberately fails closed. */
+export async function authorizedStoreIds(
+  repository: TransactionRepository,
+  user: AuthUser,
+): Promise<readonly number[] | null> {
+  if (user.role === "platform_admin") {
+    return null;
+  }
+  const stores = await repository.listDealershipStores(user.dealership_id);
+  return filterStoresForUser(user, stores).map((store) => store.id);
+}

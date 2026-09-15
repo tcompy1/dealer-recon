@@ -47,6 +47,7 @@ import type {
   TransactionSummary,
 } from "../domain/types.js";
 import {
+  AutomatedReconciliationAlreadyExistsError,
   DuplicateSourceFileError,
   type SourceFileImport,
   type TransactionRepository,
@@ -129,6 +130,7 @@ type ReconciliationRunRow = {
   exception_count: number;
   duplicate_count: number;
   status: string;
+  automated: boolean;
   accounting_month: ReconciliationRun["accounting_month"];
   rooftop_profile_id: ReconciliationRun["rooftop_profile_id"];
   rooftop_profile_version: string | null;
@@ -737,14 +739,33 @@ export class PostgresTransactionRepository implements TransactionRepository {
     return toAuditEvent(result.rows[0]);
   }
 
-  async listAuditEvents(dealershipId: number, limit = 100): Promise<AuditEvent[]> {
+  async listAuditEvents(
+    dealershipId: number,
+    limit = 100,
+    authorizedStoreIds: readonly number[] | null = null,
+  ): Promise<AuditEvent[]> {
     const result = await this.pool.query<AuditEventRow>(
       `SELECT *
-       FROM audit_events
-       WHERE dealership_id = $1
-       ORDER BY timestamp DESC, id DESC
+       FROM audit_events ae
+       WHERE ae.dealership_id = $1
+         AND ($3::integer[] IS NULL OR
+           CASE
+             WHEN COALESCE(ae.new_state->>'dealership_store_id', ae.new_state->>'store_id', ae.previous_state->>'dealership_store_id', ae.previous_state->>'store_id') ~ '^[0-9]+$'
+               THEN COALESCE(ae.new_state->>'dealership_store_id', ae.new_state->>'store_id', ae.previous_state->>'dealership_store_id', ae.previous_state->>'store_id')::integer
+             WHEN ae.entity_type = 'dealership_store' AND ae.entity_id ~ '^[0-9]+$' THEN ae.entity_id::integer
+             WHEN ae.entity_type = 'reconciliation_run' AND ae.entity_id ~ '^[0-9]+$'
+               THEN (SELECT rr.dealership_store_id FROM reconciliation_runs rr WHERE rr.id = ae.entity_id::integer AND rr.dealership_id = ae.dealership_id)
+             WHEN ae.entity_type = 'reconciliation_exception' AND ae.entity_id ~ '^[0-9]+$'
+               THEN (SELECT rr.dealership_store_id FROM reconciliation_exceptions re JOIN reconciliation_runs rr ON rr.id = re.reconciliation_run_id WHERE re.id = ae.entity_id::integer AND re.dealership_id = ae.dealership_id)
+             WHEN ae.entity_type = 'reconciliation_artifact' AND ae.entity_id ~ '^[0-9]+$'
+               THEN (SELECT ra.dealership_store_id FROM reconciliation_artifacts ra WHERE ra.id = ae.entity_id::integer AND ra.dealership_id = ae.dealership_id)
+             WHEN ae.entity_type = 'scheduled_reconciliation_job' AND ae.entity_id ~ '^[0-9]+$'
+               THEN (SELECT srj.dealership_store_id FROM scheduled_reconciliation_jobs srj WHERE srj.id = ae.entity_id::integer AND srj.dealership_id = ae.dealership_id)
+             ELSE NULL
+           END = ANY($3::integer[]))
+       ORDER BY ae.timestamp DESC, ae.id DESC
        LIMIT $2`,
-      [dealershipId, limit],
+      [dealershipId, limit, authorizedStoreIds === null ? null : [...authorizedStoreIds]],
     );
     return result.rows.map(toAuditEvent);
   }
@@ -791,24 +812,30 @@ export class PostgresTransactionRepository implements TransactionRepository {
     return result.rows[0] ? toTransaction(result.rows[0]) : null;
   }
 
-  async listAccountsSummary(dealershipId: number): Promise<AccountSummary[]> {
+  async listAccountsSummary(
+    dealershipId: number,
+    authorizedStoreIds: readonly number[] | null = null,
+  ): Promise<AccountSummary[]> {
     return buildAccountSummaries(
-      await this.listAccountSourceTotals(dealershipId),
-      await this.listUnresolvedExceptionCountsByAccount(dealershipId),
+      await this.listAccountSourceTotals(dealershipId, undefined, authorizedStoreIds),
+      await this.listUnresolvedExceptionCountsByAccount(dealershipId, undefined, authorizedStoreIds),
     );
   }
 
   async getAccountDetail(
     dealershipId: number,
     accountIdentifier: string,
+    authorizedStoreIds: readonly number[] | null = null,
   ): Promise<AccountDetail | null> {
     const transactionResult = await this.pool.query<TransactionRow>(
-      `SELECT *
-       FROM transactions
-       WHERE dealership_id = $1
-         AND account_identifier = $2
-       ORDER BY source_type, transaction_date NULLS LAST, id`,
-      [dealershipId, accountIdentifier],
+      `SELECT t.*
+       FROM transactions t
+       LEFT JOIN source_files sf ON sf.id = t.source_file_id AND sf.dealership_id = t.dealership_id
+       WHERE t.dealership_id = $1
+         AND t.account_identifier = $2
+         AND ($3::integer[] IS NULL OR sf.dealership_store_id = ANY($3::integer[]))
+       ORDER BY t.source_type, t.transaction_date NULLS LAST, t.id`,
+      [dealershipId, accountIdentifier, authorizedStoreIds === null ? null : [...authorizedStoreIds]],
     );
     if (transactionResult.rows.length === 0) {
       return null;
@@ -816,8 +843,8 @@ export class PostgresTransactionRepository implements TransactionRepository {
 
     const accountType = transactionResult.rows[0].account_type;
     const summary = buildAccountSummaries(
-      await this.listAccountSourceTotals(dealershipId, accountIdentifier),
-      await this.listUnresolvedExceptionCountsByAccount(dealershipId, accountIdentifier),
+      await this.listAccountSourceTotals(dealershipId, accountIdentifier, authorizedStoreIds),
+      await this.listUnresolvedExceptionCountsByAccount(dealershipId, accountIdentifier, authorizedStoreIds),
     ).find(
       (account) =>
         account.account_identifier === accountIdentifier && account.account_type === accountType,
@@ -835,6 +862,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
       JOIN source_files boa ON boa.id = rr.boa_source_file_id
       JOIN source_files dealertrack ON dealertrack.id = rr.dealertrack_source_file_id
       WHERE rr.dealership_id = $1
+        AND ($3::integer[] IS NULL OR rr.dealership_store_id = ANY($3::integer[]))
         AND (
           EXISTS (
             SELECT 1
@@ -853,7 +881,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
           )
         )
       ORDER BY rr.created_at DESC, rr.id DESC`,
-      [dealershipId, accountIdentifier],
+      [dealershipId, accountIdentifier, authorizedStoreIds === null ? null : [...authorizedStoreIds]],
     );
     const unresolvedExceptions = await this.pool.query<ReconciliationExceptionRow>(
       `SELECT
@@ -874,11 +902,13 @@ export class PostgresTransactionRepository implements TransactionRepository {
         t.*
       FROM reconciliation_exceptions re
       JOIN transactions t ON t.id = re.transaction_id
+      LEFT JOIN source_files sf ON sf.id = t.source_file_id AND sf.dealership_id = t.dealership_id
       WHERE re.dealership_id = $1
         AND re.status = 'unresolved'
         AND t.account_identifier = $2
+        AND ($3::integer[] IS NULL OR sf.dealership_store_id = ANY($3::integer[]))
       ORDER BY re.id`,
-      [dealershipId, accountIdentifier],
+      [dealershipId, accountIdentifier, authorizedStoreIds === null ? null : [...authorizedStoreIds]],
     );
 
     return {
@@ -913,20 +943,23 @@ export class PostgresTransactionRepository implements TransactionRepository {
   private async listAccountSourceTotals(
     dealershipId: number,
     accountIdentifier?: string,
+    authorizedStoreIds: readonly number[] | null = null,
   ): Promise<AccountSourceTotalRow[]> {
     const result = await this.pool.query<AccountSourceTotalRow>(
       `SELECT
-        account_identifier,
-        account_type,
-        source_type,
-        SUM(amount_cents)::text AS amount_cents,
+        t.account_identifier,
+        t.account_type,
+        t.source_type,
+        SUM(t.amount_cents)::text AS amount_cents,
         COUNT(*)::text AS transaction_count
-      FROM transactions
-      WHERE dealership_id = $1
-        AND ($2::text IS NULL OR account_identifier = $2)
-      GROUP BY account_identifier, account_type, source_type
-      ORDER BY account_identifier, account_type, source_type`,
-      [dealershipId, accountIdentifier ?? null],
+      FROM transactions t
+      LEFT JOIN source_files sf ON sf.id = t.source_file_id AND sf.dealership_id = t.dealership_id
+      WHERE t.dealership_id = $1
+        AND ($2::text IS NULL OR t.account_identifier = $2)
+        AND ($3::integer[] IS NULL OR sf.dealership_store_id = ANY($3::integer[]))
+      GROUP BY t.account_identifier, t.account_type, t.source_type
+      ORDER BY t.account_identifier, t.account_type, t.source_type`,
+      [dealershipId, accountIdentifier ?? null, authorizedStoreIds === null ? null : [...authorizedStoreIds]],
     );
     return result.rows;
   }
@@ -962,6 +995,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
   private async listUnresolvedExceptionCountsByAccount(
     dealershipId: number,
     accountIdentifier?: string,
+    authorizedStoreIds: readonly number[] | null = null,
   ): Promise<Map<string, number>> {
     const result = await this.pool.query<{
       account_identifier: string;
@@ -974,11 +1008,13 @@ export class PostgresTransactionRepository implements TransactionRepository {
         COUNT(re.id)::text AS unresolved_exception_count
       FROM reconciliation_exceptions re
       JOIN transactions t ON t.id = re.transaction_id
+      LEFT JOIN source_files sf ON sf.id = t.source_file_id AND sf.dealership_id = t.dealership_id
       WHERE re.dealership_id = $1
         AND re.status = 'unresolved'
         AND ($2::text IS NULL OR t.account_identifier = $2)
+        AND ($3::integer[] IS NULL OR sf.dealership_store_id = ANY($3::integer[]))
       GROUP BY t.account_identifier, t.account_type`,
-      [dealershipId, accountIdentifier ?? null],
+      [dealershipId, accountIdentifier ?? null, authorizedStoreIds === null ? null : [...authorizedStoreIds]],
     );
     return new Map(
       result.rows.map((row) => [
@@ -1172,6 +1208,12 @@ export class PostgresTransactionRepository implements TransactionRepository {
       return run;
     } catch (error) {
       await client.query("ROLLBACK");
+      if (
+        input.automated &&
+        isPostgresUniqueViolation(error, "ux_reconciliation_runs_automated_source_pair")
+      ) {
+        throw new AutomatedReconciliationAlreadyExistsError();
+      }
       throw error;
     } finally {
       client.release();
@@ -2162,10 +2204,11 @@ async function insertReconciliationRun(
       exception_count,
       duplicate_count,
       status,
+      automated,
       accounting_month,
       rooftop_profile_id,
       rooftop_profile_version
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     RETURNING *`,
     [
       input.dealership_id,
@@ -2176,6 +2219,7 @@ async function insertReconciliationRun(
       input.result.exception_count,
       input.result.duplicate_count,
       input.status ?? "completed",
+      input.automated ?? false,
       input.accounting_month ?? null,
       input.rooftop_profile_id ?? null,
       input.rooftop_profile_version ?? null,
@@ -2362,6 +2406,7 @@ function toReconciliationRun(row: ReconciliationRunRow): ReconciliationRun {
     exception_count: Number(row.exception_count),
     duplicate_count: Number(row.duplicate_count),
     status: row.status,
+    automated: row.automated,
     accounting_month: row.accounting_month,
     rooftop_profile_id: row.rooftop_profile_id,
     rooftop_profile_version: row.rooftop_profile_version,
@@ -2467,6 +2512,12 @@ function isDuplicateSourceFileError(error: unknown): boolean {
       error.constraint === "ux_source_files_legacy_identity" ||
       error.constraint === "ux_source_files_reusable_identity")
   );
+}
+
+function isPostgresUniqueViolation(error: unknown, constraint: string): boolean {
+  return typeof error === "object" && error !== null &&
+    "code" in error && error.code === "23505" &&
+    "constraint" in error && error.constraint === constraint;
 }
 
 function exceptionTypeFromReason(reason: string): ReconciliationExceptionType {

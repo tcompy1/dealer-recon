@@ -26,6 +26,7 @@ export async function buildReconciliationRunComparison(
 export async function buildDealerGroupAnalytics(
   repository: TransactionRepository,
   dealershipId: number,
+  authorizedStoreIds: readonly number[] | null = null,
 ): Promise<DealerGroupAnalytics[]> {
   const [groups, stores] = await Promise.all([
     repository.listDealerGroups(dealershipId),
@@ -34,7 +35,9 @@ export async function buildDealerGroupAnalytics(
   const groupNames = new Map(groups.map((group) => [group.id, group.name]));
   const grouped = new Map<number | null, DealerGroupAnalytics>();
 
-  for (const store of stores) {
+  for (const store of stores.filter(
+    (candidate) => authorizedStoreIds === null || authorizedStoreIds.includes(candidate.id),
+  )) {
     const runs = await repository.listReconciliationRuns(dealershipId, {
       dealershipStoreId: store.id,
     });

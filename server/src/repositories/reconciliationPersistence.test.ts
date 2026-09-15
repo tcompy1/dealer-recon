@@ -28,6 +28,7 @@ import {
   PostgresTransactionRepository,
 } from "./postgresTransactionRepository.js";
 import {
+  AutomatedReconciliationAlreadyExistsError,
   DuplicateSourceFileError,
   MemoryTransactionRepository,
   type TransactionRepository,
@@ -152,6 +153,30 @@ describeIfDatabase("reusable source identity persistence in PostgreSQL", () => {
 
   test("upload route resolves a forced concurrent exact-identity insert race as reuse", async () => {
     await assertPostgresConcurrentUploadRoute();
+  });
+});
+
+describe("automated reconciliation source-pair claim", () => {
+  test("memory permits exactly one concurrent automated run while manual reruns remain unrestricted", async () => {
+    await assertAutomatedPairClaim(new MemoryTransactionRepository(), `memory-${Date.now()}`);
+  });
+});
+
+describeIfDatabase("automated reconciliation source-pair claim in PostgreSQL", () => {
+  test("permits exactly one concurrent automated run while manual reruns remain unrestricted", async () => {
+    await withPostgresIdentityRepository(assertAutomatedPairClaim);
+  });
+});
+
+describe("store-scoped financial and audit reads", () => {
+  test("memory includes allowed stores and excludes denied and null-store records", async () => {
+    await assertStoreScopedRepositoryReads(new MemoryTransactionRepository(), `memory-${Date.now()}`);
+  });
+});
+
+describeIfDatabase("store-scoped financial and audit reads in PostgreSQL", () => {
+  test("includes allowed stores and excludes denied and null-store records", async () => {
+    await withPostgresIdentityRepository(assertStoreScopedRepositoryReads);
   });
 });
 
@@ -1574,4 +1599,111 @@ function emptyReconciliationResult(): ReconciliationResult {
       transaction_unmatched_shared_vins: [],
     },
   };
+}
+
+async function assertAutomatedPairClaim(
+  repository: TransactionRepository,
+  namespace: string,
+): Promise<void> {
+  const boa = await repository.createSourceFileWithTransactions(1, {
+    source_type: "boa",
+    dealership_store_id: 1,
+    original_filename: "automated-boa.csv",
+    stored_filename: null,
+    file_hash: `task5-${namespace}-auto-boa`,
+    row_count: 0,
+    validation_error_count: 0,
+  }, []);
+  const dealertrack = await repository.createSourceFileWithTransactions(1, {
+    source_type: "dealertrack",
+    dealership_store_id: 1,
+    original_filename: "automated-dealertrack.csv",
+    stored_filename: null,
+    file_hash: `task5-${namespace}-auto-dealertrack`,
+    row_count: 0,
+    validation_error_count: 0,
+  }, []);
+  const baseInput: PersistReconciliationRunInput = {
+    dealership_id: 1,
+    dealership_store_id: 1,
+    boa_source_file_id: boa.sourceFile.id,
+    dealertrack_source_file_id: dealertrack.sourceFile.id,
+    accounting_month: null,
+    rooftop_profile_id: null,
+    rooftop_profile_version: null,
+    result: emptyReconciliationResult(),
+  };
+
+  const automated = await Promise.allSettled([
+    repository.createReconciliationRun({ ...baseInput, automated: true }),
+    repository.createReconciliationRun({ ...baseInput, automated: true }),
+  ]);
+  expect(automated.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+  const rejected = automated.find((result) => result.status === "rejected");
+  expect(rejected).toMatchObject({ reason: expect.any(AutomatedReconciliationAlreadyExistsError) });
+
+  await expect(Promise.all([
+    repository.createReconciliationRun({ ...baseInput, automated: false }),
+    repository.createReconciliationRun({ ...baseInput, automated: false }),
+  ])).resolves.toHaveLength(2);
+}
+
+async function assertStoreScopedRepositoryReads(
+  repository: TransactionRepository,
+  namespace: string,
+): Promise<void> {
+  for (const [storeId, account] of [[1, "allowed"], [2, "denied"]] as const) {
+    await repository.createSourceFileWithTransactions(1, {
+      source_type: "bank",
+      dealership_store_id: storeId,
+      original_filename: `${account}.csv`,
+      stored_filename: null,
+      file_hash: `task5-${namespace}-scope-${account}`,
+      row_count: 1,
+      validation_error_count: 0,
+    }, [{
+      source_file_id: null,
+      source_type: "bank",
+      transaction_date: "2026-04-01",
+      post_date: null,
+      amount_cents: storeId * 100,
+      reference_number: null,
+      description: null,
+      account,
+      account_type: "bank",
+      account_identifier: account,
+      stock_number: null,
+      vin: null,
+      raw_data: {},
+    }]);
+    await repository.createAuditEvent(1, {
+      actor_user_id: null,
+      action_type: `task5-${namespace}-${account}`,
+      entity_type: "dealership_store",
+      entity_id: String(storeId),
+      previous_state: null,
+      new_state: { dealership_store_id: storeId },
+    });
+  }
+  await repository.createAuditEvent(1, {
+    actor_user_id: null,
+    action_type: `task5-${namespace}-null-store`,
+    entity_type: "user",
+    entity_id: "99",
+    previous_state: null,
+    new_state: {},
+  });
+
+  const allowedAccounts = await repository.listAccountsSummary(1, [1]);
+  expect(allowedAccounts.map((account) => account.account_identifier)).toContain("allowed");
+  expect(allowedAccounts.map((account) => account.account_identifier)).not.toContain("denied");
+  await expect(repository.getAccountDetail(1, "denied", [1])).resolves.toBeNull();
+  await expect(repository.listAccountsSummary(1, [])).resolves.toEqual([]);
+  const scopedAudit = await repository.listAuditEvents(1, 100, [1]);
+  expect(scopedAudit.map((event) => event.action_type)).toContain(`task5-${namespace}-allowed`);
+  expect(scopedAudit.map((event) => event.action_type)).not.toContain(`task5-${namespace}-denied`);
+  expect(scopedAudit.map((event) => event.action_type)).not.toContain(`task5-${namespace}-null-store`);
+  await expect(repository.listAuditEvents(1, 100, [])).resolves.toEqual([]);
+  const unrestricted = await repository.listAccountsSummary(1, null);
+  expect(unrestricted.map((account) => account.account_identifier)).toEqual(expect.arrayContaining(["allowed", "denied"]));
 }

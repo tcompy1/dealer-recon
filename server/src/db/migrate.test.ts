@@ -17,6 +17,7 @@ const MIGRATION_NAMES = [
   "1781222400000_add_reconciliation_artifacts",
   "1789344000000_add_rooftop_run_identity",
   "1789430400000_sync_seeded_identity_sequences",
+  "1789520400000_add_automated_run_claim",
 ];
 
 class MigrationCommandError extends Error {
@@ -33,6 +34,51 @@ const databaseUrl = process.env.DATABASE_URL;
 const describeIfDatabase = databaseUrl ? describe : describe.skip;
 
 describeIfDatabase("migrate", () => {
+  test("backfills one deterministic automated claim and rolls down without deleting duplicate historical runs", async () => {
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for migration tests.");
+    await withDisposablePostgresDatabase(databaseUrl, async (disposableDatabaseUrl) => {
+      await migrate(disposableDatabaseUrl);
+      await migrate(disposableDatabaseUrl, 1, "down");
+      const pool = createPool(disposableDatabaseUrl);
+      try {
+        const sources = await pool.query<{ id: number }>(
+          `INSERT INTO source_files (dealership_id, dealership_store_id, source_type, original_filename, stored_filename, file_hash, row_count, validation_error_count)
+           VALUES
+             (1, 1, 'boa', 'claim-boa.csv', NULL, 'claim-migration-boa', 0, 0),
+             (1, 1, 'dealertrack', 'claim-dt.csv', NULL, 'claim-migration-dt', 0, 0)
+           RETURNING id`,
+        );
+        await pool.query(
+          `INSERT INTO reconciliation_runs (dealership_id, dealership_store_id, boa_source_file_id, dealertrack_source_file_id, matched_count, exception_count, duplicate_count, status)
+           VALUES (1, 1, $1, $2, 0, 0, 0, 'completed_auto'), (1, 1, $1, $2, 0, 0, 0, 'completed_auto')`,
+          [sources.rows[0]!.id, sources.rows[1]!.id],
+        );
+
+        await migrate(disposableDatabaseUrl);
+        const backfill = await pool.query<{ id: number; automated: boolean }>(
+          "SELECT id, automated FROM reconciliation_runs ORDER BY id",
+        );
+        expect(backfill.rows).toHaveLength(2);
+        expect(backfill.rows.filter((run) => run.automated)).toEqual([backfill.rows[0]]);
+        await expect(pool.query(
+          `INSERT INTO reconciliation_runs (dealership_id, dealership_store_id, boa_source_file_id, dealertrack_source_file_id, matched_count, exception_count, duplicate_count, status, automated)
+           VALUES (1, 1, $1, $2, 0, 0, 0, 'completed_auto', TRUE)`,
+          [sources.rows[0]!.id, sources.rows[1]!.id],
+        )).rejects.toMatchObject({ code: "23505" });
+
+        await migrate(disposableDatabaseUrl, 1, "down");
+        const rollback = await pool.query<{ row_count: string; automated_column_count: string }>(
+          `SELECT
+             (SELECT COUNT(*)::text FROM reconciliation_runs) AS row_count,
+             (SELECT COUNT(*)::text FROM information_schema.columns WHERE table_name = 'reconciliation_runs' AND column_name = 'automated') AS automated_column_count`,
+        );
+        expect(rollback.rows[0]).toEqual({ row_count: "2", automated_column_count: "0" });
+      } finally {
+        await pool.end();
+      }
+    });
+  });
+
   test("removes the exact disposable database when its callback rejects", async () => {
     if (!databaseUrl) {
       throw new Error("DATABASE_URL is required for migration tests.");
@@ -219,6 +265,7 @@ describeIfDatabase("migrate", () => {
                ))
                OR
                (table_name = 'reconciliation_runs' AND column_name IN (
+                 'automated',
                  'accounting_month',
                  'rooftop_profile_id',
                  'rooftop_profile_version'
@@ -232,6 +279,12 @@ describeIfDatabase("migrate", () => {
             column_name: "accounting_month",
             data_type: "text",
             is_nullable: "YES",
+          },
+          {
+            table_name: "reconciliation_runs",
+            column_name: "automated",
+            data_type: "boolean",
+            is_nullable: "NO",
           },
           {
             table_name: "reconciliation_runs",
@@ -301,12 +354,17 @@ describeIfDatabase("migrate", () => {
            WHERE schemaname = 'public'
              AND indexname IN (
                'ux_source_files_dealership_source_type_file_hash',
+               'ux_reconciliation_runs_automated_source_pair',
                'ux_source_files_legacy_identity',
                'ux_source_files_reusable_identity'
              )
            ORDER BY indexname`,
         );
         expect(indexResult.rows).toEqual([
+          {
+            indexname: "ux_reconciliation_runs_automated_source_pair",
+            indexdef: expect.stringContaining("WHERE (automated = true)"),
+          },
           {
             indexname: "ux_source_files_legacy_identity",
             indexdef: expect.stringContaining("accounting_month IS NULL"),
@@ -327,7 +385,7 @@ describeIfDatabase("migrate", () => {
           "preprocessor_name",
           "preprocessor_version",
         ]) {
-          expect(indexResult.rows[0].indexdef).toContain(
+          expect(indexResult.rows[1].indexdef).toContain(
             `${nullableIdentityColumn} IS NULL`,
           );
         }
@@ -384,7 +442,8 @@ describeIfDatabase("migrate", () => {
           }).toEqual({ dealership: 2, dealerGroup: 2, dealershipStore: 3 });
 
           await migrate(disposableDatabaseUrl, 1, "down");
-          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -1));
+          await migrate(disposableDatabaseUrl, 1, "down");
+          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -2));
           await pool.query("DELETE FROM dealership_stores");
           await pool.query("DELETE FROM dealer_groups");
           await pool.query("DELETE FROM dealerships");
@@ -430,7 +489,8 @@ describeIfDatabase("migrate", () => {
         const pool = createPool(disposableDatabaseUrl);
         try {
           await migrate(disposableDatabaseUrl, 1, "down");
-          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -1));
+          await migrate(disposableDatabaseUrl, 1, "down");
+          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -2));
           await pool.query("ALTER SEQUENCE dealerships_id_seq RESTART WITH 50");
           await pool.query("ALTER SEQUENCE dealer_groups_id_seq RESTART WITH 60");
           await pool.query("SELECT nextval('dealer_groups_id_seq')");
@@ -475,6 +535,7 @@ describeIfDatabase("migrate", () => {
       const pool = createPool(disposableDatabaseUrl);
       let incrementChanged = false;
       try {
+        await migrate(disposableDatabaseUrl, 1, "down");
         await migrate(disposableDatabaseUrl, 1, "down");
         await pool.query(
           "ALTER SEQUENCE dealerships_id_seq INCREMENT BY 7 RESTART WITH 50",
@@ -524,6 +585,7 @@ describeIfDatabase("migrate", () => {
         const pool = createPool(disposableDatabaseUrl);
         try {
           await migrate(disposableDatabaseUrl, 1, "down");
+          await migrate(disposableDatabaseUrl, 1, "down");
           await pool.query("ALTER SEQUENCE dealerships_id_seq RESTART WITH 1");
           await pool.query("ALTER SEQUENCE dealer_groups_id_seq RESTART WITH 1");
           await pool.query("ALTER SEQUENCE dealership_stores_id_seq OWNED BY NONE");
@@ -539,7 +601,7 @@ describeIfDatabase("migrate", () => {
             last_value: "1",
             is_called: false,
           });
-          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -1));
+          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -2));
 
           await pool.query(
             "ALTER SEQUENCE dealership_stores_id_seq OWNED BY dealership_stores.id",
@@ -710,8 +772,9 @@ describeIfDatabase("migrate", () => {
           [`rollback-collision-${unique}`],
         );
 
-        // Remove the later sequence-synchronization migration so this test
+        // Remove the later automated-claim and sequence-synchronization migrations so this test
         // exercises the guarded identity migration it owns.
+        await runMigrationDownCapturingOutput(databaseUrl);
         await runMigrationDownCapturingOutput(databaseUrl);
         await expect(runMigrationDownCapturingOutput(databaseUrl)).rejects.toMatchObject({
           stderr: expect.stringContaining(ROLLBACK_COLLISION_ERROR),

@@ -509,6 +509,7 @@ export type ReconciliationRun = {
   exception_count: number;
   duplicate_count: number;
   status: string;
+  automated: boolean;
   accounting_month: AccountingMonth | null;
   rooftop_profile_id: RooftopProfileId | null;
   rooftop_profile_version: string | null;
@@ -562,6 +563,7 @@ export type PersistReconciliationRunInput = {
   result: ReconciliationResult;
   input_snapshot?: PersistReconciliationRunSnapshotInput;
   status?: string;
+  automated?: boolean;
 };
 
 export type ReconciliationRunInputSnapshotSide = "boa" | "dealertrack";

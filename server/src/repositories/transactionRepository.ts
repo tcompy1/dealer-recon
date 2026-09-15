@@ -55,6 +55,12 @@ export class DuplicateSourceFileError extends Error {
   }
 }
 
+export class AutomatedReconciliationAlreadyExistsError extends Error {
+  constructor() {
+    super("An automated reconciliation already exists for this immutable source pair.");
+  }
+}
+
 export interface TransactionRepository {
   createSourceFileWithTransactions(
     dealershipId: number,
@@ -127,7 +133,11 @@ export interface TransactionRepository {
     limit?: number,
   ): Promise<OperationalEvent[]>;
   createAuditEvent(dealershipId: number, event: NewAuditEvent): Promise<AuditEvent>;
-  listAuditEvents(dealershipId: number, limit?: number): Promise<AuditEvent[]>;
+  listAuditEvents(
+    dealershipId: number,
+    limit?: number,
+    authorizedStoreIds?: readonly number[] | null,
+  ): Promise<AuditEvent[]>;
   listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]>;
   listBySourceFile(dealershipId: number, sourceFileId: number): Promise<Transaction[]>;
   getTransactionById(
@@ -139,8 +149,15 @@ export interface TransactionRepository {
     transactionId: number,
     update: { vin: string; raw_data: Record<string, unknown> },
   ): Promise<Transaction | null>;
-  listAccountsSummary(dealershipId: number): Promise<AccountSummary[]>;
-  getAccountDetail(dealershipId: number, accountIdentifier: string): Promise<AccountDetail | null>;
+  listAccountsSummary(
+    dealershipId: number,
+    authorizedStoreIds?: readonly number[] | null,
+  ): Promise<AccountSummary[]>;
+  getAccountDetail(
+    dealershipId: number,
+    accountIdentifier: string,
+    authorizedStoreIds?: readonly number[] | null,
+  ): Promise<AccountDetail | null>;
   getMonthEndReport(
     dealershipId: number,
     startDate: string,
@@ -637,9 +654,17 @@ export class MemoryTransactionRepository implements TransactionRepository {
     return cloneAuditEvent(event);
   }
 
-  async listAuditEvents(dealershipId: number, limit = 100): Promise<AuditEvent[]> {
+  async listAuditEvents(
+    dealershipId: number,
+    limit = 100,
+    authorizedStoreIds: readonly number[] | null = null,
+  ): Promise<AuditEvent[]> {
     return this.auditEvents
-      .filter((event) => event.dealership_id === dealershipId)
+      .filter(
+        (event) =>
+          event.dealership_id === dealershipId &&
+          isAuthorizedStore(this.auditEventStoreId(event), authorizedStoreIds),
+      )
       .slice()
       .sort((left, right) => right.id - left.id)
       .slice(0, limit)
@@ -692,21 +717,35 @@ export class MemoryTransactionRepository implements TransactionRepository {
     return cloneTransaction(transaction);
   }
 
-  async listAccountsSummary(dealershipId: number): Promise<AccountSummary[]> {
+  async listAccountsSummary(
+    dealershipId: number,
+    authorizedStoreIds: readonly number[] | null = null,
+  ): Promise<AccountSummary[]> {
+    const transactions = this.transactions.filter(
+      (transaction) =>
+        transaction.dealership_id === dealershipId &&
+        isAuthorizedStore(this.transactionStoreId(transaction), authorizedStoreIds),
+    );
+    const transactionIds = new Set(transactions.map((transaction) => transaction.id));
     return buildAccountSummaries(
-      this.transactions.filter((transaction) => transaction.dealership_id === dealershipId),
-      this.reconciliationExceptions.filter((exception) => exception.dealership_id === dealershipId),
+      transactions,
+      this.reconciliationExceptions.filter(
+        (exception) =>
+          exception.dealership_id === dealershipId && transactionIds.has(exception.transaction_id),
+      ),
     );
   }
 
   async getAccountDetail(
     dealershipId: number,
     accountIdentifier: string,
+    authorizedStoreIds: readonly number[] | null = null,
   ): Promise<AccountDetail | null> {
     const accountTransactions = this.transactions.filter(
       (transaction) =>
         transaction.dealership_id === dealershipId &&
-        transaction.account_identifier === accountIdentifier,
+        transaction.account_identifier === accountIdentifier &&
+        isAuthorizedStore(this.transactionStoreId(transaction), authorizedStoreIds),
     );
     if (accountTransactions.length === 0) {
       return null;
@@ -804,6 +843,18 @@ export class MemoryTransactionRepository implements TransactionRepository {
   }
 
   async createReconciliationRun(input: PersistReconciliationRunInput): Promise<ReconciliationRun> {
+    if (
+      input.automated &&
+      this.reconciliationRuns.some(
+        (run) =>
+          run.dealership_id === input.dealership_id &&
+          run.automated &&
+          run.boa_source_file_id === input.boa_source_file_id &&
+          run.dealertrack_source_file_id === input.dealertrack_source_file_id,
+      )
+    ) {
+      throw new AutomatedReconciliationAlreadyExistsError();
+    }
     const createdAt = new Date().toISOString();
     const run: ReconciliationRun = {
       id: this.nextReconciliationRunId++,
@@ -815,6 +866,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
       exception_count: input.result.exception_count,
       duplicate_count: input.result.duplicate_count,
       status: input.status ?? "completed",
+      automated: input.automated ?? false,
       accounting_month: input.accounting_month ?? null,
       rooftop_profile_id: input.rooftop_profile_id ?? null,
       rooftop_profile_version: input.rooftop_profile_version ?? null,
@@ -876,6 +928,33 @@ export class MemoryTransactionRepository implements TransactionRepository {
     }
 
     return run;
+  }
+
+  private transactionStoreId(transaction: Transaction): number | null {
+    return this.sourceFiles.find((sourceFile) => sourceFile.id === transaction.source_file_id)
+      ?.dealership_store_id ?? null;
+  }
+
+  private auditEventStoreId(event: AuditEvent): number | null {
+    const stateStoreId = storeIdFromAuditState(event.new_state) ?? storeIdFromAuditState(event.previous_state);
+    if (stateStoreId !== null) return stateStoreId;
+    const entityId = Number(event.entity_id);
+    if (event.entity_type === "dealership_store" && Number.isInteger(entityId)) return entityId;
+    if (event.entity_type === "reconciliation_run" && Number.isInteger(entityId)) {
+      return this.reconciliationRuns.find((run) => run.id === entityId)?.dealership_store_id ?? null;
+    }
+    if (event.entity_type === "reconciliation_exception" && Number.isInteger(entityId)) {
+      const exception = this.reconciliationExceptions.find((candidate) => candidate.id === entityId);
+      return this.reconciliationRuns.find((run) => run.id === exception?.reconciliation_run_id)
+        ?.dealership_store_id ?? null;
+    }
+    if (event.entity_type === "reconciliation_artifact" && Number.isInteger(entityId)) {
+      return this.reconciliationArtifacts.find((artifact) => artifact.id === entityId)?.store_id ?? null;
+    }
+    if (event.entity_type === "scheduled_reconciliation_job" && Number.isInteger(entityId)) {
+      return this.scheduledReconciliationJobs.find((job) => job.id === entityId)?.dealership_store_id ?? null;
+    }
+    return null;
   }
 
   async updateReconciliationRunStatus(
@@ -1889,4 +1968,17 @@ function cloneAuditEvent(event: AuditEvent): AuditEvent {
     previous_state: cloneJson(event.previous_state),
     new_state: cloneJson(event.new_state),
   };
+}
+
+function isAuthorizedStore(
+  storeId: number | null,
+  authorizedStoreIds: readonly number[] | null,
+): boolean {
+  return authorizedStoreIds === null || (storeId !== null && authorizedStoreIds.includes(storeId));
+}
+
+function storeIdFromAuditState(state: Record<string, unknown> | null): number | null {
+  if (!state) return null;
+  const candidate = state.dealership_store_id ?? state.store_id;
+  return typeof candidate === "number" && Number.isInteger(candidate) ? candidate : null;
 }

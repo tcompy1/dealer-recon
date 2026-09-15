@@ -21,6 +21,7 @@ import {
   type NewSourceFile,
   type ProfiledNewSourceFile,
   type ReconciliationArtifact,
+  type ReconciliationRunDetail,
   type ReconciliationRequest,
   type SourceFile,
   type SourceProcessingIdentity,
@@ -68,13 +69,13 @@ import {
 } from "./presenters/fpRec.js";
 import {
   getRooftopProfile,
-  getStoreWorkflowConfig,
   parseStoreKey,
+  ROOFTOP_PROFILES,
   resolveEnabledRooftopProfileFromStoreName,
   resolveRooftopProfileFromStoreName,
-  resolveStoreWorkflowConfigFromStoreName,
   STORE_KEYS,
   type RooftopProfile,
+  type StoreKey,
 } from "./config/storeWorkflowConfig.js";
 import {
   rooftopValidationError,
@@ -106,6 +107,7 @@ import {
   type RawDataLineage,
 } from "./services/preprocessing/types.js";
 import {
+  authorizedStoreIds,
   canAccessStore,
   canWrite,
   filterByStoreAccess,
@@ -163,6 +165,68 @@ export function withRooftopSupport(
         }
       : null,
   };
+}
+
+function resolveRunRooftopProfile(
+  detail: ReconciliationRunDetail,
+  requestedStoreKey: StoreKey | null,
+): RooftopProfile {
+  const hasProfileId = detail.rooftop_profile_id !== null;
+  const hasProfileVersion = detail.rooftop_profile_version !== null;
+  if (hasProfileId !== hasProfileVersion) {
+    throw runProfileError(detail, "Persisted rooftop profile identity is incomplete.");
+  }
+  if (hasProfileId && hasProfileVersion) {
+    const persistedProfile = Object.values(ROOFTOP_PROFILES).find(
+      (profile) => profile.enabled &&
+        profile.profileId === detail.rooftop_profile_id &&
+        profile.profileVersion === detail.rooftop_profile_version,
+    );
+    if (!persistedProfile) {
+      throw runProfileError(detail, "Persisted rooftop profile identity is not enabled or supported.");
+    }
+    if (requestedStoreKey !== null) {
+      const requestedProfile = getRooftopProfile(requestedStoreKey);
+      if (!requestedProfile.enabled ||
+        requestedProfile.profileId !== persistedProfile.profileId ||
+        requestedProfile.profileVersion !== persistedProfile.profileVersion) {
+        throw new ValidationError(
+          "store_key is incompatible with the persisted reconciliation run profile.",
+          "STORE_KEY_PROFILE_MISMATCH",
+          { dealership_store_id: detail.dealership_store_id },
+        );
+      }
+    }
+    return persistedProfile;
+  }
+  const legacyHurst = resolveRooftopProfileFromStoreName(detail.store_name);
+  if (!legacyHurst || legacyHurst.profileId !== "hurst-v1" || !legacyHurst.enabled) {
+    throw new ValidationError(
+      "No store workflow config is configured for this reconciliation run.",
+      "STORE_WORKFLOW_CONFIG_NOT_FOUND",
+      {
+        dealership_store_id: detail.dealership_store_id,
+        store_name: detail.store_name,
+        supported_store_keys: [...STORE_KEYS],
+      },
+    );
+  }
+  if (requestedStoreKey !== null && requestedStoreKey !== legacyHurst.storeKey) {
+    throw new ValidationError(
+      "store_key is incompatible with the persisted reconciliation run profile.",
+      "STORE_KEY_PROFILE_MISMATCH",
+      { dealership_store_id: detail.dealership_store_id },
+    );
+  }
+  return legacyHurst;
+}
+
+function runProfileError(detail: ReconciliationRunDetail, message: string): ValidationError {
+  return new ValidationError(message, "ROOFTOP_PROFILE_UNSUPPORTED", {
+    dealership_store_id: detail.dealership_store_id,
+    rooftop_profile_id: detail.rooftop_profile_id,
+    rooftop_profile_version: detail.rooftop_profile_version,
+  });
 }
 
 const upload = multer({
@@ -334,7 +398,11 @@ export function createApp(
     if (limit === false) {
       throw new ValidationError("Invalid audit query.", "INVALID_QUERY");
     }
-    response.json(await repository.listAuditEvents(getRequestDealershipId(response), limit));
+    response.json(await repository.listAuditEvents(
+      getRequestDealershipId(response),
+      limit,
+      await authorizedStoreIds(repository, getAuthenticatedUser(response)),
+    ));
   }));
 
   app.get("/dealer-groups", asyncHandler(async (_request, response) => {
@@ -364,7 +432,11 @@ export function createApp(
   }));
 
   app.get("/dealer-groups/analytics", asyncHandler(async (_request, response) => {
-    response.json(await buildDealerGroupAnalytics(repository, getRequestDealershipId(response)));
+    response.json(await buildDealerGroupAnalytics(
+      repository,
+      getRequestDealershipId(response),
+      await authorizedStoreIds(repository, getAuthenticatedUser(response)),
+    ));
   }));
 
   app.get("/automation/scheduled-jobs", asyncHandler(async (request, response) => {
@@ -444,6 +516,7 @@ export function createApp(
         repository,
         getRequestDealershipId(response),
         typeof request.body?.now === "string" ? request.body.now : undefined,
+        await authorizedStoreIds(repository, getAuthenticatedUser(response)),
       ),
     });
   }));
@@ -495,15 +568,9 @@ export function createApp(
   app.get("/automation/status", async (_request, response, next) => {
     try {
       const dealershipId = getRequestDealershipId(response);
-      await generateStaleStoreEvents(repository, dealershipId);
-      response.json(
-        await filterByStoreAccess(
-          repository,
-          getAuthenticatedUser(response),
-          await buildStoreAutomationStatuses(repository, dealershipId),
-          (status) => status.dealership_store_id,
-        ),
-      );
+      const storeIds = await authorizedStoreIds(repository, getAuthenticatedUser(response));
+      await generateStaleStoreEvents(repository, dealershipId, storeIds);
+      response.json(await buildStoreAutomationStatuses(repository, dealershipId, storeIds));
     } catch (error) {
       next(error);
     }
@@ -511,7 +578,11 @@ export function createApp(
 
   app.get("/automation/metrics", async (_request, response, next) => {
     try {
-      response.json(await buildOperationalMetrics(repository, getRequestDealershipId(response)));
+      response.json(await buildOperationalMetrics(
+        repository,
+        getRequestDealershipId(response),
+        await authorizedStoreIds(repository, getAuthenticatedUser(response)),
+      ));
     } catch (error) {
       next(error);
     }
@@ -542,7 +613,10 @@ export function createApp(
 
   app.get("/accounts/summary", async (_request, response, next) => {
     try {
-      response.json(await repository.listAccountsSummary(getRequestDealershipId(response)));
+      response.json(await repository.listAccountsSummary(
+        getRequestDealershipId(response),
+        await authorizedStoreIds(repository, getAuthenticatedUser(response)),
+      ));
     } catch (error) {
       next(error);
     }
@@ -559,6 +633,7 @@ export function createApp(
       const detail = await repository.getAccountDetail(
         getRequestDealershipId(response),
         accountIdentifier,
+        await authorizedStoreIds(repository, getAuthenticatedUser(response)),
       );
       if (!detail) {
         response.status(404).json({ detail: "Account was not found." });
@@ -1521,20 +1596,7 @@ export function createApp(
         { supported_store_keys: [...STORE_KEYS] },
       );
     }
-    const storeConfig = storeKey
-      ? getStoreWorkflowConfig(storeKey)
-      : resolveStoreWorkflowConfigFromStoreName(detail.store_name);
-    if (!storeConfig) {
-      throw new ValidationError(
-        "No store workflow config is configured for this reconciliation run.",
-        "STORE_WORKFLOW_CONFIG_NOT_FOUND",
-        {
-          dealership_store_id: detail.dealership_store_id,
-          store_name: detail.store_name,
-          supported_store_keys: [...STORE_KEYS],
-        },
-      );
-    }
+    const storeConfig = resolveRunRooftopProfile(detail, storeKey);
     const format = typeof request.query.format === "string" ? request.query.format : "xls";
     if (format !== "json" && !storeKeyOverrideProvided) {
       const storedArtifact = await repository.findReconciliationArtifact(
@@ -1559,7 +1621,7 @@ export function createApp(
       reconciliationRunId,
       artifactType: "MERGED_FLOORPLAN",
       storeId: detail.dealership_store_id,
-      accountingMonth: null,
+      accountingMonth: detail.accounting_month,
       filename: artifact.filename,
       contentType: artifact.contentType,
       fileSize: Buffer.byteLength(artifact.html, "utf8"),
@@ -1606,20 +1668,7 @@ export function createApp(
         { supported_store_keys: [...STORE_KEYS] },
       );
     }
-    const rooftopProfile = storeKey
-      ? getRooftopProfile(storeKey)
-      : resolveRooftopProfileFromStoreName(detail.store_name);
-    if (!rooftopProfile) {
-      throw new ValidationError(
-        "No store workflow config is configured for this reconciliation run.",
-        "STORE_WORKFLOW_CONFIG_NOT_FOUND",
-        {
-          dealership_store_id: detail.dealership_store_id,
-          store_name: detail.store_name,
-          supported_store_keys: [...STORE_KEYS],
-        },
-      );
-    }
+    const rooftopProfile = resolveRunRooftopProfile(detail, storeKey);
     const format = typeof request.query.format === "string" ? request.query.format : "xls";
     if (format !== "json" && !storeKeyOverrideProvided) {
       const storedArtifact = await repository.findReconciliationArtifact(
@@ -1646,7 +1695,7 @@ export function createApp(
       reconciliationRunId,
       artifactType: "FP_REC",
       storeId: detail.dealership_store_id,
-      accountingMonth: null,
+      accountingMonth: detail.accounting_month,
       filename: fpRecFilename,
       contentType: "application/vnd.ms-excel",
       fileSize: Buffer.byteLength(fpRecHtml, "utf8"),

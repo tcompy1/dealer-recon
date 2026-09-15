@@ -78,6 +78,41 @@ class ConcurrentUploadRepository extends MemoryTransactionRepository {
   }
 }
 
+class ConcurrentAutoRunRepository extends MemoryTransactionRepository {
+  private reusableLookups = 0;
+  private releaseReusable: (() => void) | null = null;
+  private readonly reusableReady = new Promise<void>((resolve) => { this.releaseReusable = resolve; });
+  private runLookups = 0;
+  private releaseRuns: (() => void) | null = null;
+  private readonly runsReady = new Promise<void>((resolve) => { this.releaseRuns = resolve; });
+
+  override async getReusableSourceFile(
+    dealershipId: number,
+    dealershipStoreId: number,
+    sourceType: SourceType,
+    fileHash: string,
+    identity: SourceProcessingIdentity,
+  ): Promise<SourceFile | null> {
+    if (sourceType === "dealertrack" && this.reusableLookups < 2) {
+      this.reusableLookups += 1;
+      if (this.reusableLookups === 2) this.releaseReusable?.();
+      await this.reusableReady;
+      return null;
+    }
+    return super.getReusableSourceFile(dealershipId, dealershipStoreId, sourceType, fileHash, identity);
+  }
+
+  override async listReconciliationRuns(...args: Parameters<MemoryTransactionRepository["listReconciliationRuns"]>) {
+    if (this.runLookups < 2) {
+      this.runLookups += 1;
+      if (this.runLookups === 2) this.releaseRuns?.();
+      await this.runsReady;
+      return [];
+    }
+    return super.listReconciliationRuns(...args);
+  }
+}
+
 function createFallbackApp(
   repository: Parameters<typeof createApp>[0] = new MemoryTransactionRepository(),
   dealershipId = 1,
@@ -385,6 +420,105 @@ describe("app", () => {
     ]);
     expect(forbiddenFilesResponse.status).toBe(403);
     expect(forbiddenUploadResponse.status).toBe(403);
+  });
+
+  test("store-scoped reads exclude other-store accounts, analytics, metrics, and audits", async () => {
+    const repository = new MemoryTransactionRepository();
+    const authRepository = new MemoryAuthRepository();
+    for (const user of [
+      { email: "admin@scope.test", role: "platform_admin" as const },
+      { email: "manager@scope.test", role: "store_manager" as const, store_ids: [1] },
+      { email: "auditor@scope.test", role: "read_only_auditor" as const, store_ids: [1] },
+    ]) {
+      await authRepository.addUser({
+        ...user,
+        password: "correct-password",
+        dealership_id: 1,
+      });
+    }
+    const app = createApp(repository, [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+    const admin = request.agent(app);
+    await admin.post("/login").send({ email: "admin@scope.test", password: "correct-password" });
+    await uploadCsvWithAgent(admin, "bank", "transaction_date,amount,account\n2026-04-01,1.00,store-one", "one.csv", 1);
+    await uploadCsvWithAgent(admin, "bank", "transaction_date,amount,account\n2026-04-01,2.00,store-two", "two.csv", 2);
+    await repository.createIngestionEvent(1, {
+      dealership_store_id: 1, source_file_id: null, reconciliation_run_id: null,
+      source_type: "bank", state: "failed", message: "store one failure", metadata: {},
+    });
+    await repository.createIngestionEvent(1, {
+      dealership_store_id: 2, source_file_id: null, reconciliation_run_id: null,
+      source_type: "dealertrack", state: "failed", message: "store two failure", metadata: {},
+    });
+    await repository.createAuditEvent(1, {
+      actor_user_id: null, action_type: "scoped_one", entity_type: "dealership_store",
+      entity_id: "1", previous_state: null, new_state: { dealership_store_id: 1 },
+    });
+    await repository.createAuditEvent(1, {
+      actor_user_id: null, action_type: "scoped_two", entity_type: "dealership_store",
+      entity_id: "2", previous_state: null, new_state: { dealership_store_id: 2 },
+    });
+    await repository.createAuditEvent(1, {
+      actor_user_id: null, action_type: "unscoped", entity_type: "user",
+      entity_id: "99", previous_state: null, new_state: {},
+    });
+
+    const manager = request.agent(app);
+    await manager.post("/login").send({ email: "manager@scope.test", password: "correct-password" });
+    const summary = await manager.get("/accounts/summary");
+    const deniedDetail = await manager.get("/accounts/store-two");
+    const analytics = await manager.get("/dealer-groups/analytics");
+    const status = await manager.get("/automation/status");
+    const metrics = await manager.get("/automation/metrics");
+    expect(summary.body.map((item: { account_identifier: string }) => item.account_identifier)).toEqual(["store-one"]);
+    expect(deniedDetail.status).toBe(404);
+    expect(analytics.body.flatMap((group: { stores: Array<{ dealership_store_id: number }> }) => group.stores.map((store) => store.dealership_store_id))).toEqual([1]);
+    expect(status.body.map((item: { dealership_store_id: number }) => item.dealership_store_id)).toEqual([1]);
+    expect(metrics.body.upload_failure_trends).toEqual([{ source_type: "bank", failure_count: 1 }]);
+
+    const auditor = request.agent(app);
+    await auditor.post("/login").send({ email: "auditor@scope.test", password: "correct-password" });
+    const audit = await auditor.get("/audit-events");
+    expect(audit.body.map((event: { action_type: string }) => event.action_type)).toContain("scoped_one");
+    expect(audit.body.map((event: { action_type: string }) => event.action_type)).not.toContain("scoped_two");
+    expect(audit.body.map((event: { action_type: string }) => event.action_type)).not.toContain("unscoped");
+  });
+
+  test("store managers run only their assigned due jobs while platform admins retain dealership-wide execution", async () => {
+    const repository = new MemoryTransactionRepository();
+    const authRepository = new MemoryAuthRepository();
+    await authRepository.addUser({ email: "manager@jobs.test", password: "correct-password", dealership_id: 1, role: "store_manager", store_ids: [1] });
+    await authRepository.addUser({ email: "admin@jobs.test", password: "correct-password", dealership_id: 1, role: "platform_admin" });
+    for (const storeId of [1, 2]) {
+      await repository.createScheduledReconciliationJob(1, {
+        dealership_store_id: storeId,
+        cadence: "weekly",
+        expected_source_types: ["boa", "dealertrack"],
+        enabled: true,
+        auto_run_on_pair: false,
+        next_run_at: "2026-05-01T00:00:00.000Z",
+      });
+    }
+    const app = createApp(repository, [], 1, async () => undefined, {
+      authRepository,
+      sessionSecret: "test-session-secret-with-enough-length",
+      allowDevDealershipFallback: false,
+    });
+    const manager = request.agent(app);
+    await manager.post("/login").send({ email: "manager@jobs.test", password: "correct-password" });
+    expect((await manager.post("/automation/run-due-jobs").send({ now: "2026-05-14T00:00:00.000Z" })).status).toBe(200);
+    const afterManager = await repository.listScheduledReconciliationJobs(1);
+    expect(afterManager.find((job) => job.dealership_store_id === 1)?.next_run_at).not.toBe("2026-05-01T00:00:00.000Z");
+    expect(afterManager.find((job) => job.dealership_store_id === 2)?.next_run_at).toBe("2026-05-01T00:00:00.000Z");
+
+    const admin = request.agent(app);
+    await admin.post("/login").send({ email: "admin@jobs.test", password: "correct-password" });
+    expect((await admin.post("/automation/run-due-jobs").send({ now: "2026-05-14T00:00:00.000Z" })).status).toBe(200);
+    const afterAdmin = await repository.listScheduledReconciliationJobs(1);
+    expect(afterAdmin.find((job) => job.dealership_store_id === 2)?.next_run_at).not.toBe("2026-05-01T00:00:00.000Z");
   });
 
   test("GET /stores exposes enabled rooftop support without changing store visibility", async () => {
@@ -2073,6 +2207,33 @@ describe("app", () => {
     );
   });
 
+  test("concurrent normal and reused upload paths claim exactly one automated reconciliation", async () => {
+    const repository = new ConcurrentAutoRunRepository();
+    const app = createFallbackApp(repository);
+    await request(app).post("/automation/scheduled-jobs").send({
+      dealership_store_id: 1,
+      cadence: "daily",
+      expected_source_types: ["boa", "dealertrack"],
+      enabled: true,
+      auto_run_on_pair: true,
+    }).expect(201);
+    await uploadCsv(app, "boa", boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"), "auto-race-boa.csv", 1);
+    const upload = () => request(app)
+      .post("/upload")
+      .field("source_type", "dealertrack")
+      .field("store_id", "1")
+      .field("accounting_month", "2026-04")
+      .attach("file", Buffer.from(dealertrackUploadCsv("M30101", "-301", "1HGCM82633A004352")), "auto-race-dt.csv");
+
+    const responses = await Promise.all([upload(), upload()]);
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    expect(responses.filter((response) => response.body.reused_existing_file)).toHaveLength(1);
+    expect(responses.filter((response) => typeof response.body.automated_reconciliation_run_id === "number")).toHaveLength(1);
+    await expect(repository.listReconciliationRuns(1, { dealershipStoreId: 1 })).resolves.toEqual([
+      expect.objectContaining({ status: "completed_auto" }),
+    ]);
+  });
+
   test("scheduled due jobs run and missing expected files generate alerts", async () => {
     const app = createFallbackApp();
     await uploadCsv(app, "boa", boaUploadCsv("M30101", "1HGCM82633A004352", "$301.00", "30101"), "due-boa.csv", 1);
@@ -3368,6 +3529,13 @@ describe("app", () => {
     const fpRecResponse = await request(app)
       .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/fp-rec`)
       .query({ format: "json" });
+    const incompatibleOverride = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/merged-floorplan`)
+      .query({ store_key: "hurst", format: "json" });
+    const generatedDownload = await request(app)
+      .get(`/reconciliation-runs/${reconciliation.reconciliation_run_id}/fp-rec`)
+      .query({ store_key: "acura" });
+    const auditEvents = await request(app).get("/audit-events");
 
     expect(response.status).toBe(200);
     expect(response.body.headers).toEqual([
@@ -3421,6 +3589,15 @@ describe("app", () => {
     expect(fpRecResponse.body.dealertrack_total_amount_cents).toBe(
       response.body.dealertrack_total_amount_cents,
     );
+    expect(incompatibleOverride.status).toBe(422);
+    expect(incompatibleOverride.body.error.code).toBe("STORE_KEY_PROFILE_MISMATCH");
+    expect(generatedDownload.status).toBe(200);
+    expect(auditEvents.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action_type: "artifact_downloaded",
+        new_state: expect.objectContaining({ accounting_month: "2026-04" }),
+      }),
+    ]));
   });
 
   test("POST /upload keeps the configured Fort Worth rooftop disabled", async () => {
@@ -3516,6 +3693,63 @@ describe("app", () => {
     const fpRecExplicitOverride = await request(app)
       .get(`/reconciliation-runs/${reconciliation.id}/fp-rec`)
       .query({ store_key: "hurst", format: "json" });
+    const disabledFwRun = await repository.createReconciliationRun({
+      dealership_id: 1,
+      dealership_store_id: testStoreId,
+      boa_source_file_id: boaImport.sourceFile.id,
+      dealertrack_source_file_id: dealertrackImport.sourceFile.id,
+      accounting_month: null,
+      rooftop_profile_id: "fw-v0",
+      rooftop_profile_version: "0",
+      result: {
+        matched_count: 0, exception_count: 0, duplicate_count: 0,
+        match_groups: [], exceptions: [],
+        vin_presence_diagnostics: {
+          extracted_vin_sets: { boa: [], dealertrack: [] },
+          vin_presence_exceptions: { dealertrack_not_in_boa: [], boa_not_in_dealertrack: [] },
+          transaction_unmatched_shared_vins: [],
+        },
+      },
+    });
+    const wrongVersionRun = await repository.createReconciliationRun({
+      dealership_id: 1,
+      dealership_store_id: testStoreId,
+      boa_source_file_id: boaImport.sourceFile.id,
+      dealertrack_source_file_id: dealertrackImport.sourceFile.id,
+      accounting_month: null,
+      rooftop_profile_id: "acura-v1",
+      rooftop_profile_version: "999",
+      result: {
+        matched_count: 0, exception_count: 0, duplicate_count: 0,
+        match_groups: [], exceptions: [],
+        vin_presence_diagnostics: {
+          extracted_vin_sets: { boa: [], dealertrack: [] },
+          vin_presence_exceptions: { dealertrack_not_in_boa: [], boa_not_in_dealertrack: [] },
+          transaction_unmatched_shared_vins: [],
+        },
+      },
+    });
+    const persistedAcuraOnUnconfiguredStore = await repository.createReconciliationRun({
+      dealership_id: 1,
+      dealership_store_id: testStoreId,
+      boa_source_file_id: boaImport.sourceFile.id,
+      dealertrack_source_file_id: dealertrackImport.sourceFile.id,
+      accounting_month: null,
+      rooftop_profile_id: "acura-v1",
+      rooftop_profile_version: "1",
+      result: {
+        matched_count: 0, exception_count: 0, duplicate_count: 0,
+        match_groups: [], exceptions: [],
+        vin_presence_diagnostics: {
+          extracted_vin_sets: { boa: [], dealertrack: [] },
+          vin_presence_exceptions: { dealertrack_not_in_boa: [], boa_not_in_dealertrack: [] },
+          transaction_unmatched_shared_vins: [],
+        },
+      },
+    });
+    const disabledFw = await request(app).get(`/reconciliation-runs/${disabledFwRun.id}/fp-rec`).query({ format: "json" });
+    const wrongVersion = await request(app).get(`/reconciliation-runs/${wrongVersionRun.id}/merged-floorplan`).query({ format: "json" });
+    const persistedAcura = await request(app).get(`/reconciliation-runs/${persistedAcuraOnUnconfiguredStore.id}/merged-floorplan`).query({ format: "json" });
 
     expect(unconfiguredStore.status).toBe(422);
     expect(unconfiguredStore.body.error).toMatchObject({
@@ -3532,8 +3766,8 @@ describe("app", () => {
       code: "INVALID_STORE_KEY",
       message: "store_key must be one of: hurst, acura, fw.",
     });
-    expect(explicitOverride.status).toBe(200);
-    expect(explicitOverride.body.headers[0]).toBe("HURST");
+    expect(explicitOverride.status).toBe(422);
+    expect(explicitOverride.body.error.code).toBe("STORE_WORKFLOW_CONFIG_NOT_FOUND");
     expect(fpRecUnconfiguredStore.status).toBe(422);
     expect(fpRecUnconfiguredStore.body.error).toMatchObject({
       code: "STORE_WORKFLOW_CONFIG_NOT_FOUND",
@@ -3544,8 +3778,14 @@ describe("app", () => {
       code: "INVALID_STORE_KEY",
       message: "store_key must be one of: hurst, acura, fw.",
     });
-    expect(fpRecExplicitOverride.status).toBe(200);
-    expect(fpRecExplicitOverride.body.headers[0]).toBe("HURST");
+    expect(fpRecExplicitOverride.status).toBe(422);
+    expect(fpRecExplicitOverride.body.error.code).toBe("STORE_WORKFLOW_CONFIG_NOT_FOUND");
+    expect(disabledFw.status).toBe(422);
+    expect(disabledFw.body.error.code).toBe("ROOFTOP_PROFILE_UNSUPPORTED");
+    expect(wrongVersion.status).toBe(422);
+    expect(wrongVersion.body.error.code).toBe("ROOFTOP_PROFILE_UNSUPPORTED");
+    expect(persistedAcura.status).toBe(200);
+    expect(persistedAcura.body.store_config.storeKey).toBe("acura");
   });
 
   test("merged floorplan export keeps Dealertrack account_identifier grouped as floorplan", async () => {

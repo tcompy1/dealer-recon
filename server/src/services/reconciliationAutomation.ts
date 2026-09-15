@@ -16,7 +16,10 @@ import {
   type RooftopProfile,
   type RooftopProfileId,
 } from "../config/storeWorkflowConfig.js";
-import type { TransactionRepository } from "../repositories/transactionRepository.js";
+import {
+  AutomatedReconciliationAlreadyExistsError,
+  type TransactionRepository,
+} from "../repositories/transactionRepository.js";
 import { rooftopValidationError } from "./rooftopValidation.js";
 import {
   RECONCILIATION_ENGINE_VERSION,
@@ -211,6 +214,7 @@ export async function createReconciliationRunFromSourceFiles(
     rooftop_profile_version: rooftopProfile.profileVersion,
     result: reconciliationResult,
     status: "artifact_pending",
+    automated,
     input_snapshot: {
       engine_version: RECONCILIATION_ENGINE_VERSION,
       inputs: [
@@ -409,16 +413,22 @@ export async function evaluateAutoRunAfterUpload(
   if (!rooftopProfile) {
     return null;
   }
-  const { run } = await createReconciliationRunFromSourceFiles({
-    repository,
-    dealershipId,
-    boaSourceFile,
-    dealertrackSourceFile,
-    accountingMonth: sourceFile.accounting_month,
-    rooftopProfile,
-    automated: true,
-    uploadedByUserId,
-  });
+  let run: ReconciliationRun;
+  try {
+    ({ run } = await createReconciliationRunFromSourceFiles({
+      repository,
+      dealershipId,
+      boaSourceFile,
+      dealertrackSourceFile,
+      accountingMonth: sourceFile.accounting_month,
+      rooftopProfile,
+      automated: true,
+      uploadedByUserId,
+    }));
+  } catch (error) {
+    if (error instanceof AutomatedReconciliationAlreadyExistsError) return null;
+    throw error;
+  }
   for (const job of jobs.filter((job) => job.enabled && job.auto_run_on_pair)) {
     await repository.updateScheduledReconciliationJob(dealershipId, job.id, {
       last_run_at: run.created_at,
@@ -432,8 +442,9 @@ export async function runDueScheduledJobs(
   repository: TransactionRepository,
   dealershipId: number,
   nowIso = new Date().toISOString(),
+  authorizedStoreIds: readonly number[] | null = null,
 ): Promise<ReconciliationRun[]> {
-  const jobs = (await repository.listScheduledReconciliationJobs(dealershipId)).filter(
+  const jobs = (await listScheduledJobsForScope(repository, dealershipId, authorizedStoreIds)).filter(
     (job) => job.enabled && job.next_run_at !== null && job.next_run_at <= nowIso,
   );
   const runs: ReconciliationRun[] = [];
@@ -477,6 +488,12 @@ export async function runDueScheduledJobs(
         next_run_at: nextRunAt(job.cadence, run.created_at),
       });
     } catch (error) {
+      if (error instanceof AutomatedReconciliationAlreadyExistsError) {
+        await repository.updateScheduledReconciliationJob(dealershipId, job.id, {
+          next_run_at: nextRunAt(job.cadence, nowIso),
+        });
+        continue;
+      }
       await repository.createOperationalEvent(dealershipId, {
         dealership_store_id: job.dealership_store_id,
         reconciliation_run_id: null,
@@ -493,13 +510,17 @@ export async function runDueScheduledJobs(
 export async function buildStoreAutomationStatuses(
   repository: TransactionRepository,
   dealershipId: number,
+  authorizedStoreIds: readonly number[] | null = null,
 ): Promise<StoreAutomationStatus[]> {
-  const [stores, jobs, runs] = await Promise.all([
+  const [allStores, jobs, runs, sourceFiles] = await Promise.all([
     repository.listDealershipStores(dealershipId),
-    repository.listScheduledReconciliationJobs(dealershipId),
-    repository.listReconciliationRuns(dealershipId),
+    listScheduledJobsForScope(repository, dealershipId, authorizedStoreIds),
+    listRunsForScope(repository, dealershipId, authorizedStoreIds),
+    listSourceFilesForScope(repository, dealershipId, authorizedStoreIds),
   ]);
-  const sourceFiles = await repository.listSourceFiles(dealershipId);
+  const stores = allStores.filter(
+    (store) => authorizedStoreIds === null || authorizedStoreIds.includes(store.id),
+  );
   const now = Date.now();
 
   return stores.map((store) => {
@@ -528,12 +549,13 @@ export async function buildStoreAutomationStatuses(
 export async function buildOperationalMetrics(
   repository: TransactionRepository,
   dealershipId: number,
+  authorizedStoreIds: readonly number[] | null = null,
 ): Promise<OperationalMetrics> {
   const [events, ingestionEvents, statuses, runs] = await Promise.all([
-    repository.listOperationalEvents(dealershipId, undefined, 500),
-    repository.listIngestionEvents(dealershipId, undefined, 500),
-    buildStoreAutomationStatuses(repository, dealershipId),
-    repository.listReconciliationRuns(dealershipId),
+    listOperationalEventsForScope(repository, dealershipId, authorizedStoreIds),
+    listIngestionEventsForScope(repository, dealershipId, authorizedStoreIds),
+    buildStoreAutomationStatuses(repository, dealershipId, authorizedStoreIds),
+    listRunsForScope(repository, dealershipId, authorizedStoreIds),
   ]);
   const completionDurations = events
     .filter((event) => event.event_type === "reconciliation_completed")
@@ -568,8 +590,9 @@ export async function buildOperationalMetrics(
 export async function generateStaleStoreEvents(
   repository: TransactionRepository,
   dealershipId: number,
+  authorizedStoreIds: readonly number[] | null = null,
 ): Promise<void> {
-  const statuses = await buildStoreAutomationStatuses(repository, dealershipId);
+  const statuses = await buildStoreAutomationStatuses(repository, dealershipId, authorizedStoreIds);
   for (const status of statuses.filter((candidate) => candidate.stale_reconciliation)) {
     await repository.createOperationalEvent(dealershipId, {
       dealership_store_id: status.dealership_store_id,
@@ -580,6 +603,56 @@ export async function generateStaleStoreEvents(
       metadata: status,
     });
   }
+}
+
+async function listScheduledJobsForScope(
+  repository: TransactionRepository,
+  dealershipId: number,
+  authorizedStoreIds: readonly number[] | null,
+) {
+  return authorizedStoreIds === null
+    ? repository.listScheduledReconciliationJobs(dealershipId)
+    : (await Promise.all(authorizedStoreIds.map((id) => repository.listScheduledReconciliationJobs(dealershipId, id)))).flat();
+}
+
+async function listRunsForScope(
+  repository: TransactionRepository,
+  dealershipId: number,
+  authorizedStoreIds: readonly number[] | null,
+) {
+  return authorizedStoreIds === null
+    ? repository.listReconciliationRuns(dealershipId)
+    : (await Promise.all(authorizedStoreIds.map((id) => repository.listReconciliationRuns(dealershipId, { dealershipStoreId: id })))).flat();
+}
+
+async function listSourceFilesForScope(
+  repository: TransactionRepository,
+  dealershipId: number,
+  authorizedStoreIds: readonly number[] | null,
+) {
+  return authorizedStoreIds === null
+    ? repository.listSourceFiles(dealershipId)
+    : (await Promise.all(authorizedStoreIds.map((id) => repository.listSourceFiles(dealershipId, undefined, id)))).flat();
+}
+
+async function listOperationalEventsForScope(
+  repository: TransactionRepository,
+  dealershipId: number,
+  authorizedStoreIds: readonly number[] | null,
+) {
+  return authorizedStoreIds === null
+    ? repository.listOperationalEvents(dealershipId, undefined, 500)
+    : (await Promise.all(authorizedStoreIds.map((id) => repository.listOperationalEvents(dealershipId, id, 500)))).flat();
+}
+
+async function listIngestionEventsForScope(
+  repository: TransactionRepository,
+  dealershipId: number,
+  authorizedStoreIds: readonly number[] | null,
+) {
+  return authorizedStoreIds === null
+    ? repository.listIngestionEvents(dealershipId, undefined, 500)
+    : (await Promise.all(authorizedStoreIds.map((id) => repository.listIngestionEvents(dealershipId, id, 500)))).flat();
 }
 
 async function recordMissingExpectedFiles(
