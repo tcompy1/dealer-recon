@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/index.ts",
+    "dev:e2e": "tsx src/cli/startE2eServer.ts",
     "start": "node dist/index.js",
     "migrate": "tsx src/db/migrate.ts",
     "migrate:down": "tsx src/db/migrate.ts down",
