@@ -61,7 +61,7 @@ The completion target is zero Critical and zero High findings in both full audit
 
 | Package | Current resolved version(s) and chain | Secure constraint | Treatment |
 |---|---|---|---|
-| `brace-expansion` | Server development-only: `eslint@9.39.4 -> minimatch@3.1.5 -> 1.1.14`, `eslint@9.39.4 -> @eslint/config-array@0.21.2 -> minimatch@3.1.5 -> 1.1.14`, `eslint@9.39.4 -> @eslint/eslintrc@3.3.5 -> minimatch@3.1.5 -> 1.1.14`, and `typescript-eslint@8.59.3 -> @typescript-eslint/typescript-estree@8.59.3 -> minimatch@10.2.5 -> 5.0.6`; server production: `node-pg-migrate@8.0.4 -> glob@11.1.0 -> minimatch@10.2.5 -> 5.0.6`. Frontend: `eslint -> minimatch -> 1.1.14`; `typescript-eslint -> @typescript-eslint/typescript-estree -> minimatch -> 5.0.6`. | `1.1.18` for vulnerable 1.x; `5.0.9` for vulnerable 3.x-5.0.8. `5.0.9` declares Node `20 || >=22`. | Server uses the exact parent-scoped overrides proven below: the three separately materialized ESLint ancestors select `1.1.18`, while shared `minimatch@10.2.5` selects `5.0.9` for both node-pg-migrate and TypeScript-ESLint. This preserves the already-safe ExcelJS-side `1.1.21` installations. Frontend override treatment remains a separate Task 3 gate and is not authorized by the server diagnosis. |
+| `brace-expansion` | Server development-only: `eslint@9.39.4 -> minimatch@3.1.5 -> 1.1.14`, `eslint@9.39.4 -> @eslint/config-array@0.21.2 -> minimatch@3.1.5 -> 1.1.14`, `eslint@9.39.4 -> @eslint/eslintrc@3.3.5 -> minimatch@3.1.5 -> 1.1.14`, and `typescript-eslint@8.59.3 -> @typescript-eslint/typescript-estree@8.59.3 -> minimatch@10.2.5 -> 5.0.6`; server production: `node-pg-migrate@8.0.4 -> glob@11.1.0 -> minimatch@10.2.5 -> 5.0.6`. Frontend development-only: one hoisted `1.1.14` node is shared by `eslint@9.39.4`, `@eslint/config-array@0.21.2`, and `@eslint/eslintrc@3.3.5` through hoisted `minimatch@3.1.5`; one nested `5.0.6` node belongs to `typescript-eslint@8.59.2 -> @typescript-eslint/typescript-estree@8.59.2 -> minimatch@10.2.5`. | `1.1.18` for vulnerable 1.x; `5.0.9` for vulnerable 3.x-5.0.8. `5.0.9` declares Node `20 || >=22`. | Server uses the four independently approved parent scopes recorded in Task 2 because its `minimatch@10.2.5` node is shared by production and development chains and its lock also contains already-safe ExcelJS nodes. Frontend has only the two vulnerable physical nodes and no safe ExcelJS brace nodes, so Task 3 uses the narrower immediate-parent scopes `minimatch@3.1.5` and `minimatch@10.2.5`. |
 | `js-yaml` | `eslint -> @eslint/eslintrc -> 4.2.0` in both trees. | `4.3.2` | Exact transitive `override`. |
 | `nanoid` | Server: `vitest -> vite -> postcss -> 3.3.12`. Frontend: `postcss -> 3.3.12`. | `3.3.18` | Exact transitive `override`; frontend's direct PostCSS floor also carries it. |
 | `browserslist` | Frontend: `@vitejs/plugin-react -> @babel/core -> @babel/helper-compilation-targets -> 4.28.2`; `autoprefixer -> 4.28.2`. | `4.28.7` | Frontend-only exact transitive `override`. |
@@ -70,6 +70,20 @@ The completion target is zero Critical and zero High findings in both full audit
 | `vitest` | Direct development dependency resolved to `1.6.1` in both trees. | `3.2.6`; its engine is `^18 || ^20 || >=22` and its Vite peer range accepts Vite 6. | Exact direct development-dependency upgrade to `3.2.6` in both manifests. Do not accept npm's suggested Vitest 5 upgrade. |
 
 Lockfile changes may include the transitive packages required by these constraints, such as `vite-node`, `esbuild`, Rollup platform packages, and dependency metadata. Review every unrelated lockfile delta; if npm introduces packages not reachable from the declared direct upgrades or overrides, stop and investigate before staging the lockfile.
+
+### Frontend npm 10.8.2 override diagnostic amendment — 2026-09-17
+
+The first stopped Task 3 candidate proved that npm 10.8.2 did not apply the range-qualified self overrides `brace-expansion@<=1.1.17` and `brace-expansion@>=3.0.0 <5.0.9`: after a clean Node 20.20.2 install, the physical nodes remained `node_modules/brace-expansion@1.1.14` and `node_modules/@typescript-eslint/typescript-estree/node_modules/brace-expansion@5.0.6`. The full audit therefore remained at 0 Critical, 1 High, 2 Moderate, and 1 Low even though the production-only audit was clean. This is the same npm 10 key-selection failure diagnosed at the server boundary: a range-qualified key for the overridden package itself did not select these transitive nodes, while a containing-parent override did.
+
+The remaining High aggregate contains three advisories: `GHSA-3jxr-9vmj-r5cp` (`<1.1.16` and `>=3.0.0 <5.0.7`), `GHSA-mh99-v99m-4gvg` (`<1.1.17` and `>=4.0.0 <5.0.8`), and `GHSA-rgw5-rvv9-x895` (`<1.1.18` and `>=4.0.0 <5.0.9`). Both installed nodes are development-only.
+
+Disposable Node 20.20.2/npm 10.8.2 trials established:
+
+- `eslint -> brace-expansion@1.1.18` plus `minimatch@10.2.5 -> brace-expansion@5.0.9` succeeds, but scopes the hoisted 1.x replacement to a broader ancestor than necessary.
+- `minimatch@3.1.5 -> brace-expansion@1.1.18` plus `minimatch@10.2.5 -> brace-expansion@5.0.9` succeeds and is the selected smallest immediate-parent configuration.
+- Full server-parity scopes for `eslint`, `@eslint/config-array`, `@eslint/eslintrc`, and `minimatch@10.2.5` also succeed, but the three ESLint ancestor entries are redundant in the frontend because all three consumers share one hoisted `minimatch@3.1.5` and one hoisted `brace-expansion@1.1.14`.
+
+For the selected candidate, `npm install --package-lock-only --ignore-scripts`, `npm ci`, `npm ls --all`, all targeted `npm explain`/`npm ls` commands, the full audit, and the production-only audit succeed. The full audit is 0 Critical, 0 High, 2 Moderate, and 1 Low; the production-only audit has zero findings. Relative to the stopped frontend lock, exactly two package records change: hoisted `brace-expansion` `1.1.14 -> 1.1.18` and the TypeScript-ESLint-nested node `5.0.6 -> 5.0.9`, including only their associated resolved URL, integrity, and Node-engine metadata. No other package version or package record changes.
 
 ## Pre-Execution Approval Gate
 
@@ -83,6 +97,7 @@ The four implementation commit boundaries remain fixed and independently reviewa
 | 2 | `.github/workflows/ci.yml` | `ci: pin official actions to immutable releases` |
 | Diagnostic amendment | `docs/superpowers/plans/2026-09-16-ci-dependency-hardening.md` | `docs: correct npm brace-expansion override strategy` |
 | 3 | `server/package.json`, `server/package-lock.json` | `chore(server): harden dependency versions` |
+| Frontend diagnostic amendment | `docs/superpowers/plans/2026-09-16-ci-dependency-hardening.md` | `docs: correct frontend brace-expansion override strategy` |
 | 4 | `frontend/package.json`, `frontend/package-lock.json` | `chore(frontend): harden dependency versions` |
 
 ```bash
@@ -291,7 +306,22 @@ git commit -m "chore(server): harden dependency versions"
 **Interfaces:**
 
 - Consumes: frontend scripts `lint`, `test`, `build`, and `test:e2e`; direct Vite, PostCSS, and Vitest declarations; `@vitejs/plugin-react@4.7.0` Vite peer range `^4.2 || ^5 || ^6 || ^7`; transitive ESLint, typescript-eslint, Babel, Autoprefixer, and PostCSS chains; npm lockfile v3; Node 20.
-- Produces: `dependencies.vite = "6.4.3"`; `devDependencies.postcss = "8.5.23"`; `devDependencies.vitest = "3.2.6"`; root transitive overrides for the two vulnerable brace-expansion lines, js-yaml, nanoid, and browserslist; a regenerated `frontend/package-lock.json` consumed by CI, Playwright, and Task 4.
+- Produces: `dependencies.vite = "6.4.3"`; `devDependencies.postcss = "8.5.23"`; `devDependencies.vitest = "3.2.6"`; exact immediate-parent overrides for `minimatch@3.1.5 -> brace-expansion@1.1.18` and `minimatch@10.2.5 -> brace-expansion@5.0.9`; exact js-yaml, nanoid, and browserslist overrides; a regenerated `frontend/package-lock.json` consumed by CI, Playwright, and Task 4.
+
+- [ ] **Pre-step: Commit the reviewed frontend diagnostic amendment by itself before changing the stopped frontend boundary**
+
+```bash
+cd /private/tmp/dealer-recon-ci-dependency-hardening
+test "$(git branch --show-current)" = "chore/ci-dependency-hardening"
+test "$(git diff --name-only)" = $'docs/superpowers/plans/2026-09-16-ci-dependency-hardening.md\nfrontend/package-lock.json\nfrontend/package.json'
+git add docs/superpowers/plans/2026-09-16-ci-dependency-hardening.md
+test "$(git diff --cached --name-only)" = "docs/superpowers/plans/2026-09-16-ci-dependency-hardening.md"
+git diff --cached --check
+git commit -m "docs: correct frontend brace-expansion override strategy"
+test "$(git diff --name-only)" = $'frontend/package-lock.json\nfrontend/package.json'
+```
+
+Expected: the documentation-only amendment is independently reviewed and committed before the range-qualified frontend overrides are replaced. The stopped frontend manifest and lock remain unstaged and byte-identical until this gate passes.
 
 - [ ] **Step 1: Establish the frontend security RED under Node 20**
 
@@ -302,7 +332,7 @@ fnm exec --using=20 npm audit --omit=dev --audit-level=high --json
 fnm exec --using=20 npm ls --package-lock-only --all brace-expansion js-yaml nanoid browserslist postcss vite vitest
 ```
 
-Expected RED: full audit is 1 Critical/6 High/3 Moderate/1 Low and production-only is 4 High/2 Moderate; the vulnerable versions match the evidence table. Both baseline audit commands exit 1 because they meet the High threshold.
+Expected resume RED from the preserved stopped frontend boundary: the full audit is 0 Critical, 1 High, 2 Moderate, and 1 Low; the production-only audit has zero findings; the remaining High is only `brace-expansion`, with physical nodes at `1.1.14` and `5.0.6` on the paths documented above. The full audit exits 1 at the High threshold and the production-only audit exits 0. The original pre-upgrade baseline remains recorded in the audit-baseline table as 1 Critical/6 High/3 Moderate/1 Low full and 4 High/2 Moderate production-only; do not restore or rebuild the stopped files merely to reproduce it.
 
 - [ ] **Step 2: Raise only the three direct floors and add four transitive package overrides**
 
@@ -314,14 +344,18 @@ Set the existing direct declarations to:
 "vitest": "3.2.6"
 ```
 
-Add this root-level object after `devDependencies`:
+Add this root-level object after `devDependencies`, replacing the failed range-qualified brace-expansion entries with the two exact immediate-parent scopes:
 
 ```json
 "overrides": {
-  "brace-expansion@<=1.1.17": "1.1.18",
-  "brace-expansion@>=3.0.0 <5.0.9": "5.0.9",
   "browserslist": "4.28.7",
   "js-yaml": "4.3.2",
+  "minimatch@3.1.5": {
+    "brace-expansion": "1.1.18"
+  },
+  "minimatch@10.2.5": {
+    "brace-expansion": "5.0.9"
+  },
   "nanoid": "3.3.18"
 }
 ```
@@ -333,13 +367,17 @@ Do not change React, TypeScript, Tailwind, Playwright, Testing Library, jsdom, o
 ```bash
 fnm exec --using=20 npm install --package-lock-only --ignore-scripts
 fnm exec --using=20 npm ci
-fnm exec --using=20 npm ls --all brace-expansion js-yaml nanoid browserslist postcss vite vitest
+fnm exec --using=20 npm ls --all
+fnm exec --using=20 npm ls --all brace-expansion minimatch eslint @eslint/config-array @eslint/eslintrc typescript-eslint @typescript-eslint/typescript-estree js-yaml nanoid browserslist postcss vite vitest
+for package in brace-expansion minimatch eslint @eslint/config-array @eslint/eslintrc typescript-eslint @typescript-eslint/typescript-estree; do
+  fnm exec --using=20 npm explain "$package"
+done
 git diff --check -- package.json package-lock.json
 git diff -- package.json
 git diff --stat -- package-lock.json
 ```
 
-Expected: npm accepts exact Vite 6.4.3 with plugin-react 4.7.0 and exact Vitest 3.2.6 without peer errors; PostCSS resolves exactly to 8.5.23; none of the audit-vulnerable versions remain; transitive movement is attributable to the three direct upgrades or the five override entries covering four transitive packages.
+Expected: npm accepts exact Vite 6.4.3 with plugin-react 4.7.0 and exact Vitest 3.2.6 without invalid, extraneous, peer, engine, resolution, or `EOVERRIDE` errors; PostCSS resolves exactly to 8.5.23. The hoisted ESLint-side physical node is `brace-expansion@1.1.18` beneath shared `minimatch@3.1.5`, and the TypeScript-ESLint physical node is `brace-expansion@5.0.9` beneath `minimatch@10.2.5`. Relative to the already-regenerated stopped lock, only those two brace-expansion records may change; no already-safe node or unrelated dependency version may move.
 
 - [ ] **Step 4: Prove the frontend GREEN and production-build compatibility**
 
@@ -363,7 +401,7 @@ git diff --cached --check
 git commit -m "chore(frontend): harden dependency versions"
 ```
 
-**Rollback point:** Revert this commit alone to restore Vite 5/Vitest 1/PostCSS and the old frontend lock without disturbing server or workflow commits.
+**Rollback point:** Before the frontend commit, a failed gate leaves only `frontend/package.json` and `frontend/package-lock.json` unstaged; stop and preserve them for diagnosis. If abandoning the entire unstaged frontend boundary is separately authorized, restore exactly the committed server boundary with `git restore --source=ecda7f83b291b341f8358afdd487002625682571 --worktree -- frontend/package.json frontend/package-lock.json`, then run `cd frontend && fnm exec --using=20 npm ci && fnm exec --using=20 npm ls --all` so `node_modules` matches the restored lock. After the frontend commit, revert that commit alone with `git revert <frontend-dependency-commit>`, then run the same Node 20 `npm ci` and `npm ls --all`; the workflow, plan-amendment, and server commits remain intact. Do not reset shared history.
 
 **Acceptance criteria:** Frontend package/lock changes are limited to the three direct floors, declared overrides, and reachable transitive lock entries; Node 20 lint/test/build pass; full and production audits have zero Critical/High findings; no frontend source, test, or configuration file changes.
 
