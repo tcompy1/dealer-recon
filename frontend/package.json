@@ -16,7 +16,7 @@
     "@vitejs/plugin-react": "^4.3.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "vite": "^5.4.2"
+    "vite": "6.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",
@@ -31,10 +31,21 @@
     "eslint-plugin-react-refresh": "^0.4.11",
     "globals": "^15.9.0",
     "jsdom": "26.1.0",
-    "postcss": "^8.4.41",
+    "postcss": "8.5.23",
     "tailwindcss": "^3.4.10",
     "typescript": "^5.5.3",
     "typescript-eslint": "^8.3.0",
-    "vitest": "^1.6.1"
+    "vitest": "3.2.6"
+  },
+  "overrides": {
+    "browserslist": "4.28.7",
+    "js-yaml": "4.3.2",
+    "minimatch@3.1.5": {
+      "brace-expansion": "1.1.18"
+    },
+    "minimatch@10.2.5": {
+      "brace-expansion": "5.0.9"
+    },
+    "nanoid": "3.3.18"
   }
 }
