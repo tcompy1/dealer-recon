@@ -110,6 +110,7 @@ const FW_MERGED_FIXTURE_CASES = (["core", "mismatch", "enrichment"] as const).ma
 
 function transaction(overrides: Partial<TransactionSummary> = {}): TransactionSummary {
   return {
+    source_identity:{source_row_number:2,vin_revision:0},
     id: 1,
     dealership_id: 1,
     source_type: "boa",
@@ -173,7 +174,7 @@ function dealertrack(
 function contractWorkbook(
   storeConfig = STORE_WORKFLOW_CONFIGS.hurst,
 ): MergedFloorplanWorkbook {
-  return buildMergedFloorplanWorkbook({
+  const input = {
     storeConfig,
     storeName: storeConfig.displayName,
     periodDate: "04-30-26",
@@ -208,7 +209,8 @@ function contractWorkbook(
         storeConfig.dealertrackAccountColumn,
       ),
     ],
-  });
+  };
+  return storeConfig.storeKey==="fw" ? buildMergedFloorplanWorkbookFromReconciliationDetail(fwDetail(input.boaRecords,input.dealertrackRecords,[[0,0]]),storeConfig) : buildMergedFloorplanWorkbook(input);
 }
 
 function findRow(
@@ -731,6 +733,7 @@ function toTransactionSummary(
 ): TransactionSummary {
   return {
     id,
+    source_identity:{source_row_number:(transaction.raw_data.__lineage as {source_row_number:number}).source_row_number,vin_revision:0},
     dealership_id: 1,
     source_type: transaction.source_type,
     transaction_date: transaction.transaction_date,
@@ -944,11 +947,47 @@ function fwDetail(boa:TransactionSummary[], dt:TransactionSummary[], pairs:numbe
 
 test("FW detail preserves distinct duplicate exceptions and equal-amount rows", () => {
   const a=transaction({id:91,amount_cents:12500,vin:"1ZZAA11A1ZA100001"});
-  const b={...a,id:92};
+  const b={...a,id:92,source_identity:{source_row_number:3,vin_revision:0}};
   const dt=transaction({id:93,source_type:"dealertrack",amount_cents:-12500,vin:"1ZZAA11A1ZA100002"});
   const model=buildMergedFloorplanWorkbookFromReconciliationDetail(fwDetail([a,b],[dt],[]),STORE_WORKFLOW_CONFIGS.fw);
   expect(countWorkbookRows(model)).toEqual({matched:0,boaOnly:2,dealertrackOnly:1});
   expect(model.rows.filter(r=>r.serial_no_vin===a.vin)).toHaveLength(2);
   expect(model.boa_total_amount_cents).toBe(25000);
   expect(model.dealertrack_total_amount_cents).toBe(-12500);
+});
+test.each(["hurst","acura","fw"] as const)("%s marked saved correction wins identifier display but preserves description",key=>{
+ const dt=transaction({source_type:"dealertrack",vin:"1ZZAA11A1ZA100002",description:"original 1ZZAA11A1ZA100001",source_identity:{source_row_number:2,vin_revision:1,operator_confirmed_vin:true}});
+ const model=buildMergedFloorplanWorkbookFromReconciliationDetail(fwDetail([],[dt],[]),STORE_WORKFLOW_CONFIGS[key]);
+ expect(model.rows[0].dealertrack_vin6).toBe("100002");expect(model.rows[0].dealertrack_description).toBe(dt.description);
+});
+test("FW preserves signed amounts, deterministic full-identity tuple and rejects missing ordinals or legacy input",()=>{
+ const a=transaction({id:11,amount_cents:-100,vin:"1ZZAA11A1ZA100002",description:"second",source_identity:{source_row_number:3,vin_revision:0}});
+ const b={...a,id:99,vin:"1ZZAA11A1ZA100001",description:"first",source_identity:{source_row_number:2,vin_revision:0}};
+ const dt=transaction({id:31,source_type:"dealertrack",amount_cents:100,vin:"1ZZAA11A1ZA100003",source_identity:{source_row_number:2,vin_revision:0}});
+ const first=buildMergedFloorplanWorkbookFromReconciliationDetail(fwDetail([a,b],[dt],[]),STORE_WORKFLOW_CONFIGS.fw);
+ const second=buildMergedFloorplanWorkbookFromReconciliationDetail(fwDetail([{...b,id:1},{...a,id:2}],[{...dt,id:3}],[]),STORE_WORKFLOW_CONFIGS.fw);
+ expect(first.rows).toEqual(second.rows);expect(first.rows.map(r=>r.ending_balance_cents)).toEqual([-100,-100,null]);expect(first.dealertrack_total_amount_cents).toBe(100);
+ expect(first.rows.slice(0,2).map(r=>r.store_description)).toEqual(["first","second"]);
+ expect(()=>buildMergedFloorplanWorkbookFromReconciliationDetail(fwDetail([{...a,source_identity:undefined}],[],[]),STORE_WORKFLOW_CONFIGS.fw)).toThrow();
+ expect(()=>buildMergedFloorplanWorkbook({storeConfig:STORE_WORKFLOW_CONFIGS.fw,boaRecords:[],dealertrackRecords:[]})).toThrow();
+});
+test("FW carries selected full-year month and never infers it from source dates",()=>{
+ const detail=fwDetail([],[],[]);detail.accounting_month=accountingMonth("1996-02");
+ const model=buildMergedFloorplanWorkbookFromReconciliationDetail(detail,STORE_WORKFLOW_CONFIGS.fw);
+ expect(model.accounting_month).toBe("1996-02");
+ detail.accounting_month=null;expect(()=>buildMergedFloorplanWorkbookFromReconciliationDetail(detail,STORE_WORKFLOW_CONFIGS.fw)).toThrow();
+});
+test("FW exact tie tuple includes DT VIN, literal control, classification and both source ordinals",()=>{
+ const make=(source_type:"boa"|"dealertrack",row:number,changes:Partial<TransactionSummary>={})=>transaction({id:row,source_type,amount_cents:source_type==="boa"?100:-100,vin:null,description:`row${row}`,stock_number:null,reference_number:null,source_identity:{source_row_number:row,vin_revision:0},...changes});
+ const cases:Array<{boa:TransactionSummary[];dt:TransactionSummary[];pairs:number[][];expected:string[]}>= [
+  {boa:[],dt:[make("dealertrack",3,{vin:"1ZZAA11A1ZA100002"}),make("dealertrack",2,{vin:"1ZZAA11A1ZA100001"})],pairs:[],expected:["row2","row3"]},
+  {boa:[],dt:[make("dealertrack",3,{reference_number:"a"}),make("dealertrack",2,{reference_number:"Z"})],pairs:[],expected:["row2","row3"]},
+  {boa:[],dt:[make("dealertrack",3,{reference_number:"😀"}),make("dealertrack",2,{reference_number:"\uE000"})],pairs:[],expected:["row2","row3"]},
+  {boa:[make("boa",3),make("boa",2)],dt:[],pairs:[],expected:["row2","row3"]},
+  {boa:[],dt:[make("dealertrack",3),make("dealertrack",2)],pairs:[],expected:["row2","row3"]},
+  {boa:[make("boa",2),make("boa",3)],dt:[make("dealertrack",4),make("dealertrack",5)],pairs:[[0,0]],expected:["row2","row3","row5"]},
+ ];
+ for(const c of cases){const detail=fwDetail(c.boa,c.dt,c.pairs);const build=()=>buildMergedFloorplanWorkbookFromReconciliationDetail(detail,STORE_WORKFLOW_CONFIGS.fw).rows.map(row=>row.store_description||row.dealertrack_description);
+  expect(build()).toEqual(c.expected);detail.exceptions.reverse();for(const exception of detail.exceptions)exception.transaction.id+=1000;expect(build()).toEqual(c.expected);
+ }
 });

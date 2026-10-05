@@ -1,5 +1,5 @@
 import { formatCents } from "../domain/money.js";
-import { accountingMonthEndDate } from "../domain/accountingMonth.js";
+import { accountingMonthEndDate,parseAccountingMonth,type AccountingMonth } from "../domain/accountingMonth.js";
 import { computeVin6, extractVin6FromDescription } from "../domain/vin6.js";
 import type { ReconciliationRunDetail, SourceType, TransactionSummary } from "../domain/types.js";
 import type { StoreWorkflowConfig } from "../config/storeWorkflowConfig.js";
@@ -8,6 +8,9 @@ import { neutralizeSpreadsheetText } from "../spreadsheetText.js";
 export type MergedFloorplanRowClassification = "matched" | "boa_only" | "dealertrack_only";
 
 export type MergedFloorplanRow = {
+  confirmed_dealertrack_vin?: string;
+  ordering?: readonly [string,string,string,number,number,number];
+  review?: {label:"Offsetting account balances—review.";components:Record<"2100"|"2101"|"2101S",number>};
   store_description: string;
   serial_no_vin: string;
   boa_vin6: string;
@@ -20,6 +23,7 @@ export type MergedFloorplanRow = {
 };
 
 export type MergedFloorplanWorkbook = {
+  accounting_month?:AccountingMonth;
   store_config: StoreWorkflowConfig;
   store_name: string;
   period_date: string | null;
@@ -47,6 +51,7 @@ type DetailMatchGroup = ReconciliationRunDetail["match_groups"][number];
 export function buildMergedFloorplanWorkbook(
   input: BuildMergedFloorplanWorkbookInput,
 ): MergedFloorplanWorkbook {
+  if(input.storeConfig.storeKey==="fw")throw new Error("Fort Worth exports require persisted reconciliation outcomes and source identity snapshots.");
   const dealertrackRecords = filterDealertrackRecordsByConfiguredAccount(
     input.dealertrackRecords,
     input.storeConfig,
@@ -70,9 +75,10 @@ export function buildMergedFloorplanWorkbookFromReconciliationDetail(
   detail: ReconciliationRunDetail,
   storeConfig: StoreWorkflowConfig,
 ): MergedFloorplanWorkbook {
+  if(storeConfig.storeKey==="fw"&&!parseAccountingMonth(detail.accounting_month))throw new Error("Selected accounting month required for Fort Worth export.");
   const rows = sortMergedRows([
-    ...detail.match_groups.flatMap(buildRowsFromMatchGroup),
-    ...detail.exceptions.flatMap(buildRowsFromException),
+    ...detail.match_groups.flatMap(group=>buildRowsFromMatchGroup(group,storeConfig.storeKey==="fw")),
+    ...detail.exceptions.flatMap(exception=>buildRowsFromException(exception,storeConfig.storeKey==="fw")),
   ], storeConfig);
 
   return buildWorkbookFromRows({
@@ -80,6 +86,7 @@ export function buildMergedFloorplanWorkbookFromReconciliationDetail(
     rows,
     storeName: detail.store_name ?? storeConfig.displayName,
     periodDate: resolvePeriodAnchorDate(detail),
+    accountingMonth:storeConfig.storeKey==="fw"?detail.accounting_month!:undefined,
   });
 }
 
@@ -134,6 +141,7 @@ export function toMergedFloorplanFilename(workbook: MergedFloorplanWorkbook): st
 }
 
 function buildWorkbookFromRows(input: {
+  accountingMonth?:AccountingMonth;
   storeConfig: StoreWorkflowConfig;
   rows: MergedFloorplanRow[];
   storeName: string;
@@ -150,6 +158,7 @@ function buildWorkbookFromRows(input: {
   const varianceCents = boaTotalCents + dealertrackTotalCents;
 
   return {
+    ...(input.accountingMonth?{accounting_month:input.accountingMonth}:{}),
     store_config: input.storeConfig,
     store_name: input.storeName,
     period_date: input.periodDate,
@@ -206,30 +215,30 @@ function buildRowsFromCleanedRecords(
   return rows;
 }
 
-function buildRowsFromMatchGroup(group: DetailMatchGroup): MergedFloorplanRow[] {
+function buildRowsFromMatchGroup(group: DetailMatchGroup, fw=false): MergedFloorplanRow[] {
   const boa = group.transactions.find((linked) => isBoaSource(linked.source_type))?.transaction;
   const dealertrack = group.transactions.find((linked) =>
     isDealertrackSource(linked.source_type),
   )?.transaction;
 
   if (boa && dealertrack) {
-    return [buildMatchedRow(boa, dealertrack)];
+    return [buildMatchedRow(boa, dealertrack,fw)];
   }
   if (boa) {
-    return [buildBoaOnlyRow(boa)];
+    return [buildBoaOnlyRow(boa,fw)];
   }
   if (dealertrack) {
-    return [buildDealertrackOnlyRow(dealertrack)];
+    return [buildDealertrackOnlyRow(dealertrack,fw)];
   }
   return [];
 }
 
-function buildRowsFromException(exception: DetailException): MergedFloorplanRow[] {
+function buildRowsFromException(exception: DetailException, fw=false): MergedFloorplanRow[] {
   if (isBoaSource(exception.source_type)) {
-    return [buildBoaOnlyRow(exception.transaction)];
+    return [buildBoaOnlyRow(exception.transaction,fw)];
   }
   if (isDealertrackSource(exception.source_type)) {
-    return [buildDealertrackOnlyRow(exception.transaction)];
+    return [buildDealertrackOnlyRow(exception.transaction,fw)];
   }
   return [];
 }
@@ -237,35 +246,41 @@ function buildRowsFromException(exception: DetailException): MergedFloorplanRow[
 function buildMatchedRow(
   boa: TransactionSummary,
   dealertrack: TransactionSummary,
+  fw=false,
 ): MergedFloorplanRow {
   const resolvedDealertrackVin6 = dealertrackVin6(dealertrack) || boaVin6(boa);
   return {
     ...emptyMergedRow("matched"),
+    ...(fw ? fwMetadata(boa,dealertrack,0):{}),
+    ...(dealertrack.source_identity?.operator_confirmed_vin ? {confirmed_dealertrack_vin:dealertrack.vin!}:{}),
     store_description: boa.description ?? "",
     serial_no_vin: boaVin(boa),
     boa_vin6: boaVin6(boa),
-    ending_balance_cents: Math.abs(boa.amount_cents),
-    dealertrack_account_amount_cents: dealertrackAccountCents(dealertrack),
+    ending_balance_cents: fw ? boa.amount_cents : Math.abs(boa.amount_cents),
+    dealertrack_account_amount_cents: fw ? dealertrack.amount_cents : dealertrackAccountCents(dealertrack),
     dealertrack_vin6: resolvedDealertrackVin6,
     dealertrack_description: dealertrack.description ?? "",
     dealertrack_control: dealertrackControl(dealertrack),
   };
 }
 
-function buildBoaOnlyRow(boa: TransactionSummary): MergedFloorplanRow {
+function buildBoaOnlyRow(boa: TransactionSummary,fw=false): MergedFloorplanRow {
   return {
     ...emptyMergedRow("boa_only"),
+    ...(fw ? fwMetadata(boa,null,1):{}),
     store_description: boa.description ?? "",
     serial_no_vin: boaVin(boa),
     boa_vin6: boaVin6(boa),
-    ending_balance_cents: Math.abs(boa.amount_cents),
+    ending_balance_cents: fw ? boa.amount_cents : Math.abs(boa.amount_cents),
   };
 }
 
-function buildDealertrackOnlyRow(dealertrack: TransactionSummary): MergedFloorplanRow {
+function buildDealertrackOnlyRow(dealertrack: TransactionSummary,fw=false): MergedFloorplanRow {
   return {
     ...emptyMergedRow("dealertrack_only"),
-    dealertrack_account_amount_cents: dealertrackAccountCents(dealertrack),
+    ...(fw ? fwMetadata(null,dealertrack,2):{}),
+    ...(dealertrack.source_identity?.operator_confirmed_vin ? {confirmed_dealertrack_vin:dealertrack.vin!}:{}),
+    dealertrack_account_amount_cents: fw ? dealertrack.amount_cents : dealertrackAccountCents(dealertrack),
     dealertrack_vin6: dealertrackVin6(dealertrack),
     dealertrack_description: dealertrack.description ?? "",
     dealertrack_control: dealertrackControl(dealertrack),
@@ -316,6 +331,11 @@ function compareTieBreakers(
   right: MergedFloorplanRow,
   storeConfig: StoreWorkflowConfig,
 ): number {
+  if(storeConfig.storeKey==="fw") {
+    if(!left.ordering || !right.ordering)throw new Error("Fort Worth source ordering identity is unavailable.");
+    for(let i=0;i<left.ordering.length;i++){const a=left.ordering[i],b=right.ordering[i];if(a!==b)return typeof a==="string"&&typeof b==="string"?compareCodePoints(a,b):a<b?-1:1;}
+    return 0;
+  }
   if (storeConfig.dtOnlyPlacementRule === "interleave_by_amount") {
     return (
       left.dealertrack_vin6.localeCompare(right.dealertrack_vin6) ||
@@ -457,6 +477,7 @@ function boaVin6(transaction: TransactionSummary): string {
 }
 
 function dealertrackVin6(transaction: TransactionSummary): string {
+  if(transaction.source_identity?.operator_confirmed_vin)return computeVin6(transaction.vin)??"";
   return extractVin6FromDescription(transaction.description) ?? computeVin6(transaction.vin) ?? "";
 }
 
@@ -583,4 +604,23 @@ function escapeHtml(value: string | null | undefined): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function fwMetadata(boa:TransactionSummary|null,dt:TransactionSummary|null,rank:number):Pick<MergedFloorplanRow,"ordering"|"review"> {
+ function ordinal(t:TransactionSummary|null):number {
+  if(!t)return -1;
+  const row=t.source_identity?.source_row_number;
+  if(!Number.isInteger(row)||Number(row)<=0)throw new Error("Fort Worth source ordering identity is unavailable.");
+  return Number(row);
+ }
+ const full=(t:TransactionSummary|null)=>/^[A-HJ-NPR-Z0-9]{17}$/.test(cleanVin(t?.vin))?cleanVin(t?.vin):"";
+ const components=dt?.source_identity?.offsetting_components;
+ if(components && (rank!==2 || dt?.amount_cents!==0 || Object.values(components).some(v=>!Number.isSafeInteger(v)) || Object.values(components).reduce((a,b)=>a+b,0)!==0))throw new Error("Invalid offset review identity.");
+ return {ordering:[full(boa),full(dt),dt?dealertrackControl(dt):"",rank,ordinal(boa),ordinal(dt)],...(components?{review:{label:"Offsetting account balances—review." as const,components:{...components}}}:{})};
+}
+
+function compareCodePoints(left:string,right:string):number {
+ const a=Array.from(left),b=Array.from(right);
+ for(let index=0;index<Math.min(a.length,b.length);index++){const delta=a[index].codePointAt(0)!-b[index].codePointAt(0)!;if(delta)return delta;}
+ return a.length-b.length;
 }

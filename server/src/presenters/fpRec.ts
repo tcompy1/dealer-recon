@@ -10,12 +10,14 @@ import {
   type RooftopProfile,
   type StoreWorkflowConfig,
 } from "../config/storeWorkflowConfig.js";
-import type { MergedFloorplanWorkbook, MergedFloorplanRow } from "./mergedFloorplan.js";
+import { buildMergedFloorplanWorkbookFromReconciliationDetail, type MergedFloorplanWorkbook, type MergedFloorplanRow } from "./mergedFloorplan.js";
 import { neutralizeSpreadsheetText } from "../spreadsheetText.js";
 
 export type HurstFpRecRowClassification = "matched" | "boa_only" | "dealertrack_only";
 
 export type HurstFpRecClerkRow = {
+  confirmed_dealertrack_vin?:string;
+  review?:MergedFloorplanRow["review"];
   hurst_description: string;
   boa_vin: string;
   boa_vin6: string;
@@ -144,6 +146,7 @@ export function buildFpRecWorkbook(
   detail: ReconciliationRunDetail,
   profile: RooftopProfile,
 ): FpRecWorkbook {
+  if(profile.profileId==="fw-v1")return buildFortWorthFpRecWorkbook(buildMergedFloorplanWorkbookFromReconciliationDetail(detail,profile),profile);
   const rows = sortClerkRows([
     ...detail.match_groups.flatMap(buildRowsFromMatchGroup),
     ...detail.exceptions.flatMap(buildRowsFromException),
@@ -169,7 +172,7 @@ export function buildFpRecWorkbookFromMergedFloorplan(
     periodDate: mergedWorkbook.period_date,
     rows: mergedWorkbook.rows.map(clerkRowFromMergedRow),
     policy: FP_REC_PRESENTER_POLICIES[profile.presenterId],
-    accountingMonth: accountingMonthFromPeriodDate(mergedWorkbook.period_date),
+    accountingMonth: profile.profileId==="fw-v1" ? mergedWorkbook.accounting_month??null : accountingMonthFromPeriodDate(mergedWorkbook.period_date),
   });
 }
 
@@ -234,7 +237,7 @@ function buildWorkbookFromClerkRows(input: {
     },
     schedule_not_on_statement: scheduleSection,
     statement_not_on_gl: statementSection,
-    ...(input.policy.presenterId === "acura-fp-rec-v1"
+    ...(input.policy.presenterId === "acura-fp-rec-v1" || input.policy.presenterId === "fw-fp-rec-v1"
       ? {
         presentation: {
           presenter_id: input.policy.presenterId,
@@ -248,6 +251,8 @@ function buildWorkbookFromClerkRows(input: {
 
 function clerkRowFromMergedRow(row: MergedFloorplanRow): HurstFpRecClerkRow {
   return {
+    ...(row.confirmed_dealertrack_vin?{confirmed_dealertrack_vin:row.confirmed_dealertrack_vin}:{}),
+    ...(row.review?{review:row.review}:{}),
     hurst_description: row.store_description,
     boa_vin: row.serial_no_vin,
     boa_vin6: row.boa_vin6,
@@ -434,6 +439,7 @@ function buildMatchedRow(
     dt_2100_cents: dealertrackAccountCents(dealertrack),
     dt_vin6: dealertrackVin6(dealertrack),
     dt_description: dealertrack.description ?? "",
+    ...(dealertrack.source_identity?.operator_confirmed_vin?{confirmed_dealertrack_vin:dealertrack.vin!}:{}),
     dt_control: dealertrackControl(dealertrack),
   };
 }
@@ -454,6 +460,7 @@ function buildDealertrackOnlyRow(dealertrack: TransactionSummary): HurstFpRecCle
     dt_2100_cents: dealertrackAccountCents(dealertrack),
     dt_vin6: dealertrackVin6(dealertrack),
     dt_description: dealertrack.description ?? "",
+    ...(dealertrack.source_identity?.operator_confirmed_vin?{confirmed_dealertrack_vin:dealertrack.vin!}:{}),
     dt_control: dealertrackControl(dealertrack),
   };
 }
@@ -720,6 +727,7 @@ function boaVin6(transaction: TransactionSummary): string {
 }
 
 function dealertrackVin6(transaction: TransactionSummary): string {
+  if(transaction.source_identity?.operator_confirmed_vin)return computeVin6(transaction.vin)??"";
   const descriptionVin6 = finalVin6FromDescription(transaction.description);
   return descriptionVin6 ?? computeVin6(transaction.vin) ?? "";
 }
@@ -763,7 +771,7 @@ function legacyStatementRow(row: HurstFpRecClerkRow): HurstFpRecRow {
 function legacyScheduleRow(row: HurstFpRecClerkRow): HurstFpRecRow {
   const amountCents = row.dt_2100_cents ?? 0;
   return {
-    unit_reference: scheduleUnitReference(row),
+    unit_reference: scheduleUnitReference(row)+(row.review ? `\n${row.review.label}\n2100: ${formatCents(row.review.components["2100"])}; 2101: ${formatCents(row.review.components["2101"])}; 2101S: ${formatCents(row.review.components["2101S"])}` : ""),
     amount: formatCents(amountCents),
     amount_cents: amountCents,
     gl_floored_note: "",
@@ -772,7 +780,7 @@ function legacyScheduleRow(row: HurstFpRecClerkRow): HurstFpRecRow {
 }
 
 function scheduleUnitReference(row: HurstFpRecClerkRow): string {
-  const vinTail = vinTailForWorkpaper(row.dt_description, row.dt_vin6);
+  const vinTail = vinTailForWorkpaper(row.confirmed_dealertrack_vin??row.dt_description, row.dt_vin6);
   return [row.dt_control, vinTail].filter(Boolean).join(" - ") || row.dt_description || row.dt_vin6;
 }
 
@@ -886,4 +894,9 @@ function escapeHtml(value: string | null | undefined): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+export function buildFortWorthFpRecWorkbook(merged:MergedFloorplanWorkbook,profile:RooftopProfile):FpRecWorkbook {
+ if(profile.profileId!=="fw-v1" || merged.store_config.storeKey!=="fw" || !merged.accounting_month)throw new Error("Fort Worth profile required.");
+ return buildFpRecWorkbookFromMergedFloorplan(merged,profile);
 }

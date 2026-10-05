@@ -1,3 +1,4 @@
+import {parseAccountingMonth} from "../domain/accountingMonth.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -27,6 +28,7 @@ import {
 } from "./fpRec.js";
 import {
   buildMergedFloorplanWorkbook,
+  buildMergedFloorplanWorkbookFromReconciliationDetail,
   type MergedFloorplanWorkbook,
   type MergedFloorplanRow,
 } from "./mergedFloorplan.js";
@@ -116,6 +118,7 @@ function sourceFile(source_file_id: number, source_type: SourceType) {
 
 function transaction(overrides: Partial<TransactionSummary> = {}): TransactionSummary {
   return {
+    source_identity:{source_row_number:2,vin_revision:0},
     id: 1,
     dealership_id: 1,
     source_type: "boa",
@@ -566,7 +569,7 @@ function mergedWorkbookForStore(storeKey: StoreKey): MergedFloorplanWorkbook {
   const boaOnlyVin = "5NPE24AF7KH700001";
   const dealertrackOnlyVin = "3FA6P0H75HR200002";
 
-  return buildMergedFloorplanWorkbook({
+  const input={
     storeConfig: config,
     storeName: config.displayName,
     periodDate: "02-28-26",
@@ -614,7 +617,12 @@ function mergedWorkbookForStore(storeKey: StoreKey): MergedFloorplanWorkbook {
         vin: dealertrackOnlyVin,
       }),
     ],
-  });
+  };
+  if(storeKey!=="fw")return buildMergedFloorplanWorkbook(input);
+  return buildMergedFloorplanWorkbookFromReconciliationDetail(buildDetail({accounting_month:parseAccountingMonth("2026-02")!,store_name:config.displayName,
+    match_groups:[{...matchGroup(1500000,-1500000),transactions:[{side:"boa",source_type:"boa",transaction:input.boaRecords[0]},{side:"dealertrack",source_type:"dealertrack",transaction:input.dealertrackRecords[0]}]}],
+    exceptions:[...input.boaRecords.slice(1),...input.dealertrackRecords.slice(1)].map(t=>exception({source_type:t.source_type,transaction:t})),
+  }),config);
 }
 
 describe("Hurst FP Rec draft accounting workpaper contract", () => {
@@ -1042,4 +1050,11 @@ describe("store-configured FP Rec from merged floorplan workbook", () => {
       mergedWorkbook.dealertrack_total_amount_cents,
     );
   });
+});
+test.each(["hurst","acura"] as const)("%s saved corrected full VIN controls workpaper tail; unmarked rendering remains historical",key=>{
+ const t=transaction({source_type:"dealertrack",vin:"1ZZAA11A1ZA100002",description:"original 1ZZAA11A1ZA100001",source_identity:{source_row_number:2,vin_revision:1,operator_confirmed_vin:true}});
+ const d=buildDetail({exceptions:[exception({source_type:"dealertrack",transaction:t})]});
+ expect(buildFpRecWorkbook(d,ROOFTOP_PROFILES[key]).schedule_not_on_statement.rows[0].unit_reference).toContain("ZA100002");
+ t.source_identity=undefined;
+ expect(buildFpRecWorkbook(d,ROOFTOP_PROFILES[key]).schedule_not_on_statement.rows[0].unit_reference).toContain("ZA100001");
 });
