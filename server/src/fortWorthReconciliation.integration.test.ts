@@ -1,0 +1,73 @@
+import {expect,test,vi} from "vitest";
+import request from "supertest";
+import {createApp} from "./app.js";
+import {MemoryTransactionRepository,type TransactionRepository} from "./repositories/transactionRepository.js";
+import {ROOFTOP_PROFILES} from "./config/storeWorkflowConfig.js";
+import {FW_SANITIZED_FIXTURE_PATHS,readFwSyntheticFixture} from "./testFixtures/fw/index.js";
+import * as writers from "./presenters/fortWorthXlsx.js";
+import {XLSX_MIME} from "./services/floorplanExport.js";
+async function workflow(repository:TransactionRepository=new MemoryTransactionRepository(),key:"fw"|"hurst"|"acura"="fw"){
+ const app=createApp(repository,[],1,async()=>{}, {nodeEnv:"test",allowDevDealershipFallback:true});
+ const store=await repository.createDealershipStore(1,{name:ROOFTOP_PROFILES[key].displayName});
+ const files:number[]=[];
+ for(const source of ["boa","dealertrack"] as const){const response=await request(app).post("/upload").field("store_id",String(store.id)).field("source_type",source).field("accounting_month","2026-04").attach("file",Buffer.from(source==="dealertrack"&&key!=="fw" ? `Control,Description,${ROOFTOP_PROFILES[key].dealertrackAccountColumn}\nT1,Invented vehicle 1ZZAA11A1ZA100001,-125\nT2,Invented vehicle 1ZZAA11A1ZA100002,-230\n` : readFwSyntheticFixture(FW_SANITIZED_FIXTURE_PATHS.core[source])),`${source}-2026-04.csv`);expect(response.status).toBe(200);files.push(response.body.source_file_id);}
+ const run=()=>request(app).post("/reconcile").send({dealership_store_id:store.id,boa_source_file_id:files[0],dealertrack_source_file_id:files[1],accounting_month:"2026-04"});
+ return {app,repository,run};
+}
+async function enabled(assertion:()=>Promise<void>){const prior=ROOFTOP_PROFILES.fw.enabled;ROOFTOP_PROFILES.fw.enabled=true;try{await assertion();}finally{ROOFTOP_PROFILES.fw.enabled=prior;}}
+test("FW stores six artifacts, native binary selectors and JSON retain exact outcomes",async()=>enabled(async()=>{
+ const {app,repository,run}=await workflow();const response=await run();expect(response.status).toBe(200);const id=response.body.reconciliation_run_id;
+ expect(response.body.matched_count).toBe(2);const artifacts=await repository.listReconciliationArtifacts(1,id);expect(artifacts).toHaveLength(6);
+ for(const [route,type] of [["merged-floorplan","MERGED_FLOORPLAN"],["fp-rec","FP_REC"]] as const){
+  const artifact=await repository.findReconciliationArtifact(1,id,type);expect(artifact?.content_type).toBe(XLSX_MIME);expect(artifact?.content.subarray(0,2).toString()).toBe("PK");
+  for(const format of [undefined,"xls","xlsx"]){const res=await request(app).get(`/reconciliation-runs/${id}/${route}`).buffer(true).parse(binary).query(format?{format}:{});expect(res.status).toBe(200);expect(res.headers["content-type"]).toContain(XLSX_MIME);expect((res.body as Buffer).equals(artifact!.content)).toBe(true);}
+  expect((await request(app).get(`/reconciliation-runs/${id}/${route}`).query({format:"json"})).body.rows).toHaveLength(2);
+ }
+}));
+test("second writer failure leaves no partial artifact batch and prior run stays downloadable",async()=>enabled(async()=>{
+ const {app,repository,run}=await workflow();const first=await run();expect(first.status).toBe(200);const original=await repository.findReconciliationArtifact(1,first.body.reconciliation_run_id,"FP_REC");
+ const spy=vi.spyOn(writers,"writeFortWorthFpRecXlsx").mockRejectedValue(new Error("synthetic serialization failure"));
+ try {expect((await run()).status).toBe(500);}finally{spy.mockRestore();}
+ const runs=await repository.listReconciliationRuns(1);const failed=runs.find(r=>r.reconciliation_run_id!==first.body.reconciliation_run_id)!;expect(failed.status).toBe("artifact_failed");expect(await repository.listReconciliationArtifacts(1,failed.reconciliation_run_id)).toEqual([]);
+ const old=await request(app).get(`/artifacts/${original!.id}/download`).buffer(true).parse(binary);expect(old.status).toBe(200);expect((old.body as Buffer).equals(original!.content)).toBe(true);
+}));
+
+function binary(response:request.Response,callback:(error:Error|null,body:Buffer)=>void){const chunks:Buffer[]=[];response.on("data",chunk=>chunks.push(Buffer.from(chunk)));response.on("end",()=>callback(null,Buffer.concat(chunks)));response.on("error",error=>callback(error,Buffer.alloc(0)));}
+test("later correction changes rerun only; stored and regenerated original workbook identities agree",async()=>enabled(async()=>{
+ const {app,repository,run}=await workflow();const first=await run();expect(first.status).toBe(200);const id=first.body.reconciliation_run_id;
+ const old=await repository.findReconciliationArtifact(1,id,"MERGED_FLOORPLAN");const transactions=await repository.listBySource(1,"dealertrack");
+ const corrected=await request(app).post(`/transactions/${transactions[0].id}/vin-enrichment`).send({vin:"1ZZAA11A1ZA100003",expected_revision:0,confirmed:true});expect(corrected.status).toBe(200);
+ expect((await repository.getTransactionById(1,transactions[0].id))?.description).toBe(transactions[0].description);
+ const rerun=await run();expect(rerun.status).toBe(200);expect(rerun.body.matched_count).toBe(1);
+ const originalDetail=await request(app).get(`/reconciliation-runs/${id}`);expect(originalDetail.status).toBe(200);expect(originalDetail.body.matched_count).toBe(2);
+ const stored=await request(app).get(`/reconciliation-runs/${id}/merged-floorplan`).buffer(true).parse(binary);expect((stored.body as Buffer).equals(old!.content)).toBe(true);
+ const regenerated=await request(app).get(`/reconciliation-runs/${id}/merged-floorplan`).query({store_key:"fw",format:"xlsx"}).buffer(true).parse(binary);expect(regenerated.status).toBe(200);
+ const {default:ExcelJS}=await import("exceljs");const a=new ExcelJS.Workbook(),b=new ExcelJS.Workbook();await a.xlsx.load(old!.content as unknown as import("exceljs").Buffer);await b.xlsx.load(regenerated.body as import("exceljs").Buffer);expect(b.worksheets[0].getSheetValues()).toEqual(a.worksheets[0].getSheetValues());
+ const override=await request(app).get(`/reconciliation-runs/${id}/merged-floorplan`).query({store_key:"acura",format:"xlsx"});expect(override.status).toBe(422);
+}));
+test("batch persistence failure leaves failed run empty and old artifact intact",async()=>enabled(async()=>{
+ const {repository,run}=await workflow();const first=await run();const old=await repository.findReconciliationArtifact(1,first.body.reconciliation_run_id,"FP_REC");
+ const spy=vi.spyOn(repository,"createReconciliationArtifactBatch").mockRejectedValueOnce(new Error("synthetic batch failure"));
+ try{expect((await run()).status).toBe(500);}finally{spy.mockRestore();}
+ const failed=(await repository.listReconciliationRuns(1)).find(r=>r.reconciliation_run_id!==first.body.reconciliation_run_id)!;
+ expect(failed.status).toBe("artifact_failed");expect(await repository.listReconciliationArtifacts(1,failed.reconciliation_run_id)).toEqual([]);expect((await repository.findReconciliationArtifact(1,first.body.reconciliation_run_id,"FP_REC"))?.content.equals(old!.content)).toBe(true);
+}));
+
+test.each(["hurst","acura"] as const)("%s rejects unsupported native selector and retains legacy stored MIME",async key=>{
+ const {app,run}=await workflow(new MemoryTransactionRepository(),key);const response=await run();expect(response.status).toBe(200);
+ for(const route of ["merged-floorplan","fp-rec"]){const url=`/reconciliation-runs/${response.body.reconciliation_run_id}/${route}`;expect((await request(app).get(url).query({format:"xlsx"})).status).toBe(422);const legacy=await request(app).get(url);expect(legacy.status).toBe(200);expect(legacy.headers["content-type"]).toContain("application/vnd.ms-excel");}
+});
+test("absent stored FP REC regenerates saved identity after later correction",async()=>enabled(async()=>{
+ const {app,repository,run}=await workflow();const first=await run();const id=first.body.reconciliation_run_id;const old=await repository.findReconciliationArtifact(1,id,"FP_REC");
+ const t=(await repository.listBySource(1,"boa"))[0];expect((await request(app).post(`/transactions/${t.id}/vin-enrichment`).send({vin:"1ZZAA11A1ZA100004",expected_revision:0,confirmed:true})).status).toBe(200);
+ const spy=vi.spyOn(repository,"findReconciliationArtifact").mockResolvedValueOnce(null);let response;try{response=await request(app).get(`/reconciliation-runs/${id}/fp-rec`).buffer(true).parse(binary);}finally{spy.mockRestore();}expect(response.status).toBe(200);
+ const {default:ExcelJS}=await import("exceljs");const a=new ExcelJS.Workbook(),b=new ExcelJS.Workbook();await a.xlsx.load(old!.content as unknown as import("exceljs").Buffer);await b.xlsx.load(response.body as import("exceljs").Buffer);expect(b.worksheets[0].getSheetValues()).toEqual(a.worksheets[0].getSheetValues());
+}));
+test("legacy stored FW xls is served unchanged even with unavailable profile and no snapshot",async()=>enabled(async()=>{
+ const {app,repository,run}=await workflow();const first=await run();const prior=await repository.getReconciliationRunMetadata(1,first.body.reconciliation_run_id);
+ const old=await repository.createReconciliationRun({dealership_id:1,dealership_store_id:prior!.dealership_store_id,boa_source_file_id:prior!.boa_source_file_id,dealertrack_source_file_id:prior!.dealertrack_source_file_id,accounting_month:prior!.accounting_month,rooftop_profile_id:"fw-v0",rooftop_profile_version:"0",status:"artifact_pending",result:first.body});
+ const bytes=Buffer.from("<table><tr><td>invented legacy file</td></tr></table>");
+ await repository.createReconciliationArtifactBatch(1,[{reconciliation_run_id:old.id,store_id:prior!.dealership_store_id,accounting_month:prior!.accounting_month!,uploaded_by:null,artifact_type:"FP_REC",filename:"legacy-fw.xls",content_type:"application/vnd.ms-excel",content:bytes}]);
+ await repository.updateReconciliationRunStatus(1,old.id,"completed");
+ for(const format of ["xls","xlsx"]){const response=await request(app).get(`/reconciliation-runs/${old.id}/fp-rec`).query({format}).buffer(true).parse(binary);expect(response.status).toBe(200);expect(response.headers["content-disposition"]).toContain("legacy-fw.xls");expect(response.headers["content-type"]).toContain("application/vnd.ms-excel");expect((response.body as Buffer).equals(bytes)).toBe(true);}
+}));

@@ -384,7 +384,7 @@ async function runAcuraVerticalSlice(
         expect(profileRejectedRun.status).toBe(422);
         expect(profileRejectedRun.body.error).toMatchObject({
           code: "ROOFTOP_PROFILE_UNSUPPORTED",
-          details: { rooftop_profile_id: "fw-v0" },
+          details: { rooftop_profile_id: "fw-v1" },
         });
         expect(await countRuns(pool, acuraStore.id)).toBe(noRunCount);
         expect(await countRuns(pool, disabledStore.id)).toBe(0);

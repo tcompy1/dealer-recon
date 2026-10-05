@@ -14,12 +14,7 @@ import {
   ROOFTOP_PROFILES,
   type RooftopProfile,
 } from "../config/storeWorkflowConfig.js";
-import { buildMergedFloorplanArtifact } from "./mergedFloorplanExport.js";
-import {
-  buildFpRecWorkbook,
-  toFpRecFilename,
-  toFpRecXlsHtml,
-} from "../presenters/fpRec.js";
+import {buildFloorplanExports} from "./floorplanExport.js";
 
 type CsvScalar = string | number | null;
 type CsvCell = CsvScalar | { value: CsvScalar; preservePlainNumericText?: boolean };
@@ -93,23 +88,21 @@ export async function persistReconciliationRunArtifacts({
     ),
   ];
 
-  const mergedArtifact = buildMergedFloorplanArtifact(detail, persistedProfile);
-  const fpRecWorkbook = buildFpRecWorkbook(detail, persistedProfile);
-  const fpRecHtml = toFpRecXlsHtml(fpRecWorkbook);
+  const {merged:mergedArtifact,fpRec:fpRecArtifact}=await buildFloorplanExports(detail,persistedProfile);
   artifacts.push(
     {
       ...base,
       artifact_type: "MERGED_FLOORPLAN",
       filename: mergedArtifact.filename,
       content_type: mergedArtifact.contentType,
-      content: Buffer.from(mergedArtifact.html, "utf8"),
+      content: mergedArtifact.content,
     },
     {
       ...base,
       artifact_type: "FP_REC",
-      filename: toFpRecFilename(fpRecWorkbook),
-      content_type: "application/vnd.ms-excel",
-      content: Buffer.from(fpRecHtml, "utf8"),
+      filename: fpRecArtifact.filename,
+      content_type: fpRecArtifact.contentType,
+      content: fpRecArtifact.content,
     },
   );
 

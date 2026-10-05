@@ -64,8 +64,6 @@ import type {
 import { toExceptionsCsv, toMonthEndReportCsv } from "./presenters/csv.js";
 import {
   buildFpRecWorkbook,
-  toFpRecFilename,
-  toFpRecXlsHtml,
 } from "./presenters/fpRec.js";
 import {
   getRooftopProfile,
@@ -82,7 +80,8 @@ import {
   type RooftopFailureDetails,
   type RooftopValidationErrorCode,
 } from "./services/rooftopValidation.js";
-import { buildMergedFloorplanArtifact } from "./services/mergedFloorplanExport.js";
+import {buildFloorplanExports} from "./services/floorplanExport.js";
+import {buildMergedFloorplanWorkbookFromReconciliationDetail} from "./presenters/mergedFloorplan.js";
 import { applyCarryForwardToDetail } from "./services/exceptionCarryForward.js";
 import {
   parseExceptionReviewUpdate,
@@ -1603,6 +1602,7 @@ export function createApp(
       );
     }
     const format = typeof request.query.format === "string" ? request.query.format : "xls";
+    validateExportFormat(format,metadata.rooftop_profile_id);
     if (format !== "json" && !storeKeyOverrideProvided) {
       const storedArtifact = await repository.findReconciliationArtifact(
         getRequestDealershipId(response),
@@ -1619,11 +1619,11 @@ export function createApp(
     const storeConfig = resolveRunRooftopProfile(metadata, storeKey);
     const detail=await repository.getReconciliationRunDetail(getRequestDealershipId(response),reconciliationRunId);
     if(!detail) throw new NotFoundError("Reconciliation run");
-    const artifact = buildMergedFloorplanArtifact(detail, storeConfig);
     if (format === "json") {
-      response.json(artifact.workbook);
+      response.json(buildMergedFloorplanWorkbookFromReconciliationDetail(detail,storeConfig));
       return;
     }
+    const {merged:artifact}=await buildFloorplanExports(detail,storeConfig);
 
     await auditGeneratedArtifactDownload(response, {
       reconciliationRunId,
@@ -1632,7 +1632,7 @@ export function createApp(
       accountingMonth: metadata.accounting_month,
       filename: artifact.filename,
       contentType: artifact.contentType,
-      fileSize: Buffer.byteLength(artifact.html, "utf8"),
+      fileSize: artifact.content.length,
     });
     response
       .status(200)
@@ -1641,7 +1641,7 @@ export function createApp(
         "Content-Disposition",
         `attachment; filename="${artifact.filename}"`,
       )
-      .send(artifact.html);
+      .send(artifact.content);
   }));
 
   const fpRecExportHandler = asyncHandler(async (request, response) => {
@@ -1677,6 +1677,7 @@ export function createApp(
       );
     }
     const format = typeof request.query.format === "string" ? request.query.format : "xls";
+    validateExportFormat(format,metadata.rooftop_profile_id);
     if (format !== "json" && !storeKeyOverrideProvided) {
       const storedArtifact = await repository.findReconciliationArtifact(
         getRequestDealershipId(response),
@@ -1693,31 +1694,29 @@ export function createApp(
     const rooftopProfile = resolveRunRooftopProfile(metadata, storeKey);
     const detail=await repository.getReconciliationRunDetail(getRequestDealershipId(response),reconciliationRunId);
     if(!detail) throw new NotFoundError("Reconciliation run");
-    const workbook = buildFpRecWorkbook(detail, rooftopProfile);
     if (format === "json") {
-      response.json(workbook);
+      response.json(buildFpRecWorkbook(detail,rooftopProfile));
       return;
     }
-    const fpRecHtml = toFpRecXlsHtml(workbook);
-    const fpRecFilename = toFpRecFilename(workbook);
+    const {fpRec:artifact}=await buildFloorplanExports(detail,rooftopProfile);
 
     await auditGeneratedArtifactDownload(response, {
       reconciliationRunId,
       artifactType: "FP_REC",
       storeId: metadata.dealership_store_id,
       accountingMonth: metadata.accounting_month,
-      filename: fpRecFilename,
-      contentType: "application/vnd.ms-excel",
-      fileSize: Buffer.byteLength(fpRecHtml, "utf8"),
+      filename: artifact.filename,
+      contentType: artifact.contentType,
+      fileSize: artifact.content.length,
     });
     response
       .status(200)
-      .type("application/vnd.ms-excel")
+      .type(artifact.contentType)
       .setHeader(
         "Content-Disposition",
-        `attachment; filename="${fpRecFilename}"`,
+        `attachment; filename="${artifact.filename}"`,
       )
-      .send(fpRecHtml);
+      .send(artifact.content);
   });
 
   app.get("/reconciliation-runs/:id/fp-rec", fpRecExportHandler);
@@ -2514,4 +2513,8 @@ function routeNonFloorplanUpload(
       ? "OOXML native parser not yet implemented; resubmit as CSV or SpreadsheetML export."
       : `Detected format ${detection.format} cannot be used for ${sourceType} uploads.`,
   };
+}
+
+function validateExportFormat(format:string,profile:string|null):void {
+ if(!["json","xls","xlsx"].includes(format) || (format==="xlsx" && !profile?.startsWith("fw-")))throw new ValidationError("This rooftop supports JSON and its original spreadsheet format. Native XLSX is available for Fort Worth only.","UNSUPPORTED_EXPORT_FORMAT");
 }
