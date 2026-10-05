@@ -24,7 +24,7 @@ This document separates universal workflow behavior from store-specific configur
 | `docs/demo/BOA-workflow.md` | Captures the manual BOA cleaning workflow. |
 | `docs/demo/dealertrack-workflow.md` | Captures the manual Dealertrack cleaning workflow, including Hurst `2100` handling. |
 | Acura CSV evidence from Tara | Confirms Acura raw BOA shape, raw Dealertrack columns, merged workbook columns, account `324`, and totals rows. |
-| `docs/discovery/floorplan/FW/` | Confirms FW raw BOA shape, multi-column Dealertrack export, accepted merged workbook columns/totals, and FP REC workbook assumptions. |
+| `docs/discovery/hiley-artifacts/fw/` (protected, read-only; ordinary tests use `server/src/testFixtures/fw/`) | Confirms FW raw BOA shape, multi-column Dealertrack export, accepted merged workbook columns/totals, and FP REC workbook assumptions. |
 
 ## Store Workflow Comparison
 

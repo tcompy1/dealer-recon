@@ -1,8 +1,9 @@
 import { readFileSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parse } from "csv-parse/sync";
+import { FW_SANITIZED_FIXTURE_PATHS, loadFwSanitizedContract, readFwSyntheticFixture } from "../testFixtures/fw/index.js";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -11,7 +12,7 @@ import {
 } from "../config/storeWorkflowConfig.js";
 import { type AccountingMonth, parseAccountingMonth } from "../domain/accountingMonth.js";
 import { parseAmountToCents } from "../domain/money.js";
-import type { NewTransaction, TransactionSummary } from "../domain/types.js";
+import type { NewTransaction, TransactionSummary, ReconciliationRunDetail, SourceType } from "../domain/types.js";
 import { parseCsvToTable } from "../services/parsers/csvTableParser.js";
 import { preprocessBoa } from "../services/preprocessing/boaPreprocessor.js";
 import { preprocessDealertrack } from "../services/preprocessing/dealertrackPreprocessor.js";
@@ -21,6 +22,7 @@ import {
 } from "../testFixtures/acura/index.js";
 import {
   buildMergedFloorplanWorkbook,
+  buildMergedFloorplanWorkbookFromReconciliationDetail,
   toMergedFloorplanFilename,
   toMergedFloorplanXlsHtml,
   type MergedFloorplanWorkbook,
@@ -58,23 +60,7 @@ const FW_HEADERS = [
 ];
 
 const presenterDir = dirname(fileURLToPath(import.meta.url));
-const fwFixtureDir = join(presenterDir, "__fixtures__", "fw");
 
-type AcuraMergedFixtureCase = {
-  month: "FEB" | "MARCH" | "APRIL";
-  mergedFilename: string;
-  rawBoaFilename: string;
-  rawDealertrackFilename: string;
-  expected: {
-    detailRows: number;
-    matched: number;
-    boaOnly: number;
-    dealertrackOnly: number;
-    amountMismatchSplitRows: number;
-    boaTotalCents: number;
-    dealertrackTotalCents: number;
-  };
-};
 
 type AcuraMergedFixtureRow = {
   storeDescription: string;
@@ -114,53 +100,13 @@ test("uses only sanitized Acura fixtures", () => {
   }
 });
 
-const FW_MERGED_FIXTURE_CASES: AcuraMergedFixtureCase[] = [
-  {
-    month: "FEB",
-    mergedFilename: "FW FEB MERGED.csv",
-    rawBoaFilename: "FW BOA FEB.csv",
-    rawDealertrackFilename: "FW DT FEB.csv",
-    expected: {
-      detailRows: 688,
-      matched: 620,
-      boaOnly: 53,
-      dealertrackOnly: 15,
-      amountMismatchSplitRows: 0,
-      boaTotalCents: 3_449_894_154,
-      dealertrackTotalCents: -3_275_177_349,
-    },
-  },
-  {
-    month: "MARCH",
-    mergedFilename: "FW MARCH MERGED.csv",
-    rawBoaFilename: "FW BOA MARCH.csv",
-    rawDealertrackFilename: "FW DT MARCH.csv",
-    expected: {
-      detailRows: 825,
-      matched: 749,
-      boaOnly: 63,
-      dealertrackOnly: 13,
-      amountMismatchSplitRows: 22,
-      boaTotalCents: 4_113_446_598,
-      dealertrackTotalCents: -3_776_546_994,
-    },
-  },
-  {
-    month: "APRIL",
-    mergedFilename: "FW APRIL MERGED.csv",
-    rawBoaFilename: "FW BOA APRIL.csv",
-    rawDealertrackFilename: "FW DT APRIL.csv",
-    expected: {
-      detailRows: 832,
-      matched: 687,
-      boaOnly: 107,
-      dealertrackOnly: 38,
-      amountMismatchSplitRows: 24,
-      boaTotalCents: 4_034_820_196,
-      dealertrackTotalCents: -3_599_702_841,
-    },
-  },
-];
+const FW_MERGED_FIXTURE_CASES = (["core", "mismatch", "enrichment"] as const).map((name) => {
+  const c = loadFwSanitizedContract().cases[name];
+  const paths = FW_SANITIZED_FIXTURE_PATHS[name];
+  return { name, month: "APRIL", mergedFilename: paths.merged, rawBoaFilename: paths.boa, rawDealertrackFilename: paths.dealertrack,
+    expected: { detailRows:c.matched+c.boaOnly+c.dealertrackOnly, matched:c.matched, boaOnly:c.boaOnly, dealertrackOnly:c.dealertrackOnly,
+      amountMismatchSplitRows:c.boaOnly+c.dealertrackOnly, boaTotalCents:c.boaCents, dealertrackTotalCents:c.dealertrackCents } };
+});
 
 function transaction(overrides: Partial<TransactionSummary> = {}): TransactionSummary {
   return {
@@ -543,7 +489,7 @@ describe("sanitized Acura merged floorplan fixtures", () => {
 
 describe("FW merged floorplan golden fixtures", () => {
   test.each(FW_MERGED_FIXTURE_CASES)(
-    "parses Tara's $month FW merged CSV structure, counts, and totals",
+    "parses invented $month FW merged CSV structure, counts, and totals",
     (fixtureCase) => {
       const fixture = parseFwMergedFixture(fixtureCase.mergedFilename);
 
@@ -568,7 +514,7 @@ describe("FW merged floorplan golden fixtures", () => {
 
 describe("FW raw preprocessing to merged floorplan", () => {
   test.each(FW_MERGED_FIXTURE_CASES)(
-    "preprocesses raw FW $month BOA/DT files into presenter inputs matching Tara's merged CSV",
+    "preprocesses raw FW $month BOA/DT files into presenter inputs matching independently invented expectations",
     (fixtureCase) => {
       const expectedFixture = parseFwMergedFixture(fixtureCase.mergedFilename);
       const { boaResult, dealertrackResult, boaRecords, dealertrackRecords } =
@@ -590,15 +536,25 @@ describe("FW raw preprocessing to merged floorplan", () => {
         ),
       ).toBe(true);
 
-      const workbook = buildMergedFloorplanWorkbook({
-        storeConfig: STORE_WORKFLOW_CONFIGS.fw,
-        storeName: "Hiley Cars Fort Worth",
-        periodDate: fixtureCase.month,
-        boaRecords,
-        dealertrackRecords,
-      });
+      // Explicit synthetic confirmed state is assertion-only, never inferred by runtime.
+      if (fixtureCase.name === "enrichment") {
+        expect(dealertrackRecords[0].vin).toBeNull();
+        const unresolved = fwDetail(boaRecords, dealertrackRecords, []);
+        expect(countWorkbookRows(buildMergedFloorplanWorkbookFromReconciliationDetail(unresolved, STORE_WORKFLOW_CONFIGS.fw)))
+          .toEqual({matched:0, boaOnly:1, dealertrackOnly:1});
+        dealertrackRecords[0] = {...dealertrackRecords[0], vin:"1ZZAA11A1ZA100001"};
+      }
+      const explicitPairs = fixtureCase.name === "core"
+        ? [[0,dealertrackRecords.findIndex(t=>t.stock_number === "T1")],[1,dealertrackRecords.findIndex(t=>t.stock_number === "T2")]]
+        : [[0,dealertrackRecords.findIndex(t=>t.stock_number === "T1")]];
+      const workbook = buildMergedFloorplanWorkbookFromReconciliationDetail(
+        fwDetail(boaRecords, dealertrackRecords, explicitPairs), STORE_WORKFLOW_CONFIGS.fw,
+      );
 
       expect(workbook.headers).toEqual(FW_HEADERS);
+      const membership = workbook.rows.map(r => JSON.stringify([r.serial_no_vin,r.ending_balance_cents,r.dealertrack_account_amount_cents,r.dealertrack_vin6,r.dealertrack_control,r.dealertrack_description.trim()])).sort();
+      const expectedMembership = expectedFixture.rows.map(r => JSON.stringify([r.serialNoVin,r.endingBalanceCents,r.dealertrackAccountAmountCents,r.dealertrackVin6,r.dealertrackControl,r.dealertrackDescription.trim()])).sort();
+      expect(membership).toEqual(expectedMembership);
       expect(countWorkbookRows(workbook)).toEqual({
         matched: expectedFixture.counts.matched,
         boaOnly: expectedFixture.counts.boaOnly,
@@ -711,7 +667,7 @@ function parseFwMergedFixture(filename: string): AcuraMergedFixture {
   };
 }
 
-function preprocessRawFwFixtures(fixtureCase: AcuraMergedFixtureCase): {
+function preprocessRawFwFixtures(fixtureCase: (typeof FW_MERGED_FIXTURE_CASES)[number]): {
   boaResult: ReturnType<typeof preprocessBoa>;
   dealertrackResult: ReturnType<typeof preprocessDealertrack>;
   boaRecords: TransactionSummary[];
@@ -869,7 +825,7 @@ function hasDealertrackSide(row: AcuraMergedFixtureRow): boolean {
 }
 
 function readFwFixture(_kind: "raw" | "merged", filename: string): string {
-  return readFileSync(join(fwFixtureDir, filename), "utf8");
+  return readFwSyntheticFixture(filename);
 }
 
 function requireParsedAmount(
@@ -899,3 +855,100 @@ function formatAccountingCents(amountCents: number): string {
   const dollarsWithCommas = String(dollars).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return amountCents < 0 ? `(${dollarsWithCommas}.${cents})` : `${dollarsWithCommas}.${cents}`;
 }
+
+function fwEmptyDetail(overrides: Partial<ReconciliationRunDetail> = {}): ReconciliationRunDetail {
+  return {
+    reconciliation_run_id: 42,
+    dealership_id: 1,
+    dealership_store_id: 1,
+    store_name: "Hiley Cars Fort Worth",
+    dealer_group_id: null,
+    dealer_group_name: null,
+    boa_source_file_id: 1,
+    dealertrack_source_file_id: 2,
+    boa_filename: "boa.csv",
+    dealertrack_filename: "dealertrack.csv",
+    matched_count: 0,
+    exception_count: 0,
+    duplicate_count: 0,
+    status: "completed",
+    accounting_month: null,
+    rooftop_profile_id: null,
+    rooftop_profile_version: null,
+    created_at: "2026-05-22T00:00:00.000Z",
+    boa_source_file: fwSourceFile(1, "boa"),
+    dealertrack_source_file: fwSourceFile(2, "dealertrack"),
+    match_groups: [],
+    exceptions: [],
+    ...overrides,
+  };
+}
+
+function fwSourceFile(source_file_id: number, source_type: SourceType) {
+  return {
+    source_file_id,
+    dealership_id: 1,
+    dealership_store_id: 1,
+    store_name: "Hiley Cars Fort Worth",
+    source_type,
+    filename: `${source_type}.csv`,
+    row_count: 0,
+    validation_error_count: 0,
+    accounting_month: null,
+    rooftop_profile_id: null,
+    rooftop_profile_version: null,
+    parser_name: null,
+    parser_version: null,
+    preprocessor_name: null,
+    preprocessor_version: null,
+    preprocessing_metadata: null,
+    created_at: "2026-05-22T00:00:00.000Z",
+  };
+}
+
+function fwException(
+  partial: Partial<ReconciliationRunDetail["exceptions"][number]>,
+): ReconciliationRunDetail["exceptions"][number] {
+  return {
+    exception_id: 1,
+    dealership_id: 1,
+    exception_type: "missing_in_dealertrack",
+    exception_category: "missing_in_dealertrack",
+    status: "unresolved",
+    note: "",
+    review_status: "unreviewed",
+    assigned_to: null,
+    review_notes: "",
+    boa_notes: "",
+    gl_notes: "",
+    reviewed_at: null,
+    reviewed_by: null,
+    source_type: "boa",
+    reason: "BOA-only transaction.",
+    created_at: "2026-05-22T00:00:00.000Z",
+    transaction: transaction(),
+    ...partial,
+  };
+}
+
+function fwDetail(boa:TransactionSummary[], dt:TransactionSummary[], pairs:number[][]):ReconciliationRunDetail {
+  const usedBoa = new Set(pairs.map(p => p[0]));
+  const usedDt = new Set(pairs.map(p => p[1]));
+  return fwEmptyDetail({
+    accounting_month: accountingMonth("2026-04"),
+    match_groups:pairs.map(([b,d],i) => ({match_group_id:i+1,match_type:"vin_amount",confidence:1,reason:"Explicit synthetic pairing",created_at:"2026-04-30T00:00:00Z",
+      transactions:[{side:"boa",source_type:"boa",transaction:boa[b]},{side:"dealertrack",source_type:"dealertrack",transaction:dt[d]}]})),
+    exceptions:[...boa.filter((_,i)=>!usedBoa.has(i)),...dt.filter((_,i)=>!usedDt.has(i))].map((t,i)=>fwException({exception_id:i+1,transaction:t,source_type:t.source_type})),
+  });
+}
+
+test("FW detail preserves distinct duplicate exceptions and equal-amount rows", () => {
+  const a=transaction({id:91,amount_cents:12500,vin:"1ZZAA11A1ZA100001"});
+  const b={...a,id:92};
+  const dt=transaction({id:93,source_type:"dealertrack",amount_cents:-12500,vin:"1ZZAA11A1ZA100002"});
+  const model=buildMergedFloorplanWorkbookFromReconciliationDetail(fwDetail([a,b],[dt],[]),STORE_WORKFLOW_CONFIGS.fw);
+  expect(countWorkbookRows(model)).toEqual({matched:0,boaOnly:2,dealertrackOnly:1});
+  expect(model.rows.filter(r=>r.serial_no_vin===a.vin)).toHaveLength(2);
+  expect(model.boa_total_amount_cents).toBe(25000);
+  expect(model.dealertrack_total_amount_cents).toBe(-12500);
+});

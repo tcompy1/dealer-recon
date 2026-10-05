@@ -1,3 +1,4 @@
+import { FW_SANITIZED_FIXTURE_PATHS, readFwSyntheticFixture } from "./testFixtures/fw/index.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
@@ -3614,8 +3615,8 @@ describe("app", () => {
       .field("accounting_month", "2026-04")
       .attach(
         "file",
-        await loadFixture("server/src/presenters/__fixtures__/fw/FW BOA FEB.csv"),
-        "FW BOA FEB.csv",
+        Buffer.from(readFwSyntheticFixture(FW_SANITIZED_FIXTURE_PATHS.core.boa)),
+        "fw-synthetic.csv",
       );
 
     expect(response.status).toBe(422);
