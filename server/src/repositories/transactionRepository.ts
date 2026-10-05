@@ -1,4 +1,4 @@
-import {hydrateRunIdentity,validateSavedTransaction} from "../services/runIdentity.js";
+import {HistoricalIdentityUnavailableError,hydrateRunIdentity,validateSavedTransaction} from "../services/runIdentity.js";
 import { prepareVinCorrection, type VinCorrectionInput } from "../services/vinVerification.js";
 import type {
   AccountDetail,
@@ -1317,7 +1317,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     },
   ): Promise<PriorExceptionRecord[]> {
     const records: PriorExceptionRecord[] = [];
-    const details=new Map<number,ReconciliationRunDetail>();
+    const details=new Map<number,ReconciliationRunDetail|null>();
     for (const exception of this.reconciliationExceptions) {
       if (exception.dealership_id !== dealershipId) {
         continue;
@@ -1339,8 +1339,8 @@ export class MemoryTransactionRepository implements TransactionRepository {
         continue;
       }
       if(!details.has(run.id)) {
-        const detail=await this.getReconciliationRunDetail(dealershipId,run.id);
-        if(detail) details.set(run.id,detail);
+        try{details.set(run.id,await this.getReconciliationRunDetail(dealershipId,run.id));}
+        catch(error){if(!(error instanceof HistoricalIdentityUnavailableError))throw error;details.set(run.id,null);}
       }
       const transaction=details.get(run.id)?.exceptions.find(saved=>saved.exception_id===exception.id)?.transaction;
       if (!transaction) {

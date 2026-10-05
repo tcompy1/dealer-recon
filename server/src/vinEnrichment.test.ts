@@ -486,3 +486,28 @@ describe("shared confirmed correction contract", () => {
     expect((await repository.getTransactionById(1,t.id))?.vin).toBeNull();expect(await repository.listAuditEvents(1)).toHaveLength(0);
   });
 });
+
+test("source list omits correction audit narratives",async()=>{
+ const {app,repository}=createTestApp();const transaction=await seedTransaction(repository,1);
+ expect((await request(app).post(`/transactions/${transaction.id}/vin-enrichment`).send({vin:VALID_VIN,expected_revision:0,confirmed:true,reason:"private synthetic research narrative"})).status).toBe(200);
+ const list=await request(app).get(`/source-files/${transaction.source_file_id}/transactions`);expect(list.status).toBe(200);
+ expect(list.body[0].vin_provenance).toEqual({source:"manual_enrichment",vin:VALID_VIN,vin6:VALID_VIN.slice(-6),trusted:true});
+ expect(JSON.stringify(list.body)).not.toContain("private synthetic research narrative");
+});
+
+describe.each(["boa","dealertrack"] as const)("%s denied correction boundaries",sourceType=>{
+ test.each(["anonymous","wrong-store","wrong-dealership","read-only"] as const)("%s cannot mutate and scoped GET is enforced",async denial=>{
+  const repository=new MemoryTransactionRepository(),authRepository=new MemoryAuthRepository();
+  const t=await seedTransaction(repository,1,{sourceType,storeId:1});
+  const app=createApp(repository,[],1,async()=>{}, {authRepository,sessionSecret:"test-session-secret-with-enough-length",allowDevDealershipFallback:false});const agent=request.agent(app);
+  if(denial!=="anonymous"){
+   await authRepository.addUser({email:"scope@example.com",password:"p@ssword12",dealership_id:denial==="wrong-dealership"?2:1,role:denial==="read-only"?"read_only_auditor":"accounting_user",store_ids:denial==="wrong-store"?[2]:[1]});
+   expect((await agent.post("/login").send({email:"scope@example.com",password:"p@ssword12"})).status).toBe(200);
+  }
+  const before=await repository.getTransactionById(1,t.id),audits=(await repository.listAuditEvents(1)).length;
+  const expected=denial==="anonymous"?401:denial==="wrong-dealership"?404:403;
+  expect((await agent.get(`/transactions/${t.id}/vin-verification`)).status).toBe(denial==="read-only"?200:expected);
+  expect((await agent.post(`/transactions/${t.id}/vin-enrichment`).send({vin:VALID_VIN,expected_revision:0,confirmed:true})).status).toBe(expected);
+  expect(await repository.getTransactionById(1,t.id)).toEqual(before);expect((await repository.listAuditEvents(1)).length).toBe(audits);
+ });
+});

@@ -58,4 +58,17 @@ suite("shared correction in validated disposable PostgreSQL",()=>{
   });
  },30000);
 
+ test("ordinary legacy transactions and audits survive migration up and unused down unchanged",async()=>{
+  await withDisposablePostgresDatabase(base!,async url=>{
+   await migrate(url);await migrate(url,1,"down");const pool=createPool(url),repository=new PostgresTransactionRepository(pool);
+   try{
+    await repository.createSourceFileWithTransactions(1,{source_type:"boa",original_filename:"synthetic.csv",stored_filename:null,file_hash:"legacy-ordinary",row_count:1,validation_error_count:0},[{...synthetic,raw_data:{original:"invented",__lineage:{transformations:[{stage:"vin_enriched"}],vin_provenance:{source:"manual_enrichment",vin:synthetic.vin,trusted:true}}}}]);
+    await repository.createAuditEvent(1,{actor_user_id:null,action_type:"vin_enrichment_applied",entity_type:"transaction",entity_id:"1",previous_state:{vin:null},new_state:{vin:synthetic.vin}});
+    const values=async()=>({transactions:(await pool.query("SELECT id,vin,raw_data,amount_cents FROM transactions ORDER BY id")).rows,audits:(await pool.query("SELECT id,previous_state,new_state FROM audit_events ORDER BY id")).rows});
+    const before=await values();await migrate(url);expect(await values()).toEqual(before);expect((await pool.query("SELECT vin_revision FROM transactions")).rows[0].vin_revision).toBe(0);
+    await migrate(url,1,"down");expect(await values()).toEqual(before);
+   }finally{await pool.end();}
+  });
+ },30000);
+
 });

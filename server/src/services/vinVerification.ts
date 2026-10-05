@@ -27,6 +27,7 @@ export function getVinRevision(transaction:Transaction):number {
   if(saved && Object.hasOwn(saved,"vin_enrichment_history")) invalidState();
   if(revision===0 && saved && Object.hasOwn(saved,"vin_confirmation")) invalidState();
   if(revision!>0) {
+    if(typeof transaction.vin!=="string" || !FULL_VIN.test(transaction.vin))invalidState();
     const confirmation=saved?.vin_confirmation as Record<string,unknown>|undefined;
     if(!saved || saved.vin_revision!==revision || !confirmation || confirmation.revision!==revision || confirmation.vin!==transaction.vin || !Number.isInteger(confirmation.audit_event_id) || Number(confirmation.audit_event_id)<=0) invalidState();
     const provenance=saved.vin_provenance as Record<string,unknown>|undefined;
@@ -40,7 +41,14 @@ export function assessVin(transaction:Transaction):{flags:Array<"missing"|"incom
   const revision=getVinRevision(transaction);
   const vin=transaction.vin?.trim().toUpperCase() ?? "";
   const flags:Array<"missing"|"incomplete"|"invalid"|"conflicting">=[];
-  if(!vin) flags.push("missing");
+  if(!vin) {
+    const raw=lineage(transaction)?.raw_row_snapshot;
+    const claimed=raw&&typeof raw==="object"&&!Array.isArray(raw)?Object.entries(raw).filter(([key])=>["vin","serial","serialnovin","serialnumber","serialno"].includes(key.toLowerCase().replace(/[^a-z0-9]/g,""))).map(([,value])=>typeof value==="string"?value.trim().toUpperCase():"").filter(Boolean):[];
+    const short=/\b(?=[A-HJ-NPR-Z0-9]{8,16}\b)(?=[A-HJ-NPR-Z0-9]*[A-Z])(?=[A-HJ-NPR-Z0-9]*\d)[A-HJ-NPR-Z0-9]{8,16}\b/;
+    if(claimed.some(value=>!FULL_VIN.test(value)&&!short.test(value)))flags.push("invalid");
+    else if(claimed.some(value=>short.test(value)) || short.test(transaction.description?.toUpperCase().match(/\bVIN\s*[:#=-]?\s*([A-Z0-9]+)/)?.[1]??""))flags.push("incomplete");
+    else flags.push("missing");
+  }
   else if(!FULL_VIN.test(vin)) flags.push(/^(?=.*[A-Z])(?=.*\d)[A-HJ-NPR-Z0-9]{8,16}$/.test(vin)?"incomplete":"invalid");
   const tokens=transaction.description?.toUpperCase().match(/\b[A-HJ-NPR-Z0-9]{17}\b/g) ?? [];
   if(FULL_VIN.test(vin) && tokens.some(token=>token!==vin)) flags.push("conflicting");

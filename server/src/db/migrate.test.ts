@@ -3,7 +3,6 @@ import { execFile } from "node:child_process";
 import { describe, expect, test } from "vitest";
 
 import { createPool } from "../repositories/postgresTransactionRepository.js";
-import { withDatabaseTestLock } from "../testUtils/databaseTestLock.js";
 import { withDisposablePostgresDatabase } from "../testUtils/disposablePostgresDatabase.js";
 import { migrate } from "./migrate.js";
 
@@ -18,6 +17,7 @@ const MIGRATION_NAMES = [
   "1789344000000_add_rooftop_run_identity",
   "1789430400000_sync_seeded_identity_sequences",
   "1789520400000_add_automated_run_claim",
+  "1791158400000_add_vin_revision",
 ];
 
 class MigrationCommandError extends Error {
@@ -38,6 +38,7 @@ describeIfDatabase("migrate", () => {
     if (!databaseUrl) throw new Error("DATABASE_URL is required for migration tests.");
     await withDisposablePostgresDatabase(databaseUrl, async (disposableDatabaseUrl) => {
       await migrate(disposableDatabaseUrl);
+      await migrate(disposableDatabaseUrl, 1, "down");
       await migrate(disposableDatabaseUrl, 1, "down");
       const pool = createPool(disposableDatabaseUrl);
       try {
@@ -65,6 +66,8 @@ describeIfDatabase("migrate", () => {
            VALUES (1, 1, $1, $2, 0, 0, 0, 'completed_auto', TRUE)`,
           [sources.rows[0]!.id, sources.rows[1]!.id],
         )).rejects.toMatchObject({ code: "23505" });
+
+        await migrate(disposableDatabaseUrl, 1, "down");
 
         await migrate(disposableDatabaseUrl, 1, "down");
         const rollback = await pool.query<{ row_count: string; automated_column_count: string }>(
@@ -110,7 +113,7 @@ describeIfDatabase("migrate", () => {
       throw new Error("DATABASE_URL is required for migration tests.");
     }
 
-    await withDatabaseTestLock(databaseUrl, async () => {
+    await withDisposablePostgresDatabase(databaseUrl, async (databaseUrl) => {
       const demoUserCountBefore = await countDemoUsersIfSchemaExists(databaseUrl);
       await migrate(databaseUrl);
       await migrate(databaseUrl);
@@ -442,8 +445,10 @@ describeIfDatabase("migrate", () => {
           }).toEqual({ dealership: 2, dealerGroup: 2, dealershipStore: 3 });
 
           await migrate(disposableDatabaseUrl, 1, "down");
+
           await migrate(disposableDatabaseUrl, 1, "down");
-          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -2));
+          await migrate(disposableDatabaseUrl, 1, "down");
+          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -3));
           await pool.query("DELETE FROM dealership_stores");
           await pool.query("DELETE FROM dealer_groups");
           await pool.query("DELETE FROM dealerships");
@@ -490,7 +495,8 @@ describeIfDatabase("migrate", () => {
         try {
           await migrate(disposableDatabaseUrl, 1, "down");
           await migrate(disposableDatabaseUrl, 1, "down");
-          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -2));
+          await migrate(disposableDatabaseUrl, 1, "down");
+          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -3));
           await pool.query("ALTER SEQUENCE dealerships_id_seq RESTART WITH 50");
           await pool.query("ALTER SEQUENCE dealer_groups_id_seq RESTART WITH 60");
           await pool.query("SELECT nextval('dealer_groups_id_seq')");
@@ -535,6 +541,7 @@ describeIfDatabase("migrate", () => {
       const pool = createPool(disposableDatabaseUrl);
       let incrementChanged = false;
       try {
+        await migrate(disposableDatabaseUrl, 1, "down");
         await migrate(disposableDatabaseUrl, 1, "down");
         await migrate(disposableDatabaseUrl, 1, "down");
         await pool.query(
@@ -586,6 +593,7 @@ describeIfDatabase("migrate", () => {
         try {
           await migrate(disposableDatabaseUrl, 1, "down");
           await migrate(disposableDatabaseUrl, 1, "down");
+          await migrate(disposableDatabaseUrl, 1, "down");
           await pool.query("ALTER SEQUENCE dealerships_id_seq RESTART WITH 1");
           await pool.query("ALTER SEQUENCE dealer_groups_id_seq RESTART WITH 1");
           await pool.query("ALTER SEQUENCE dealership_stores_id_seq OWNED BY NONE");
@@ -601,7 +609,7 @@ describeIfDatabase("migrate", () => {
             last_value: "1",
             is_called: false,
           });
-          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -2));
+          expect(await migrationNames(pool)).toEqual(MIGRATION_NAMES.slice(0, -3));
 
           await pool.query(
             "ALTER SEQUENCE dealership_stores_id_seq OWNED BY dealership_stores.id",
@@ -619,7 +627,7 @@ describeIfDatabase("migrate", () => {
       throw new Error("DATABASE_URL is required for migration tests.");
     }
 
-    await withDatabaseTestLock(databaseUrl, async () => {
+    await withDisposablePostgresDatabase(databaseUrl, async (databaseUrl) => {
       await migrate(databaseUrl);
 
       const pool = createPool(databaseUrl);
@@ -741,7 +749,7 @@ describeIfDatabase("migrate", () => {
       throw new Error("DATABASE_URL is required for migration tests.");
     }
 
-    await withDatabaseTestLock(databaseUrl, async () => {
+    await withDisposablePostgresDatabase(databaseUrl, async (databaseUrl) => {
       await migrate(databaseUrl);
 
       const pool = createPool(databaseUrl);
@@ -772,8 +780,9 @@ describeIfDatabase("migrate", () => {
           [`rollback-collision-${unique}`],
         );
 
-        // Remove the later automated-claim and sequence-synchronization migrations so this test
+        // Remove later VIN-revision, automated-claim and sequence-synchronization migrations so this test
         // exercises the guarded identity migration it owns.
+        await runMigrationDownCapturingOutput(databaseUrl);
         await runMigrationDownCapturingOutput(databaseUrl);
         await runMigrationDownCapturingOutput(databaseUrl);
         await expect(runMigrationDownCapturingOutput(databaseUrl)).rejects.toMatchObject({
@@ -864,7 +873,7 @@ describeIfDatabase("migrate", () => {
       throw new Error("DATABASE_URL is required for migration tests.");
     }
 
-    await withDatabaseTestLock(databaseUrl, async () => {
+    await withDisposablePostgresDatabase(databaseUrl, async (databaseUrl) => {
       await migrate(databaseUrl);
 
       const pool = createPool(databaseUrl);

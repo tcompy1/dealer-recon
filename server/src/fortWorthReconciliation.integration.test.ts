@@ -1,4 +1,4 @@
-import {expect,test,vi} from "vitest";
+import {expect,test,vi,describe} from "vitest";
 import request from "supertest";
 import {createApp} from "./app.js";
 import {MemoryTransactionRepository,type TransactionRepository} from "./repositories/transactionRepository.js";
@@ -8,9 +8,9 @@ import * as writers from "./presenters/fortWorthXlsx.js";
 import {XLSX_MIME} from "./services/floorplanExport.js";
 async function workflow(repository:TransactionRepository=new MemoryTransactionRepository(),key:"fw"|"hurst"|"acura"="fw"){
  const app=createApp(repository,[],1,async()=>{}, {nodeEnv:"test",allowDevDealershipFallback:true});
- const store=await repository.createDealershipStore(1,{name:ROOFTOP_PROFILES[key].displayName});
+ const store=(await repository.listDealershipStores(1)).find(s=>s.name===ROOFTOP_PROFILES[key].displayName) ?? await repository.createDealershipStore(1,{name:ROOFTOP_PROFILES[key].displayName});
  const files:number[]=[];
- for(const source of ["boa","dealertrack"] as const){const response=await request(app).post("/upload").field("store_id",String(store.id)).field("source_type",source).field("accounting_month","2026-04").attach("file",Buffer.from(source==="dealertrack"&&key!=="fw" ? `Control,Description,${ROOFTOP_PROFILES[key].dealertrackAccountColumn}\nT1,Invented vehicle 1ZZAA11A1ZA100001,-125\nT2,Invented vehicle 1ZZAA11A1ZA100002,-230\n` : readFwSyntheticFixture(FW_SANITIZED_FIXTURE_PATHS.core[source])),`${source}-2026-04.csv`);expect(response.status).toBe(200);files.push(response.body.source_file_id);}
+ for(const source of ["boa","dealertrack"] as const){const response=await request(app).post("/upload").field("store_id",String(store.id)).field("source_type",source).field("accounting_month","2026-04").attach("file",Buffer.from(source==="dealertrack"&&key!=="fw" ? `Control,Description,${ROOFTOP_PROFILES[key].dealertrackAccountColumn}\nT1,Invented vehicle 1ZZAA11A1ZA100001,-125\nT2,Invented vehicle 1ZZAA11A1ZA100002,-230\n` : readFwSyntheticFixture(FW_SANITIZED_FIXTURE_PATHS.core[source]).replace("Invented test vehicle","Invented vehicle 1ZZAA11A1ZA100001")),`${source}-2026-04.csv`);expect(response.status).toBe(200);files.push(response.body.source_file_id);}
  const run=()=>request(app).post("/reconcile").send({dealership_store_id:store.id,boa_source_file_id:files[0],dealertrack_source_file_id:files[1],accounting_month:"2026-04"});
  return {app,repository,run};
 }
@@ -71,3 +71,53 @@ test("legacy stored FW xls is served unchanged even with unavailable profile and
  await repository.updateReconciliationRunStatus(1,old.id,"completed");
  for(const format of ["xls","xlsx"]){const response=await request(app).get(`/reconciliation-runs/${old.id}/fp-rec`).query({format}).buffer(true).parse(binary);expect(response.status).toBe(200);expect(response.headers["content-disposition"]).toContain("legacy-fw.xls");expect(response.headers["content-type"]).toContain("application/vnd.ms-excel");expect((response.body as Buffer).equals(bytes)).toBe(true);}
 }));
+
+const databaseUrl=process.env.DATABASE_URL;
+(databaseUrl?describe:describe.skip)("shared correction and native artifacts in disposable PostgreSQL",()=>{
+ test.each(["hurst","acura","fw"] as const)("%s both sources preserve raw descriptions and old artifacts through reruns",async key=>enabled(async()=>{
+  const {withDisposablePostgresDatabase}=await import("./testUtils/disposablePostgresDatabase.js");const {migrate}=await import("./db/migrate.js");const {createPool,PostgresTransactionRepository}=await import("./repositories/postgresTransactionRepository.js");
+  await withDisposablePostgresDatabase(databaseUrl!,async url=>{
+   await migrate(url);const pool=createPool(url);const repository=new PostgresTransactionRepository(pool);
+   try {
+    const {app,run}=await workflow(repository,key);const first=await run();expect(first.status).toBe(200);const id=first.body.reconciliation_run_id;
+    const original=await repository.findReconciliationArtifact(1,id,"FP_REC");
+    for(const [index,source] of (["boa","dealertrack"] as const).entries()){
+     const t=(await repository.listBySource(1,source)).find(t=>t.vin==="1ZZAA11A1ZA100001")!;expect(t.description).toContain("1ZZAA11A1ZA100001");
+     const get=await request(app).get(`/transactions/${t.id}/vin-verification`);expect(get.status).toBe(200);expect(get.body.vin_enrichment_revision).toBe(0);
+     const correction=await request(app).post(`/transactions/${t.id}/vin-enrichment`).send({vin:"1ZZAA11A1ZA100003",expected_revision:0,confirmed:true});expect(correction.status).toBe(200);
+     const live=await repository.getTransactionById(1,t.id);expect(live?.vin_revision).toBe(1);expect(live?.description).toBe(t.description);expect((live?.raw_data.__lineage as Record<string,unknown>).raw_row_snapshot).toEqual((t.raw_data.__lineage as Record<string,unknown>).raw_row_snapshot);
+     expect((await request(app).post(`/transactions/${t.id}/vin-enrichment`).send({vin:"1ZZAA11A1ZA100004",expected_revision:0,confirmed:true})).status).toBe(409);
+     const next=await run();expect(next.status).toBe(200);expect(next.body.matched_count).toBe(index===0?1:2);
+     expect((await repository.getReconciliationRunDetail(1,id))?.matched_count).toBe(2);expect((await repository.findReconciliationArtifact(1,id,"FP_REC"))?.content.equals(original!.content)).toBe(true);
+    }
+    const corrections=(await repository.listAuditEvents(1)).filter(event=>event.action_type==="vin_enrichment_applied");expect(corrections).toHaveLength(2);
+   }finally{await pool.end();}
+  });
+ }),30000);
+});
+
+test("overlapping run creation and correction retain one consistent saved identity",async()=>enabled(async()=>{
+ const {app,repository,run}=await workflow();const transaction=(await repository.listBySource(1,"boa"))[0];
+ let entered!:()=>void,release!:()=>void;const waiting=new Promise<void>(resolve=>{entered=resolve;});const pause=new Promise<void>(resolve=>{release=resolve;});
+ const original=repository.createReconciliationRun.bind(repository);
+ const spy=vi.spyOn(repository,"createReconciliationRun").mockImplementationOnce(async input=>{entered();await pause;return original(input);});
+ const pending=run().then(response=>response);await waiting;
+ try{expect((await request(app).post(`/transactions/${transaction.id}/vin-enrichment`).send({vin:"1ZZAA11A1ZA100003",expected_revision:0,confirmed:true})).status).toBe(200);}finally{release();}
+ const response=await pending;spy.mockRestore();expect(response.status).toBe(200);expect(response.body.matched_count).toBe(2);
+ const detail=await repository.getReconciliationRunDetail(1,response.body.reconciliation_run_id);expect(detail?.match_groups.flatMap(g=>g.transactions).find(t=>t.transaction.id===transaction.id)?.transaction.vin).toBe(transaction.vin);
+ expect((await run()).body.matched_count).toBe(1);
+}));
+
+async function unavailablePriorDoesNotBlockCurrent(repository:TransactionRepository){
+ const {app,run}=await workflow(repository);const t=(await repository.listBySource(1,"boa"))[0];
+ expect((await request(app).post(`/transactions/${t.id}/vin-enrichment`).send({vin:"1ZZAA11A1ZA100003",expected_revision:0,confirmed:true})).status).toBe(200);
+ const prior=await run();expect(prior.status).toBe(200);expect(prior.body.exception_count).toBe(2);
+ await new Promise(resolve=>setTimeout(resolve,5));const current=await run();expect(current.status).toBe(200);
+ const get=repository.getReconciliationRunSnapshot.bind(repository);const spy=vi.spyOn(repository,"getReconciliationRunSnapshot").mockImplementation((dealership,id)=>id===prior.body.reconciliation_run_id?Promise.resolve(null):get(dealership,id));
+ try{expect((await request(app).get(`/reconciliation-runs/${prior.body.reconciliation_run_id}`)).status).toBe(409);expect((await request(app).get(`/reconciliation-runs/${current.body.reconciliation_run_id}`)).status).toBe(200);}finally{spy.mockRestore();}
+}
+test("missing prior snapshot cannot block current memory run",async()=>enabled(()=>unavailablePriorDoesNotBlockCurrent(new MemoryTransactionRepository())));
+test.skipIf(!databaseUrl)("missing prior snapshot cannot block current PostgreSQL run",async()=>enabled(async()=>{
+ const {withDisposablePostgresDatabase}=await import("./testUtils/disposablePostgresDatabase.js"),{migrate}=await import("./db/migrate.js"),{createPool,PostgresTransactionRepository}=await import("./repositories/postgresTransactionRepository.js");
+ await withDisposablePostgresDatabase(databaseUrl!,async url=>{await migrate(url);const pool=createPool(url);try{await unavailablePriorDoesNotBlockCurrent(new PostgresTransactionRepository(pool));}finally{await pool.end();}});
+}),30000);

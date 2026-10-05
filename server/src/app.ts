@@ -1816,7 +1816,7 @@ export function createApp(
             vin_enrichment_revision: getVinRevision(transaction),
             assessment: assessVin(transaction),
             source_row_number: lineage?.source_row_number ?? null,
-            vin_provenance: lineage?.vin_provenance ?? null,
+            vin_provenance: lineage?.vin_provenance ? {source:lineage.vin_provenance.source,vin:lineage.vin_provenance.vin,vin6:lineage.vin_provenance.vin6,trusted:lineage.vin_provenance.trusted} : null,
           };
         }),
       );

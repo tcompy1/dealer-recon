@@ -1,4 +1,4 @@
-import {hydrateRunIdentity,validateSavedTransaction} from "../services/runIdentity.js";
+import {HistoricalIdentityUnavailableError,hydrateRunIdentity,validateSavedTransaction} from "../services/runIdentity.js";
 import { prepareVinCorrection, type VinCorrectionInput } from "../services/vinVerification.js";
 import pg from "pg";
 
@@ -1875,10 +1875,11 @@ export class PostgresTransactionRepository implements TransactionRepository {
     );
     const identities=new Map<number,TransactionSummary>();
     for(const runId of new Set(result.rows.map(row=>row.reconciliation_run_id))) {
-      const detail=await this.getReconciliationRunDetail(dealershipId,runId);
-      for(const exception of detail?.exceptions ?? []) identities.set(exception.exception_id,exception.transaction);
+      try{const detail=await this.getReconciliationRunDetail(dealershipId,runId);
+      for(const exception of detail?.exceptions ?? []) identities.set(exception.exception_id,exception.transaction);}
+      catch(error){if(!(error instanceof HistoricalIdentityUnavailableError))throw error;}
     }
-    return result.rows.map((row) => ({
+    return result.rows.filter(row=>identities.has(row.exception_id)).map((row) => ({
       exception_id: row.exception_id,
       reconciliation_run_id: row.reconciliation_run_id,
       dealership_store_id: row.dealership_store_id,
