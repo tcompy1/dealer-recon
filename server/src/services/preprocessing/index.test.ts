@@ -299,3 +299,8 @@ describe("preprocessUpload orchestrator", () => {
     expect(decision.kind).toBe("unsupported");
   });
 });
+test("FW mixed valid/invalid amounts produce blocking validation failure",()=>{
+ const decision=preprocessUpload(Buffer.from("Control,Description,2100,2101,2101S,2110\nM12345,1ZZAA11A1ZA100001,-12.00,,,\nM12346,1ZZAA11A1ZA100002,broken,,,\n"),"dealertrack","2026-04.csv",ROOFTOP_PROFILES.fw);
+ expect(decision.kind).toBe("preprocessed");if(decision.kind!=="preprocessed")return;
+ expect(decision.output.validationFailure?.code).toBe("STRUCTURALLY_INVALID_TRANSACTIONS");
+});

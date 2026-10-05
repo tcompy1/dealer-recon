@@ -57,6 +57,7 @@ type DealertrackAmountInfo = {
 };
 
 type DealertrackWorkingRow = {
+  offsettingComponents?: Record<"2100"|"2101"|"2101S",number>;
   sourceRowNumber: number;
   cells: string[];
   rawSnapshot: Record<string, string>;
@@ -121,6 +122,8 @@ export function preprocessDealertrack(
     (amountColumn) => !accountColumns.some(({ name }) => name === amountColumn),
   );
   const hasConfiguredAccount = missingAmountColumns.length === 0;
+  const invalidRequiredHeaders=options.requireAmountColumns && (!header || amountColumns.some(column=>accountColumns.filter(item=>item.name===column).length!==1));
+  if(invalidRequiredHeaders) validationErrors.push({row:null,field:"amount",message:"Exactly one of each included account column is required."});
   const removedColumnsPresent = accountColumns.filter(({ name }) => removedAccountColumns.has(name));
 
   if (header) {
@@ -147,8 +150,11 @@ export function preprocessDealertrack(
 
   parsed.rows.forEach((rawRow, index) => {
     rowsScanned += 1;
+    if(invalidRequiredHeaders)return;
     const sourceRowNumber = index + (header ? 2 : 1);
     if (header && rawRow.length !== header.length) {
+      const controlIndex=header.findIndex(name=>CONTROL_ALIASES.includes(normalizeHeaderName(name)));
+      if(options.requireAmountColumns && controlIndex>=0 && normalizeStock(rawRow[controlIndex]??"")) validationErrors.push({row:sourceRowNumber,field:"row",message:"Required detail cells are missing or malformed."});
       rowsSkippedUnknown += 1;
       diagnostics.push({
         kind: "row_skipped_malformed",
@@ -172,7 +178,7 @@ export function preprocessDealertrack(
       return;
     }
 
-    const rawSnapshot = buildRawSnapshot(cleaned, header);
+    const rawSnapshot = buildRawSnapshot(options.requireAmountColumns ? rawRow : cleaned, header);
     const lineage: RowLineageEntry[] = [{ stage: "raw_parsed" }];
     const rowText = cleaned.join(" ").toLowerCase();
 
@@ -224,11 +230,14 @@ export function preprocessDealertrack(
       });
       return;
     }
-    if (amountInfo.amountCents === 0) {
+    const components=Object.fromEntries((options.offsettingAccountPolicy ? amountColumns : []).map(name=>[name.toUpperCase(),parseRequiredAccountAmount(cleaned[accountColumns.find(column=>column.name===name)!.index])!])) as Record<"2100"|"2101"|"2101S",number>;
+    const offsetting=options.offsettingAccountPolicy==="retain_for_review" && amountInfo.amountCents===0 && Object.values(components).some(value=>value!==0);
+    if(offsetting) diagnostics.push({kind:"offsetting_accounts_retained",message:"Offsetting account balances—review.",source_row_number:sourceRowNumber});
+    if (amountInfo.amountCents === 0 && !offsetting) {
       rowsRemovedZero += 1;
       diagnostics.push({
-        kind: "zero_balance_row_removed",
-        message: "Zero-amount Dealertrack row removed.",
+        kind: options.requireAmountColumns && amountInfo.removedAccountCents!==0 ? "excluded_only_row_removed" : "zero_balance_row_removed",
+        message: "Zero included-account amount Dealertrack row removed.",
         source_row_number: sourceRowNumber,
         stock_number: stockNumber,
       });
@@ -236,7 +245,8 @@ export function preprocessDealertrack(
     }
     lineage.push({ stage: "amount_resolved", detail: amountInfo.source });
 
-    const description = headerLookup
+    const descriptionIndex=header?.findIndex(name=>DESCRIPTION_ALIASES.includes(normalizeHeaderName(name)))??-1;
+    const description = options.requireAmountColumns && descriptionIndex>=0 ? rawRow[descriptionIndex] : headerLookup
       ? findCellByAliases(cleaned, headerLookup, DESCRIPTION_ALIASES)
       : cleaned[1] ?? null;
 
@@ -308,6 +318,7 @@ export function preprocessDealertrack(
       sourceRowNumber,
       cells: cleaned,
       rawSnapshot,
+      offsettingComponents: offsetting ? components : undefined,
       amountCents: amountInfo.amountCents,
       amountSource: amountInfo.source,
       accountColumn: accountLabel,
@@ -382,7 +393,8 @@ export function preprocessDealertrack(
       source_row_number: row.sourceRowNumber,
       raw_row_snapshot: row.rawSnapshot,
       transformations: row.lineage,
-      retained_reason: "non_zero_amount",
+      retained_reason: row.offsettingComponents ? "offsetting_accounts_review" : "non_zero_amount",
+      ...(row.offsettingComponents ? {offsetting_components:row.offsettingComponents}:{}),
       vin_provenance: row.vinProvenance,
       maturity_date: null,
     };

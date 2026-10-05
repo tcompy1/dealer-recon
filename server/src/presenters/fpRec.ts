@@ -127,6 +127,17 @@ const FP_REC_PRESENTER_POLICIES: Record<
     includeWorksheetMetadata: true,
     totalGlFormula: (accountRow) => `=SUM(B${accountRow}:B${accountRow})`,
   },
+  "fw-fp-rec-v1": {
+    presenterId: "fw-fp-rec-v1",
+    statementLabel: "Outstanding STMT",
+    title: (workbook) => `Floorplan Reconciliation-${workbook.store_name}`,
+    scheduleNoteHeaders: ["GL FLOORED", "BOA FLOORED"],
+    statementNoteHeaders: ["BOA FLOORED", "GL FLOORED"],
+    scheduleMinimumRows: null,
+    statementMinimumRows: null,
+    includeWorksheetMetadata: true,
+    totalGlFormula: (accountRow) => `=SUM(B${accountRow}:B${accountRow})`,
+  },
 };
 
 export function buildFpRecWorkbook(

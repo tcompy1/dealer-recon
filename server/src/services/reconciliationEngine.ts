@@ -360,7 +360,7 @@ function clean(value: string | null): string {
   return value.toUpperCase().replace(/\//g, " ").replace(/-/g, " ").trim().split(/\s+/).join(" ");
 }
 
-function buildVinPresenceDiagnostics(
+export function buildVinPresenceDiagnostics(
   leftTransactions: Transaction[],
   rightTransactions: Transaction[],
   matchGroups: MatchGroup[],

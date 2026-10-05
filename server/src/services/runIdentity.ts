@@ -41,8 +41,15 @@ export function hydrateRunIdentity(detail:ReconciliationRunDetail,snapshot:Recon
   if(String(detail.rooftop_profile_id)==="fw-v1" && sourceRow===null) throw new HistoricalIdentityUnavailableError();
   const result:TransactionSummary={id:t.id,dealership_id:t.dealership_id,source_type:t.source_type,transaction_date:t.transaction_date,post_date:t.post_date,amount:formatCents(t.amount_cents),amount_cents:t.amount_cents,reference_number:t.reference_number,description:t.description,account:t.account,account_type:t.account_type,account_identifier:t.account_identifier,stock_number:t.stock_number,vin:t.vin,
    source_identity:{source_row_number:sourceRow,vin_revision:revision,operator_confirmed_vin:revision!==null && revision>0}};
+  const components=lineage?.offsetting_components;
+  if(components!==undefined){
+    if(!components || typeof components!=="object" || Array.isArray(components)) throw new HistoricalIdentityUnavailableError();
+    const values=["2100","2101","2101S"].map(key=>(components as Record<string,unknown>)[key]);
+    if(values.some(value=>!Number.isSafeInteger(value)) || values.reduce<number>((sum,value)=>sum+Number(value),0)!==0 || !values.some(value=>value!==0) || t.amount_cents!==0 || t.source_type!=="dealertrack") throw new HistoricalIdentityUnavailableError();
+    result.source_identity!.offsetting_components=components as Record<"2100"|"2101"|"2101S",number>;
+  }
   return result;
  };
  const hydrated={...detail,match_groups:detail.match_groups.map(group=>({...group,transactions:group.transactions.map(link=>({...link,transaction:summary(link.transaction,link.side==="left"?"boa":link.side==="right"?"dealertrack":link.side)}))})),exceptions:detail.exceptions.map(exception=>({...exception,transaction:summary(exception.transaction)}))};
- return {...hydrated,exceptions:categorizeRunDetailExceptions(hydrated,snapshot.inputs.find(i=>i.side==="boa")!.transactions,snapshot.inputs.find(i=>i.side==="dealertrack")!.transactions)};
+ return {...hydrated,exceptions:categorizeRunDetailExceptions(hydrated,snapshot.inputs.find(i=>i.side==="boa")!.transactions,snapshot.inputs.find(i=>i.side==="dealertrack")!.transactions).map(exception=>exception.transaction.source_identity?.offsetting_components ? {...exception,exception_category:"unclassified" as const} : exception)};
 }

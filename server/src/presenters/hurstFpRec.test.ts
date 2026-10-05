@@ -988,7 +988,7 @@ describe("store-configured FP Rec from merged floorplan workbook", () => {
   test.each([
     ["hurst", ["HURST", "2100"]],
     ["acura", ["ACURA", "324"]],
-    ["fw", ["FW", "2100"]],
+    ["fw", ["FORT WORTH", "2100"]],
   ] as Array<[StoreKey, [string, string]]>)(
     "preserves %s merged row semantics and configured FP REC labels",
     (storeKey, [storeLabel, accountLabel]) => {
@@ -1035,7 +1035,7 @@ describe("store-configured FP Rec from merged floorplan workbook", () => {
 
     expect(mergedWorkbook.store_config.dealertrackAmountColumns).toEqual(["2100", "2101", "2101S"]);
     expect(mergedWorkbook.store_config.dealertrackExcludedAccountColumns).toEqual(["2110"]);
-    expect(fpRecWorkbook.headers[0]).toBe("FW");
+    expect(fpRecWorkbook.headers[0]).toBe("FORT WORTH");
     expect(fpRecWorkbook.headers[4]).toBe("2100");
     expect(matchedRow?.dt_2100_cents).toBe(-1_500_000);
     expect(fpRecWorkbook.dealertrack_total_amount_cents).toBe(

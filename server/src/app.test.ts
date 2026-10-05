@@ -2636,7 +2636,7 @@ describe("app", () => {
         details: {
           source: null,
           accounting_month: "2026-04",
-          rooftop_profile_id: "fw-v0",
+          rooftop_profile_id: "fw-v1",
           recovery: "Select an enabled rooftop or complete that rooftop's evidence onboarding.",
         },
       });
@@ -4816,3 +4816,16 @@ function setMemorySourceFileFields(
   }
   Object.assign(sourceFile, fields);
 }
+test("FW mixed invalid details never persist a partial source",async()=>{
+ const {ROOFTOP_PROFILES}=await import("./config/storeWorkflowConfig.js");
+ const repository=new MemoryTransactionRepository();const app=createFallbackApp(repository);
+ const store=await repository.createDealershipStore(1,{name:"Hiley Cars Fort Worth"});
+ const original=ROOFTOP_PROFILES.fw.enabled;ROOFTOP_PROFILES.fw.enabled=true;
+ try {
+  for(const bad of ["M12346,broken,bad,,,","M12346,truncated"]){
+   const response=await request(app).post("/upload").field("source_type","dealertrack").field("store_id",String(store.id)).field("accounting_month","2026-04").attach("file",Buffer.from(`Control,Description,2100,2101,2101S,2110\nM12345,1ZZAA11A1ZA100001,-12.00,,,\n${bad}\n`),"2026-04.csv");
+   expect(response.status).toBe(422);expect(response.body.error.code).toBe("STRUCTURALLY_INVALID_TRANSACTIONS");
+   expect(await repository.listSourceFiles(1)).toEqual([]);expect(await repository.listBySource(1,"dealertrack")).toEqual([]);
+  }
+ } finally {ROOFTOP_PROFILES.fw.enabled=original;}
+});

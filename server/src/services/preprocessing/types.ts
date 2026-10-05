@@ -54,6 +54,9 @@ export type PreprocessingDiagnosticKind =
   | "header_row_detected"
   | "zero_balance_row_removed"
   | "straightline_row_removed"
+  | "offsetting_accounts_retained"
+  | "excluded_only_row_removed"
+  | "invalid_or_missing_maturity"
   | "missing_amount"
   | "missing_vin"
   | "duplicate_vin"
@@ -121,12 +124,15 @@ export type PreprocessUploadOptions = {
 };
 
 export type BoaPreprocessOptions = {
+  policy?: {amountSource:"ending_balance_required";maturityReview:"on_or_before_month_end"};
   accountingMonth: AccountingMonth;
   parserIdentity: ParserIdentity;
   preprocessorIdentity: PreprocessorIdentity;
 };
 
 export type DealertrackPreprocessOptions = {
+  requireAmountColumns?: boolean;
+  offsettingAccountPolicy?: "retain_for_review";
   accountingMonth: AccountingMonth;
   parserIdentity: ParserIdentity;
   preprocessorIdentity: PreprocessorIdentity;
@@ -166,6 +172,7 @@ export type UploadPreprocessingMetadata = {
 export type RawDataLineage = {
   source_kind: PreprocessingSourceKind;
   preprocessing_version: string;
+  offsetting_components?: Record<"2100"|"2101"|"2101S",number>;
   /** 1-based row number from the raw parsed table this transaction came from. */
   source_row_number: number;
   /** Header column name -> raw cell value, snapshot of the row pre-transform. */

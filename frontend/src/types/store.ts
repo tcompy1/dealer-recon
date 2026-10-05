@@ -1,4 +1,4 @@
-export type RooftopProfileId = "hurst-v1" | "acura-v1" | "fw-v0";
+export type RooftopProfileId = "hurst-v1" | "acura-v1" | "fw-v0" | "fw-v1";
 
 export type DealerGroup = {
   id: number;

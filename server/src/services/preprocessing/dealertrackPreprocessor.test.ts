@@ -313,3 +313,27 @@ describe("preprocessDealertrack", () => {
     );
   });
 });
+
+describe("Fort Worth strict account policy",()=>{
+ const fw={amountColumns:["2100","2101","2101S"],excludedAccountColumns:["2110"],requireAmountColumns:true,offsettingAccountPolicy:"retain_for_review"} as const;
+ const options={...fw,amountColumns:[...fw.amountColumns],excludedAccountColumns:[...fw.excludedAccountColumns]};
+ test("requires one of each normalized account header, including empty input",()=>{
+  for(const header of [["Control","Description","2100"],["Control","2100","2100.00","2101","2101S"]])expect(preprocessDealertrack(table(header,[]),options).validationErrors.length).toBeGreaterThan(0);
+ });
+ test("keeps distinct offsetting rows with signed components and ignores excluded 2110",()=>{
+  const result=preprocessDealertrack(table(["Control","Description","2100","2101","2101S","2110"],Array.from({length:2},()=>["M12345","1ZZAA11A1ZA100001","123.00","-123.00","","999.00"])),options);
+  expect(result.transactions).toHaveLength(2);expect(result.transactions.map(t=>t.amount_cents)).toEqual([0,0]);
+  expect(result.transactions[0].raw_data.__lineage).toMatchObject({offsetting_components:{"2100":12300,"2101":-12300,"2101S":0}});
+  expect(result.diagnostics.filter(d=>d.kind==="offsetting_accounts_retained")).toHaveLength(2);
+ });
+ test("excluded-only removal is distinct from ordinary zeros; malformed included values block",()=>{
+  const result=preprocessDealertrack(table(["Control","Description","2100","2101","2101S","2110"],[["M12345","item","","","","1.00"],["M12346","item","","","",""],["M12347","item","bad","","",""]]),options);
+  expect(result.transactions).toHaveLength(0);expect(result.validationErrors).toHaveLength(1);
+  expect(result.diagnostics.filter(d=>d.kind==="excluded_only_row_removed")).toHaveLength(1);
+ });
+});
+test("FW truncated details block and literal descriptions remain unchanged",()=>{
+ const desc=' "Invented car" ';
+ const result=preprocessDealertrack(table(["Control","Description","2100","2101","2101S"],[["M12345",desc,"12.00","",""],["M12346","truncated"]]),{amountColumns:["2100","2101","2101S"],requireAmountColumns:true});
+ expect(result.validationErrors).toHaveLength(1);expect(result.transactions[0].description).toBe(desc);expect(result.transactions[0].raw_data.__lineage).toMatchObject({raw_row_snapshot:{Description:desc}});
+});

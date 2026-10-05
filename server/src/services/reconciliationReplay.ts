@@ -1,3 +1,4 @@
+import {reconcileFortWorthTransactions,FORT_WORTH_ENGINE_VERSION} from "./fortWorthReconciliation.js";
 import type {
   ReconciliationReplayResponse,
   ReconciliationRunDetail,
@@ -38,7 +39,8 @@ export function replaySnapshot(
     throw new Error("Reconciliation snapshot is missing BOA or Dealertrack inputs.");
   }
 
-  const replayed = reconcileTransactionSets(
+  const currentEngine=detail.rooftop_profile_id==="fw-v1" ? FORT_WORTH_ENGINE_VERSION : RECONCILIATION_ENGINE_VERSION;
+  const replayed = detail.rooftop_profile_id==="fw-v1" ? reconcileFortWorthTransactions(boaInput.transactions,dealertrackInput.transactions) : reconcileTransactionSets(
     boaInput.transactions,
     dealertrackInput.transactions,
     "boa",
@@ -80,8 +82,8 @@ export function replaySnapshot(
     newly_unmatched: newlyUnmatched,
     engine_version_difference: {
       original: snapshot.engine_version,
-      current: RECONCILIATION_ENGINE_VERSION,
-      differs: snapshot.engine_version !== RECONCILIATION_ENGINE_VERSION,
+      current: currentEngine,
+      differs: snapshot.engine_version !== currentEngine,
     },
     parser_version_difference: snapshot.inputs.map((input) => {
       const current = currentParserVersion(input);

@@ -1,3 +1,4 @@
+import {reconcileFortWorthTransactions,FORT_WORTH_ENGINE_VERSION} from "./fortWorthReconciliation.js";
 import type {
   IngestionEvent,
   NewIngestionEvent,
@@ -198,7 +199,7 @@ export async function createReconciliationRunFromSourceFiles(
     repository.listBySourceFile(dealershipId, boaSourceFile.id),
     repository.listBySourceFile(dealershipId, dealertrackSourceFile.id),
   ]);
-  const reconciliationResult = reconcileTransactionSets(
+  const reconciliationResult = rooftopProfile.profileId==="fw-v1" ? reconcileFortWorthTransactions(boaTransactions,dealertrackTransactions) : reconcileTransactionSets(
     boaTransactions,
     dealertrackTransactions,
     "boa",
@@ -216,7 +217,7 @@ export async function createReconciliationRunFromSourceFiles(
     status: "artifact_pending",
     automated,
     input_snapshot: {
-      engine_version: RECONCILIATION_ENGINE_VERSION,
+      engine_version: rooftopProfile.profileId==="fw-v1" ? FORT_WORTH_ENGINE_VERSION : RECONCILIATION_ENGINE_VERSION,
       inputs: [
         {
           side: "boa",

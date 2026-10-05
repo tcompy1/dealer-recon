@@ -262,6 +262,11 @@ function validateProfiledPreprocessing(
     };
   }
 
+  if(options.rooftopProfile.profileId==="fw-v1" && preprocessing.validationErrors.length>0) return {
+    code:"STRUCTURALLY_INVALID_TRANSACTIONS",message:"Fort Worth required amounts or detail rows are invalid; no rows were imported.",
+    evidence:{validation_error_count:preprocessing.validationErrors.length,first_error_row:preprocessing.validationErrors[0].row??null,first_error_field:preprocessing.validationErrors[0].field??null},
+    recovery:"Correct the indicated source rows and required amount columns, then upload again.",
+  };
   if (preprocessing.transactions.length === 0) {
     if (
       isKnownLegacyHeaderlessHurstDealertrack(
@@ -439,6 +444,7 @@ function runProfiledPreprocessor(
       accountingMonth: options.accountingMonth,
       parserIdentity,
       preprocessorIdentity: options.rooftopProfile.preprocessorIdentities.boa,
+      ...(options.rooftopProfile.profileId==="fw-v1" ? {policy:{amountSource:"ending_balance_required",maturityReview:"on_or_before_month_end"} as const}:{}),
     });
   }
   return preprocessDealertrack(parsed, {
@@ -449,6 +455,7 @@ function runProfiledPreprocessor(
     accountColumn: options.rooftopProfile.dealertrackAccountColumn,
     accountLabel: options.rooftopProfile.dealertrackAccountLabel,
     excludedAccountColumns: options.rooftopProfile.dealertrackExcludedAccountColumns,
+    ...(options.rooftopProfile.profileId==="fw-v1" ? {requireAmountColumns:true,offsettingAccountPolicy:"retain_for_review" as const}:{}),
   });
 }
 

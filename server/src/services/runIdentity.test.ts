@@ -134,3 +134,11 @@ test.each(["vin","description"] as const)("malformed %s in any saved transaction
  snapshot.inputs[0].transactions.push({...snapshot.inputs[0].transactions[0],id:99,[field]:12} as unknown as Transaction);
  expect(()=>hydrateRunIdentity(detail,snapshot)).toThrow("original run identity snapshot is unavailable");
 });
+test("offset snapshot retains components and unclassified review category",()=>{
+ const {detail,snapshot}=inputs();const t=snapshot.inputs[0].transactions.pop()!;
+ t.source_type="dealertrack";t.source_file_id=2;t.amount_cents=0;t.raw_data={__lineage:{source_row_number:3,offsetting_components:{"2100":12300,"2101":-12300,"2101S":0}}};snapshot.inputs[1].transactions=[t];
+ detail.exceptions[0].source_type="dealertrack";detail.exceptions[0].transaction.source_type="dealertrack";
+ const result=hydrateRunIdentity(detail,snapshot);
+ expect(result.exceptions[0].exception_category).toBe("unclassified");expect(result.exceptions[0].transaction.source_identity?.offsetting_components).toEqual({"2100":12300,"2101":-12300,"2101S":0});
+ t.raw_data={__lineage:{source_row_number:3,offsetting_components:{"2100":12300,"2101":1,"2101S":0}}};expect(()=>hydrateRunIdentity(detail,snapshot)).toThrow();
+});

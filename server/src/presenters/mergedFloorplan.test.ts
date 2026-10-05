@@ -49,7 +49,7 @@ function accountingMonth(value: string): AccountingMonth {
 }
 
 const FW_HEADERS = [
-  "FW",
+  "FORT WORTH",
   "Serial No/VIN",
   "VIN6",
   "Ending Balance",
@@ -292,7 +292,7 @@ describe("merged floorplan presenter", () => {
     const html = toMergedFloorplanXlsHtml(workbook);
 
     expect(workbook.headers).toEqual(FW_HEADERS);
-    expect(html).toContain("<th>FW</th>");
+    expect(html).toContain("<th>FORT WORTH</th>");
     expect(html).toContain("<th>2100</th>");
     expect(workbook.store_config.dealertrackAmountColumns).toEqual(["2100", "2101", "2101S"]);
     expect(workbook.store_config.dealertrackExcludedAccountColumns).toEqual(["2110"]);
