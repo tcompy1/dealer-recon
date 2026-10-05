@@ -809,8 +809,8 @@ describe("app", () => {
     expect(adminRunsResponse.body).toEqual(
       expect.arrayContaining([expect.objectContaining({ reconciliation_run_id: nullRun.id })]),
     );
-    expect(adminRunResponse.status).toBe(200);
-    expect(adminRunResponse.body.reconciliation_run_id).toBe(nullRun.id);
+    expect(adminRunResponse.status).toBe(409);
+    expect(adminRunResponse.body.error.code).toBe("HISTORICAL_IDENTITY_UNAVAILABLE");
     expect(adminRunArtifactsResponse.status).toBe(200);
     expect(adminRunArtifactsResponse.body).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: nullRunArtifact.id })]),
@@ -3738,6 +3738,10 @@ describe("app", () => {
       accounting_month: null,
       rooftop_profile_id: "acura-v1",
       rooftop_profile_version: "1",
+      input_snapshot:{engine_version:"test",inputs:[
+        {side:"boa",source_type:"boa",source_file_id:boaImport.sourceFile.id,parser_version:"1",parser_metadata:{},transactions:boaImport.transactions},
+        {side:"dealertrack",source_type:"dealertrack",source_file_id:dealertrackImport.sourceFile.id,parser_version:"1",parser_metadata:{},transactions:dealertrackImport.transactions},
+      ]},
       result: {
         matched_count: 0, exception_count: 0, duplicate_count: 0,
         match_groups: [], exceptions: [],

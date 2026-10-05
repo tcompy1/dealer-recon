@@ -369,6 +369,7 @@ export type ReconciliationRequest = {
 };
 
 export type TransactionSummary = {
+  source_identity?: {source_row_number:number|null;vin_revision:number|null;operator_confirmed_vin?:boolean;offsetting_components?:Record<"2100"|"2101"|"2101S",number>};
   id: number;
   dealership_id: number;
   source_type: SourceType;

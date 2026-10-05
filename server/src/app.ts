@@ -165,7 +165,7 @@ export function withRooftopSupport(
 }
 
 function resolveRunRooftopProfile(
-  detail: ReconciliationRunDetail,
+  detail: Omit<ReconciliationRunDetail,"boa_source_file"|"dealertrack_source_file"|"match_groups"|"exceptions">,
   requestedStoreKey: StoreKey | null,
 ): RooftopProfile {
   const hasProfileId = detail.rooftop_profile_id !== null;
@@ -218,7 +218,7 @@ function resolveRunRooftopProfile(
   return legacyHurst;
 }
 
-function runProfileError(detail: ReconciliationRunDetail, message: string): ValidationError {
+function runProfileError(detail: Pick<ReconciliationRunDetail,"dealership_store_id"|"rooftop_profile_id"|"rooftop_profile_version">, message: string): ValidationError {
   return new ValidationError(message, "ROOFTOP_PROFILE_UNSUPPORTED", {
     dealership_store_id: detail.dealership_store_id,
     rooftop_profile_id: detail.rooftop_profile_id,
@@ -1300,6 +1300,15 @@ export function createApp(
     );
   }));
 
+  app.use("/reconciliation-runs/:id",asyncHandler(async(request,response,next)=>{
+    const id=parsePositiveInteger(request.params.id);
+    if(id!==null){
+      const metadata=await repository.getReconciliationRunMetadata(getRequestDealershipId(response),id);
+      if(metadata && !(await canAccessStore(repository,getAuthenticatedUser(response),metadata.dealership_store_id))) throw new ForbiddenError("Not authorized for this store.","STORE_ACCESS_DENIED");
+    }
+    next();
+  }));
+
   app.get("/reconciliation-runs/:id", async (request, response, next) => {
     try {
       const reconciliationRunId = parsePositiveInteger(request.params.id);
@@ -1469,7 +1478,7 @@ export function createApp(
       throw new NotFoundError("Reconciliation run");
     }
 
-    const detail = await repository.getReconciliationRunDetail(
+    const detail = await repository.getReconciliationRunMetadata(
       getRequestDealershipId(response),
       reconciliationRunId,
     );
@@ -1510,7 +1519,7 @@ export function createApp(
     if (!(await canAccessStore(repository, getAuthenticatedUser(response), artifact.store_id))) {
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
-    const runDetail = await repository.getReconciliationRunDetail(
+    const runDetail = await repository.getReconciliationRunMetadata(
       getRequestDealershipId(response),
       artifact.reconciliation_run_id,
     );
@@ -1567,11 +1576,11 @@ export function createApp(
       throw new NotFoundError("Reconciliation run");
     }
 
-    const detail = await repository.getReconciliationRunDetail(
+    const metadata = await repository.getReconciliationRunMetadata(
       getRequestDealershipId(response),
       reconciliationRunId,
     );
-    if (!detail) {
+    if (!metadata) {
       const ownerDealershipId =
         await repository.getReconciliationRunDealershipId(reconciliationRunId);
       if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
@@ -1579,10 +1588,10 @@ export function createApp(
       }
       throw new NotFoundError("Reconciliation run");
     }
-    if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), metadata.dealership_store_id))) {
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
-    assertReconciliationArtifactsAvailable(detail.status);
+    assertReconciliationArtifactsAvailable(metadata.status);
 
     const storeKeyOverrideProvided = request.query.store_key !== undefined;
     const storeKey = parseStoreKey(request.query.store_key);
@@ -1593,7 +1602,6 @@ export function createApp(
         { supported_store_keys: [...STORE_KEYS] },
       );
     }
-    const storeConfig = resolveRunRooftopProfile(detail, storeKey);
     const format = typeof request.query.format === "string" ? request.query.format : "xls";
     if (format !== "json" && !storeKeyOverrideProvided) {
       const storedArtifact = await repository.findReconciliationArtifact(
@@ -1608,6 +1616,9 @@ export function createApp(
       }
     }
 
+    const storeConfig = resolveRunRooftopProfile(metadata, storeKey);
+    const detail=await repository.getReconciliationRunDetail(getRequestDealershipId(response),reconciliationRunId);
+    if(!detail) throw new NotFoundError("Reconciliation run");
     const artifact = buildMergedFloorplanArtifact(detail, storeConfig);
     if (format === "json") {
       response.json(artifact.workbook);
@@ -1617,8 +1628,8 @@ export function createApp(
     await auditGeneratedArtifactDownload(response, {
       reconciliationRunId,
       artifactType: "MERGED_FLOORPLAN",
-      storeId: detail.dealership_store_id,
-      accountingMonth: detail.accounting_month,
+      storeId: metadata.dealership_store_id,
+      accountingMonth: metadata.accounting_month,
       filename: artifact.filename,
       contentType: artifact.contentType,
       fileSize: Buffer.byteLength(artifact.html, "utf8"),
@@ -1639,11 +1650,11 @@ export function createApp(
       throw new NotFoundError("Reconciliation run");
     }
 
-    const detail = await repository.getReconciliationRunDetail(
+    const metadata = await repository.getReconciliationRunMetadata(
       getRequestDealershipId(response),
       reconciliationRunId,
     );
-    if (!detail) {
+    if (!metadata) {
       const ownerDealershipId =
         await repository.getReconciliationRunDealershipId(reconciliationRunId);
       if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
@@ -1651,10 +1662,10 @@ export function createApp(
       }
       throw new NotFoundError("Reconciliation run");
     }
-    if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), metadata.dealership_store_id))) {
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
-    assertReconciliationArtifactsAvailable(detail.status);
+    assertReconciliationArtifactsAvailable(metadata.status);
 
     const storeKeyOverrideProvided = request.query.store_key !== undefined;
     const storeKey = parseStoreKey(request.query.store_key);
@@ -1665,7 +1676,6 @@ export function createApp(
         { supported_store_keys: [...STORE_KEYS] },
       );
     }
-    const rooftopProfile = resolveRunRooftopProfile(detail, storeKey);
     const format = typeof request.query.format === "string" ? request.query.format : "xls";
     if (format !== "json" && !storeKeyOverrideProvided) {
       const storedArtifact = await repository.findReconciliationArtifact(
@@ -1680,6 +1690,9 @@ export function createApp(
       }
     }
 
+    const rooftopProfile = resolveRunRooftopProfile(metadata, storeKey);
+    const detail=await repository.getReconciliationRunDetail(getRequestDealershipId(response),reconciliationRunId);
+    if(!detail) throw new NotFoundError("Reconciliation run");
     const workbook = buildFpRecWorkbook(detail, rooftopProfile);
     if (format === "json") {
       response.json(workbook);
@@ -1691,8 +1704,8 @@ export function createApp(
     await auditGeneratedArtifactDownload(response, {
       reconciliationRunId,
       artifactType: "FP_REC",
-      storeId: detail.dealership_store_id,
-      accountingMonth: detail.accounting_month,
+      storeId: metadata.dealership_store_id,
+      accountingMonth: metadata.accounting_month,
       filename: fpRecFilename,
       contentType: "application/vnd.ms-excel",
       fileSize: Buffer.byteLength(fpRecHtml, "utf8"),

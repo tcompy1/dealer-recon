@@ -333,7 +333,7 @@ describeIfDatabase("reconciliation persistence", () => {
       throw new Error("DATABASE_URL is required for reconciliation persistence tests.");
     }
 
-    await withDatabaseTestLock(databaseUrl, async () => {
+    await withIsolatedDatabase(databaseUrl, async (databaseUrl) => {
       await migrate(databaseUrl);
       const pool = createPool(databaseUrl);
       const repository = new PostgresTransactionRepository(pool);
@@ -568,7 +568,7 @@ describeIfDatabase("reconciliation persistence", () => {
       throw new Error("DATABASE_URL is required for reconciliation persistence tests.");
     }
 
-    await withDatabaseTestLock(databaseUrl, async () => {
+    await withIsolatedDatabase(databaseUrl, async (databaseUrl) => {
       await migrate(databaseUrl);
       const pool = createPool(databaseUrl);
       const repository = new PostgresTransactionRepository(pool);
@@ -935,6 +935,10 @@ async function assertReusableSourceIdentityRoundTrip(
     dealership_store_id: 1,
     boa_source_file_id: aprilReceipt.sourceFile.id,
     dealertrack_source_file_id: dealertrackReceipt.sourceFile.id,
+    input_snapshot: {engine_version:RECONCILIATION_ENGINE_VERSION,inputs:[
+      {side:"boa",source_type:"boa",source_file_id:aprilReceipt.sourceFile.id,parser_version:"1",parser_metadata:{},transactions:aprilReceipt.transactions},
+      {side:"dealertrack",source_type:"dealertrack",source_file_id:dealertrackReceipt.sourceFile.id,parser_version:"1",parser_metadata:{},transactions:dealertrackReceipt.transactions},
+    ]},
     accounting_month: april,
     rooftop_profile_id: "acura-v1",
     rooftop_profile_version: "1",
@@ -1206,6 +1210,10 @@ async function assertPreprocessingReceiptImmutability(
     dealership_store_id: 1,
     boa_source_file_id: created.sourceFile.id,
     dealertrack_source_file_id: dealertrack.sourceFile.id,
+    input_snapshot: {engine_version:RECONCILIATION_ENGINE_VERSION,inputs:[
+      {side:"boa",source_type:"boa",source_file_id:created.sourceFile.id,parser_version:"1",parser_metadata:{},transactions:created.transactions},
+      {side:"dealertrack",source_type:"dealertrack",source_file_id:dealertrack.sourceFile.id,parser_version:"1",parser_metadata:{},transactions:dealertrack.transactions},
+    ]},
     accounting_month: month,
     rooftop_profile_id: "acura-v1",
     rooftop_profile_version: "1",
@@ -1259,7 +1267,7 @@ async function withPostgresIdentityRepository(
     throw new Error("DATABASE_URL is required for reconciliation persistence tests.");
   }
 
-  await withDatabaseTestLock(databaseUrl, async () => {
+  await withIsolatedDatabase(databaseUrl, async (databaseUrl) => {
     await migrate(databaseUrl);
     const pool = createPool(databaseUrl);
     const repository = new PostgresTransactionRepository(pool);
@@ -1267,9 +1275,7 @@ async function withPostgresIdentityRepository(
     try {
       await assertion(repository, namespace);
     } finally {
-      await pool.query("DELETE FROM source_files WHERE file_hash LIKE $1", [
-        `task5-${namespace}-%`,
-      ]);
+      // The owning disposable database is dropped after closing the pool.
       await pool.end();
     }
   });
@@ -1282,7 +1288,7 @@ async function withPostgresArtifactRepository(
     throw new Error("DATABASE_URL is required for PostgreSQL artifact batch tests.");
   }
 
-  await withDatabaseTestLock(databaseUrl, async () => {
+  await withIsolatedDatabase(databaseUrl, async (databaseUrl) => {
     await migrate(databaseUrl);
     const pool = createPool(databaseUrl);
     const repository = new PostgresTransactionRepository(pool);
@@ -1451,7 +1457,7 @@ async function assertPostgresConcurrentUploadRoute(): Promise<void> {
     throw new Error("DATABASE_URL is required for PostgreSQL upload race tests.");
   }
 
-  await withDatabaseTestLock(databaseUrl, async () => {
+  await withIsolatedDatabase(databaseUrl, async (databaseUrl) => {
     await migrate(databaseUrl);
     const pool = createPool(databaseUrl);
     const repository = new ConcurrentPostgresUploadRepository(pool);
@@ -1706,4 +1712,9 @@ async function assertStoreScopedRepositoryReads(
   await expect(repository.listAuditEvents(1, 100, [])).resolves.toEqual([]);
   const unrestricted = await repository.listAccountsSummary(1, null);
   expect(unrestricted.map((account) => account.account_identifier)).toEqual(expect.arrayContaining(["allowed", "denied"]));
+}
+
+// Every legacy persistence assertion owns a fresh database; never migrate the base application database.
+async function withIsolatedDatabase(baseUrl:string,assertion:(url:string)=>Promise<void>):Promise<void> {
+  await withDisposablePostgresDatabase(baseUrl,url=>withDatabaseTestLock(url,()=>assertion(url)));
 }

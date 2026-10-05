@@ -1,5 +1,5 @@
 import request from "supertest";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { createApp } from "./app.js";
 import { MemoryAuthRepository } from "./auth.js";
@@ -363,6 +363,8 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
     });
     expect(firstRun.status).toBe(200);
     const firstMatched = firstRun.body.matched_count as number;
+    const originalDetail=await repository.getReconciliationRunDetail(1,firstRun.body.reconciliation_run_id);
+    const originalArtifact=await repository.findReconciliationArtifact(1,firstRun.body.reconciliation_run_id,"MERGED_FLOORPLAN");
 
     // Enrich the VIN.
     const enrichResponse = await request(app)
@@ -386,6 +388,25 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
     const secondMatched = secondRun.body.matched_count as number;
 
     expect(secondMatched).toBeGreaterThan(firstMatched);
+    expect(await repository.getReconciliationRunDetail(1,firstRun.body.reconciliation_run_id)).toEqual(originalDetail);
+    expect(await repository.findReconciliationArtifact(1,firstRun.body.reconciliation_run_id,"MERGED_FLOORPLAN")).toEqual(originalArtifact);
+    const oldException=originalDetail!.exceptions.find(e=>e.source_type==="dealertrack")!;
+    const reviewed=await repository.updateReconciliationExceptionReview(1,firstRun.body.reconciliation_run_id,oldException.exception_id,{review_notes:"Synthetic follow-up"});
+    expect(reviewed?.transaction.vin).toBeNull();
+    const prior=await repository.listPriorUnresolvedExceptions(1,{dealershipStoreId:1,excludeRunId:secondRun.body.reconciliation_run_id});
+    expect(prior.find(e=>e.exception_id===oldException.exception_id)?.vin).toBeNull();
+    const missingSnapshot=vi.spyOn(repository,"getReconciliationRunSnapshot").mockResolvedValue(null);
+    const metadata=await repository.getReconciliationRunMetadata(1,firstRun.body.reconciliation_run_id);
+    const unavailableProfile=vi.spyOn(repository,"getReconciliationRunMetadata").mockResolvedValue({...metadata!,rooftop_profile_id:"fw-v0",rooftop_profile_version:"0"});
+    const binary=await request(app).get(`/reconciliation-runs/${firstRun.body.reconciliation_run_id}/merged-floorplan`);
+    expect(binary.status).toBe(200);
+    const storedFp=await request(app).get(`/reconciliation-runs/${firstRun.body.reconciliation_run_id}/fp-rec`);
+    expect(storedFp.status).toBe(200);
+    unavailableProfile.mockRestore();
+    const regenerated=await request(app).get(`/reconciliation-runs/${firstRun.body.reconciliation_run_id}/merged-floorplan?format=json`);
+    expect(regenerated.status).toBe(409);
+    expect(regenerated.body.error.code).toBe("HISTORICAL_IDENTITY_UNAVAILABLE");
+    missingSnapshot.mockRestore();
   });
 });
 
