@@ -99,6 +99,7 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
     const response = await request(app)
       .post(`/transactions/${transaction.id}/vin-enrichment`)
       .send({
+        expected_revision: 0, confirmed: true,
         vin: VALID_VIN,
         source: "manual_enrichment",
         reason: "DMS lookup confirmed VIN by stock number",
@@ -140,20 +141,21 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
     });
   });
 
-  test("rejects BOA transactions", async () => {
+  test("accepts BOA transactions", async () => {
     const { app, repository } = createTestApp();
     const transaction = await seedTransaction(repository, 1, { sourceType: "boa" });
 
     const response = await request(app)
       .post(`/transactions/${transaction.id}/vin-enrichment`)
       .send({
+        expected_revision: 0, confirmed: true,
         vin: VALID_VIN,
         source: "manual_enrichment",
         reason: "test",
       });
 
-    expect(response.status).toBe(422);
-    expect(response.body.error.message).toMatch(/Dealertrack/);
+    expect(response.status).toBe(200);
+    expect(response.body.transaction.vin).toBe(VALID_VIN);
   });
 
   test("rejects invalid VIN", async () => {
@@ -163,6 +165,7 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
     const response = await request(app)
       .post(`/transactions/${transaction.id}/vin-enrichment`)
       .send({
+        expected_revision: 0, confirmed: true,
         vin: "NOT-A-VIN",
         source: "manual_enrichment",
         reason: "test",
@@ -172,20 +175,20 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
     expect(response.body.error.message).toMatch(/VIN/);
   });
 
-  test("rejects missing reason", async () => {
+  test("accepts blank optional reason", async () => {
     const { app, repository } = createTestApp();
     const transaction = await seedTransaction(repository, 1);
 
     const response = await request(app)
       .post(`/transactions/${transaction.id}/vin-enrichment`)
       .send({
+        expected_revision: 0, confirmed: true,
         vin: VALID_VIN,
         source: "manual_enrichment",
         reason: "   ",
       });
 
-    expect(response.status).toBe(422);
-    expect(response.body.error.message).toMatch(/reason/);
+    expect(response.status).toBe(200);
   });
 
   test("returns 409 when VIN is unchanged", async () => {
@@ -195,6 +198,7 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
     const response = await request(app)
       .post(`/transactions/${transaction.id}/vin-enrichment`)
       .send({
+        expected_revision: 0, confirmed: true,
         vin: VALID_VIN,
         source: "manual_enrichment",
         reason: "no-op test",
@@ -229,6 +233,7 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
     const response = await agent
       .post(`/transactions/${transaction.id}/vin-enrichment`)
       .send({
+        expected_revision: 0, confirmed: true,
         vin: VALID_VIN,
         source: "manual_enrichment",
         reason: "DMS lookup",
@@ -244,6 +249,7 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
     const response = await request(app)
       .post(`/transactions/${transaction.id}/vin-enrichment`)
       .send({
+        expected_revision: 0, confirmed: true,
         vin: OTHER_VIN,
         source: "dms_assisted_reconstruction",
         reason: "Reynolds DMS confirmed",
@@ -362,6 +368,7 @@ describe("POST /transactions/:transactionId/vin-enrichment", () => {
     const enrichResponse = await request(app)
       .post(`/transactions/${dtTransaction.id}/vin-enrichment`)
       .send({
+        expected_revision: 0, confirmed: true,
         vin: VALID_VIN,
         source: "manual_enrichment",
         reason: "DMS lookup",
@@ -423,3 +430,38 @@ function profiledReconciliationSourceFile(
     preprocessing_metadata: preprocessingMetadata,
   };
 }
+
+describe("shared confirmed correction contract", () => {
+  test.each(["boa", "dealertrack"] as const)("%s allows valid identity replacement without narrative and exposes reviewed revision", async sourceType => {
+    const {app,repository}=createTestApp();
+    const t=await seedTransaction(repository,1,{sourceType,vin:OTHER_VIN});
+    const read=await request(app).get(`/transactions/${t.id}/vin-verification`);
+    expect(read.status).toBe(200);
+    expect(read.body).toMatchObject({id:t.id,vin:OTHER_VIN,vin_enrichment_revision:0});
+    const response=await request(app).post(`/transactions/${t.id}/vin-enrichment`).send({vin:VALID_VIN,expected_revision:read.body.vin_enrichment_revision,confirmed:true});
+    expect(response.status).toBe(200);
+    expect(response.body.transaction).toMatchObject({vin:VALID_VIN,vin_revision:1});
+    const events=await repository.listAuditEvents(1);
+    expect(events).toHaveLength(1);
+    expect(events[0].new_state).toMatchObject({source:null,reason:null,dms_reference:null,vin_revision:1});
+    expect((await repository.getTransactionById(1,t.id))?.raw_data.Control).toBe("M10001");
+  });
+  test("overlapping writes and delayed stale same-target writes create only one audit", async()=>{
+    const {app,repository}=createTestApp();const t=await seedTransaction(repository,1);
+    const payload={vin:VALID_VIN,expected_revision:0,confirmed:true};
+    const responses=await Promise.all([request(app).post(`/transactions/${t.id}/vin-enrichment`).send(payload),request(app).post(`/transactions/${t.id}/vin-enrichment`).send({...payload,vin:OTHER_VIN})]);
+    expect(responses.map(r=>r.status).sort()).toEqual([200,409]);
+    const current=await repository.getTransactionById(1,t.id);
+    const delayed=await request(app).post(`/transactions/${t.id}/vin-enrichment`).send({...payload,vin:current?.vin});
+    expect(delayed.status).toBe(409);expect(delayed.body.error.code).toBe("VIN_ENRICHMENT_REVISION_CONFLICT");
+    expect(await repository.listAuditEvents(1)).toHaveLength(1);
+  });
+  test("legacy unversioned and unconfirmed writes cannot mutate",async()=>{
+    const {app,repository}=createTestApp();const t=await seedTransaction(repository,1);
+    const legacy=await request(app).post(`/transactions/${t.id}/vin-enrichment`).send({vin:VALID_VIN,source:"manual_enrichment",reason:"legacy"});
+    expect(legacy.status).toBe(428);expect(legacy.body.error.code).toBe("VIN_ENRICHMENT_REVISION_REQUIRED");
+    const unconfirmed=await request(app).post(`/transactions/${t.id}/vin-enrichment`).send({vin:VALID_VIN,expected_revision:0});
+    expect(unconfirmed.status).toBe(400);expect(unconfirmed.body.error.code).toBe("VIN_CONFIRMATION_REQUIRED");
+    expect((await repository.getTransactionById(1,t.id))?.vin).toBeNull();expect(await repository.listAuditEvents(1)).toHaveLength(0);
+  });
+});

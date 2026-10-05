@@ -37,6 +37,7 @@ export type AuditEvent = {
 export type NewAuditEvent = Omit<AuditEvent, "id" | "dealership_id" | "timestamp">;
 
 export type Transaction = {
+  vin_revision?: number;
   id: number;
   dealership_id: number;
   source_file_id: number | null;
@@ -84,7 +85,7 @@ export type NewDealershipStore = {
 
 export type NewTransaction = Omit<
   Transaction,
-  "id" | "dealership_id" | "account_type" | "account_identifier"
+  "id" | "dealership_id" | "account_type" | "account_identifier" | "vin_revision"
 > &
   Partial<Pick<Transaction, "account_type" | "account_identifier">>;
 

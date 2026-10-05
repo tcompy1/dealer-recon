@@ -98,13 +98,9 @@ import {
   parseStoreCreateRequest,
   parseVinEnrichmentRequest,
 } from "./validators/requestParsers.js";
-import {
-  applyManualVinEnrichment,
-  type ManualVinEnrichmentInput,
-} from "./services/preprocessing/manualVinEnrichment.js";
+import { assessVin, getVinRevision } from "./services/vinVerification.js";
 import {
   readLineage,
-  type RawDataLineage,
 } from "./services/preprocessing/types.js";
 import {
   authorizedStoreIds,
@@ -118,6 +114,7 @@ import { logError, logInfo, serializeError } from "./logger.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { asyncHandler } from "./middleware/asyncHandler.js";
 import {
+  HttpError,
   UnauthorizedError,
   ForbiddenError,
   NotFoundError,
@@ -1803,6 +1800,9 @@ export function createApp(
             source_file_id: transaction.source_file_id,
             stock_number: transaction.stock_number,
             vin: transaction.vin,
+            dealership_store_id: sourceFile.dealership_store_id,
+            vin_enrichment_revision: getVinRevision(transaction),
+            assessment: assessVin(transaction),
             source_row_number: lineage?.source_row_number ?? null,
             vin_provenance: lineage?.vin_provenance ?? null,
           };
@@ -1810,6 +1810,18 @@ export function createApp(
       );
     }),
   );
+
+  app.get("/transactions/:transactionId/vin-verification", asyncHandler(async (request,response)=>{
+    const id=parsePositiveInteger(request.params.transactionId);
+    const transaction=id===null?null:await repository.getTransactionById(getRequestDealershipId(response),id);
+    if(!transaction) throw new NotFoundError("Transaction");
+    const source=transaction.source_file_id?await repository.getSourceFile(transaction.source_file_id):null;
+    if(!source || source.dealership_id!==transaction.dealership_id || source.dealership_store_id===null) throw new ConflictError("Transaction source scope unavailable.","VIN_SOURCE_SCOPE_UNAVAILABLE");
+    if(!(await canAccessStore(repository,getAuthenticatedUser(response),source.dealership_store_id))) throw new ForbiddenError("Not authorized for this store.","STORE_ACCESS_DENIED");
+    if(transaction.source_type!=="boa" && transaction.source_type!=="dealertrack") throw new ValidationError("VIN correction supports BOA and Dealertrack.","UNSUPPORTED_SOURCE_TYPE");
+    const saved=readLineage(transaction.raw_data);
+    response.json({id:transaction.id,source_type:transaction.source_type,source_file_id:source.id,dealership_store_id:source.dealership_store_id,stock_number:transaction.stock_number,vin:transaction.vin,vin_enrichment_revision:getVinRevision(transaction),assessment:assessVin(transaction),source_row_number:saved?.source_row_number??null});
+  }));
 
   app.post(
     "/transactions/:transactionId/vin-enrichment",
@@ -1832,9 +1844,9 @@ export function createApp(
       if (!transaction) {
         throw new NotFoundError("Transaction");
       }
-      if (transaction.source_type !== "dealertrack") {
+      if (transaction.source_type !== "dealertrack" && transaction.source_type !== "boa") {
         throw new ValidationError(
-          "Manual VIN enrichment is only supported for Dealertrack transactions.",
+          "VIN correction is supported for BOA and Dealertrack transactions.",
           "UNSUPPORTED_SOURCE_TYPE"
         );
       }
@@ -1847,58 +1859,20 @@ export function createApp(
         throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
       }
 
-      const user = getAuthenticatedUser(response);
-      const enrichmentInput: ManualVinEnrichmentInput = {
-        vin: parsed.vin,
-        source: parsed.source,
-        enriched_by: user.email || `user:${user.id}`,
-        note: parsed.dms_reference
-          ? `${parsed.reason} dms_reference=${parsed.dms_reference}`
-          : parsed.reason,
-      };
-      const result = applyManualVinEnrichment(transaction, enrichmentInput);
-      if (!result.ok) {
-        if (result.reason === "no_change") {
-          throw new ConflictError("VIN is already set to the requested value.", "VIN_NO_CHANGE");
-        }
-        throw new ValidationError("Invalid VIN.", "INVALID_VIN");
-      }
-
-      const previousLineage = readLineage(transaction.raw_data ?? {});
-      const updated = await repository.updateTransactionVinAndRawData(
-        dealershipId,
-        transactionId,
-        { vin: result.vin, raw_data: result.raw_data },
-      );
-      if (!updated) {
-        throw new NotFoundError("Transaction");
-      }
-
-      const auditEvent = await repository.createAuditEvent(dealershipId, {
-        actor_user_id: user.id === 0 ? null : user.id,
-        action_type: "vin_enrichment_applied",
-        entity_type: "transaction",
-        entity_id: String(transactionId),
-        previous_state: toAuditState({
-          vin: transaction.vin,
-          lineage_summary: summarizeLineage(previousLineage),
-        }),
-        new_state: toAuditState({
-          transaction_id: transactionId,
-          source_file_id: transaction.source_file_id,
-          dealership_store_id: storeId,
-          vin: result.vin,
-          vin6: result.vin6,
-          source: parsed.source,
-          reason: parsed.reason,
-          dms_reference: parsed.dms_reference,
-        }),
+      if(!sourceFile || sourceFile.dealership_id!==dealershipId || storeId===null) throw new ConflictError("Transaction source scope unavailable.","VIN_SOURCE_SCOPE_UNAVAILABLE");
+      if(parsed.expected_revision===undefined) throw new HttpError("Load the current VIN revision and explicitly confirm the correction.",428,"VIN_ENRICHMENT_REVISION_REQUIRED");
+      if(parsed.confirmed!==true) throw new HttpError("Explicit VIN confirmation is required.",400,"VIN_CONFIRMATION_REQUIRED");
+      const user=getAuthenticatedUser(response);
+      const result=await repository.confirmTransactionVinEnrichment(dealershipId,transactionId,{
+        expectedRevision:parsed.expected_revision,vin:parsed.vin,actorUserId:user.id===0?null:user.id,actorLabel:user.email||`user:${user.id}`,
+        confirmedAt:new Date().toISOString(),operatorSource:parsed.source,reason:parsed.reason,reference:parsed.dms_reference,expectedStoreId:storeId,
       });
-
+      if(!result) throw new NotFoundError("Transaction");
+      const {transaction:updated,auditEvent}=result;
       response.json({
         transaction: updated,
         enrichment_applied: true,
-        vin6: result.vin6,
+        vin6: updated.vin?.slice(-6),
         source: parsed.source,
         audit_event_id: auditEvent?.id ?? null,
         requires_rerun: true,
@@ -1999,7 +1973,7 @@ function sanitizeLogPath(path: string): string {
       "/reconciliation-runs/:id/exceptions/:exception_id",
     )
     .replace(/^\/source-files\/[^/]+\/transactions$/, "/source-files/:sourceFileId/transactions")
-    .replace(/^\/transactions\/[^/]+\/vin-enrichment$/, "/transactions/:transactionId/vin-enrichment");
+    .replace(/^\/transactions\/[^/]+\/(vin-enrichment|vin-verification)$/, "/transactions/:transactionId/$1");
 }
 
 type LoginFailure = {
@@ -2324,15 +2298,15 @@ function warningsForReusedSourceFile(
 // uploadErrorMessage function removed - now handled in errorHandler middleware
 
 function vinEnrichmentErrorMessage(
-  error: "invalid_vin" | "invalid_source" | "missing_reason" | "invalid_body" | "invalid_dms_reference",
+  error: string,
 ): string {
   switch (error) {
     case "invalid_vin":
       return "VIN must be a valid 17-character VIN.";
     case "invalid_source":
       return "source must be one of manual_enrichment, dms_assisted_reconstruction, stock_number_lookup.";
-    case "missing_reason":
-      return "reason is required.";
+    case "invalid_reason":
+      return "reason must be a string when supplied.";
     case "invalid_dms_reference":
       return "dms_reference must be a string.";
     case "invalid_body":
@@ -2340,20 +2314,6 @@ function vinEnrichmentErrorMessage(
       return "Invalid VIN enrichment request.";
   }
 }
-
-function summarizeLineage(lineage: RawDataLineage | null): Record<string, unknown> | null {
-  if (!lineage) {
-    return null;
-  }
-  return {
-    source_kind: lineage.source_kind,
-    source_row_number: lineage.source_row_number,
-    retained_reason: lineage.retained_reason,
-    vin_provenance: lineage.vin_provenance,
-    transformations_count: lineage.transformations.length,
-  };
-}
-
 
 const REMOVAL_KINDS = new Set<PreprocessingDiagnosticKind>([
   "banner_row_removed",

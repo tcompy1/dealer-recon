@@ -1,3 +1,4 @@
+import { prepareVinCorrection, type VinCorrectionInput } from "../services/vinVerification.js";
 import pg from "pg";
 
 import { formatCents } from "../domain/money.js";
@@ -103,6 +104,7 @@ type ReconciliationArtifactRow = {
 };
 
 type TransactionRow = {
+  vin_revision:number;
   id: number;
   dealership_id: number;
   source_file_id: number | null;
@@ -795,6 +797,25 @@ export class PostgresTransactionRepository implements TransactionRepository {
       [dealershipId, transactionId],
     );
     return result.rows[0] ? toTransaction(result.rows[0]) : null;
+  }
+
+  async confirmTransactionVinEnrichment(dealershipId:number,transactionId:number,input:VinCorrectionInput):Promise<{transaction:Transaction;auditEvent:AuditEvent}|null> {
+    const client=await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const rows=await client.query<TransactionRow>("SELECT * FROM transactions WHERE dealership_id=$1 AND id=$2 FOR UPDATE",[dealershipId,transactionId]);
+      if(!rows.rows[0]) { await client.query("ROLLBACK"); return null; }
+      const current=toTransaction(rows.rows[0]);
+      const sources=await client.query<SourceFileRow>("SELECT * FROM source_files WHERE id=$1 AND dealership_id=$2 FOR SHARE",[current.source_file_id,dealershipId]);
+      const ids=await client.query<{id:number}>("SELECT nextval(pg_get_serial_sequence('audit_events','id'))::integer AS id");
+      const prepared=prepareVinCorrection(current,sources.rows[0]?toSourceFile(sources.rows[0]):null,input,ids.rows[0].id);
+      const audit=prepared.audit;
+      const saved=await client.query<AuditEventRow>(`INSERT INTO audit_events(id,dealership_id,actor_user_id,action_type,entity_type,entity_id,previous_state,new_state,timestamp) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,[ids.rows[0].id,dealershipId,audit.actor_user_id,audit.action_type,audit.entity_type,audit.entity_id,audit.previous_state,audit.new_state,input.confirmedAt]);
+      await client.query("UPDATE transactions SET vin=$3,raw_data=$4,vin_revision=$5 WHERE dealership_id=$1 AND id=$2",[dealershipId,transactionId,prepared.transaction.vin,prepared.transaction.raw_data,prepared.transaction.vin_revision]);
+      await client.query("COMMIT");
+      return {transaction:prepared.transaction,auditEvent:toAuditEvent(saved.rows[0])};
+    } catch(error) { await client.query("ROLLBACK"); throw error; }
+    finally {client.release();}
   }
 
   async updateTransactionVinAndRawData(
@@ -2440,6 +2461,7 @@ function toReconciliationRunListItem(row: ReconciliationRunListRow): Reconciliat
 function toTransaction(row: TransactionRow): Transaction {
   return {
     id: row.id,
+    vin_revision: row.vin_revision,
     dealership_id: row.dealership_id,
     source_file_id: row.source_file_id,
     source_type: row.source_type,

@@ -1,3 +1,4 @@
+import { prepareVinCorrection, type VinCorrectionInput } from "../services/vinVerification.js";
 import type {
   AccountDetail,
   AccountSummary,
@@ -140,6 +141,7 @@ export interface TransactionRepository {
   ): Promise<AuditEvent[]>;
   listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]>;
   listBySourceFile(dealershipId: number, sourceFileId: number): Promise<Transaction[]>;
+  confirmTransactionVinEnrichment(dealershipId:number,transactionId:number,input:VinCorrectionInput):Promise<{transaction:Transaction;auditEvent:AuditEvent}|null>;
   getTransactionById(
     dealershipId: number,
     transactionId: number,
@@ -428,6 +430,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
         transaction.account ??
         defaultAccountIdentifier(transaction.source_type),
       id: this.nextId++,
+      vin_revision: 0,
     }));
     this.transactions.push(...inserted);
     return inserted;
@@ -698,6 +701,22 @@ export class MemoryTransactionRepository implements TransactionRepository {
         candidate.id === transactionId && candidate.dealership_id === dealershipId,
     );
     return transaction ? cloneTransaction(transaction) : null;
+  }
+
+  async confirmTransactionVinEnrichment(dealershipId:number,transactionId:number,input:VinCorrectionInput):Promise<{transaction:Transaction;auditEvent:AuditEvent}|null> {
+    const index=this.transactions.findIndex(t=>t.id===transactionId && t.dealership_id===dealershipId);
+    if(index<0) return null;
+    const current=this.transactions[index];
+    const source=this.sourceFiles.find(s=>s.id===current.source_file_id && s.dealership_id===dealershipId) ?? null;
+    const prepared=prepareVinCorrection(current,source,input,this.nextAuditEventId);
+    const transaction=cloneTransaction(prepared.transaction);
+    const auditEvent:AuditEvent={...prepared.audit,id:this.nextAuditEventId,dealership_id:dealershipId,timestamp:input.confirmedAt};
+    const savedAudit=cloneAuditEvent(auditEvent);
+    // No await: validate and clone everything before the atomic in-memory swap.
+    this.transactions[index]=transaction;
+    this.auditEvents.push(savedAudit);
+    this.nextAuditEventId++;
+    return {transaction:cloneTransaction(transaction),auditEvent:cloneAuditEvent(savedAudit)};
   }
 
   async updateTransactionVinAndRawData(
