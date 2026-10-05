@@ -26,6 +26,7 @@ type Props = {
   sourceType?: SourceType | null;
   /** Notifies the parent that the user successfully enriched a VIN. */
   onVinEnriched?: () => void;
+  canModify?: boolean;
 };
 
 export function PreprocessingDiagnosticsPanel({
@@ -34,6 +35,7 @@ export function PreprocessingDiagnosticsPanel({
   sourceFileId = null,
   sourceType = null,
   onVinEnriched,
+  canModify = false,
 }: Props) {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -69,7 +71,7 @@ export function PreprocessingDiagnosticsPanel({
   const metrics = computeHeadlineMetrics(preprocessing);
   const groups = groupDiagnostics(preprocessing.diagnostics ?? []);
   const amountColumnNote = describeAmountColumnChoice(preprocessing);
-  const canRepairVin = sourceType === "dealertrack" && typeof sourceFileId === "number";
+  const canRepairVin = canModify && (sourceType === "dealertrack" || sourceType === "boa") && typeof sourceFileId === "number";
 
   return (
     <section className="forge-panel forge-panel-muted grid gap-3 text-sm text-slate-800">
@@ -210,6 +212,7 @@ function DiagnosticGroupCard({
   group: DiagnosticGroup;
   repairSourceFileId: number | null;
   onVinEnriched?: () => void;
+  canModify?: boolean;
 }) {
   const toneClass =
     group.tone === "urgent"
@@ -264,6 +267,7 @@ function DiagnosticList({
   diagnostics: PreprocessingDiagnostic[];
   repairSourceFileId: number | null;
   onVinEnriched?: () => void;
+  canModify?: boolean;
 }) {
   const PREVIEW_COUNT = 6;
   const preview = diagnostics.slice(0, PREVIEW_COUNT);
@@ -310,6 +314,7 @@ function DiagnosticRow({
   diagnostic: PreprocessingDiagnostic;
   repairSourceFileId: number | null;
   onVinEnriched?: () => void;
+  canModify?: boolean;
 }) {
   const canRepair =
     repairSourceFileId !== null &&
@@ -356,6 +361,7 @@ function RepairVinButton({
   diagnostic: PreprocessingDiagnostic;
   sourceFileId: number;
   onVinEnriched?: () => void;
+  canModify?: boolean;
 }) {
   const initial = useMemo(
     () => ({

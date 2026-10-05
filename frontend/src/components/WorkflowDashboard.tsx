@@ -13,6 +13,7 @@ import { ApiError } from "../api/errorMessage";
 import { createDealershipStore, listDealerGroups, listDealershipStores } from "../api/stores";
 import { UploadError, uploadSourceFile } from "../api/uploads";
 import { PreprocessingDiagnosticsPanel } from "./preprocessing/PreprocessingDiagnosticsPanel";
+import { VinVerificationPanel } from "./preprocessing/VinVerificationPanel";
 import { VinPresenceDiagnosticsPanel } from "./VinPresenceDiagnosticsPanel";
 import type {
   ReconciledTransaction,
@@ -449,6 +450,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
             slot={boaUpload}
             onFileChange={(file) => handleUploadFileChange("boa", file)}
             onUpload={() => void handleUpload("boa")}
+            onVinEnriched={() => setIsReconciliationStale(true)}
             canModify={canModify && canUseRooftop}
           />
           <UploadPanel
@@ -463,6 +465,10 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
           />
         </div>
 
+        {activeRun && <div className="grid gap-3 lg:grid-cols-2">
+          <VinVerificationPanel sourceFileId={activeRun.boa_source_file_id} canModify={canModify} onCorrected={()=>setIsReconciliationStale(true)}/>
+          <VinVerificationPanel sourceFileId={activeRun.dealertrack_source_file_id} canModify={canModify} onCorrected={()=>setIsReconciliationStale(true)}/>
+        </div>}
         {isReconciliationStale && activeRun ? (
           <div
             className="forge-notice forge-notice-warning"
@@ -831,6 +837,7 @@ function UploadPanel({
         <UploadReceipt
           sourceLabel={label}
           upload={slot.upload}
+          canModify={canModify}
           sourceType={kind}
           onVinEnriched={onVinEnriched}
         />
@@ -849,6 +856,7 @@ function UploadPanel({
 }
 
 function UploadReceipt({
+  canModify,
   sourceLabel,
   upload,
   sourceType,
@@ -856,6 +864,7 @@ function UploadReceipt({
 }: {
   sourceLabel: string;
   upload: UploadResponse;
+  canModify: boolean;
   sourceType?: SourceKind;
   onVinEnriched?: () => void;
 }) {
@@ -884,7 +893,9 @@ function UploadReceipt({
           <ValidationErrors errors={upload.validation_errors} />
         ) : null}
       </div>
+      <VinVerificationPanel sourceFileId={upload.source_file_id} canModify={canModify} onCorrected={()=>onVinEnriched?.()}/>
       <PreprocessingDiagnosticsPanel
+        canModify={canModify}
         preprocessing={upload.preprocessing ?? null}
         sourceLabel={sourceLabel}
         sourceFileId={upload.source_file_id}
