@@ -33,7 +33,7 @@ Complete the phases in order. A passing phase authorizes only the next phase for
 
 ### 3. Resolve evidence conflicts
 
-Use this authority order:
+For historical characterization, use this authority order. A completed goal may contain clerk edits; it never supplies runtime enrichment or authorizes changing raw identity to hit counts:
 
 1. approved goal output;
 2. completed merged reconciliation;
@@ -83,14 +83,15 @@ Money remains integer cents. Matching remains exact by approved identifiers and 
 
 Before changing the profile to `enabled: true`, require all of the following:
 
-- the protected monthly acceptance comparison passes without a conditional skip;
-- expected matches, source-only counts, totals, adjustment semantics, and variance agree with approved artifacts;
+- the required original-input protected monthly acceptance comparison passes without a conditional skip;
+- transaction membership, counts, totals, ordering, formulas and layout agree independently with the approved original-input baseline;
 - stored and regenerated artifacts agree;
 - all previously supported rooftop golden tests remain unchanged;
 - PostgreSQL migration, persistence, and vertical-slice tests pass;
 - backend lint, typecheck, build, and full tests pass;
 - frontend lint, unit tests, build, and Playwright pass; and
-- whole-branch code and security reviews have no unresolved blocking finding.
+- whole-branch code and security reviews have no unresolved blocking finding; and
+- required native Excel recalculation, note edit/save/reopen and print verification passes for native XLSX rooftops.
 
 Record the profile-enablement change as a separate, reviewable step. A passing Acura gate does not authorize enabling Fort Worth, Burleson, Huntsville, or West.
 
@@ -99,3 +100,18 @@ Record the profile-enablement change as a separate, reviewable step. A passing A
 Set the conditional acceptance suite's evidence-directory environment variable to the absolute protected rooftop directory only for the test process. Tests may read that directory but must not copy its contents or include raw data in logs, snapshots, diffs, or failure messages. Acceptance failures must report only safe counts, totals, labels, formulas, and other structural differences.
 
 Run repository-configured commands rather than guessed equivalents. At minimum, every onboarding must cover server lint/typecheck/build/full tests, database migration and persistence tests against the isolated local test database, protected-evidence acceptance, frontend lint/unit/build, browser E2E, prior-rooftop golden regressions, a final diff check, and explicit tracked/staged discovery-artifact checks.
+
+## Fort Worth release contract (2026-10-05)
+
+`fw-v1` remains disabled. Its implementation exports two genuine XLSX files for a single selected accounting month: `fw-merged-floorplan-YYYY-MM.xlsx` and `fw-fp-rec-YYYY-MM.xlsx`. Historical tabs and auxiliary legends are omitted. Merged source descriptions remain literal; clerks add research, description edits, follow-up notes and final sign-off after export. Manual FP REC notes start blank. Native XLSX upload is not added.
+
+Shared VIN correction supports BOA and Dealertrack in Hurst, Acura and Fort Worth. `GET /transactions/:id/vin-verification` supplies the current revision; `POST /transactions/:id/vin-enrichment` requires `expected_revision` and explicit `confirmed:true`. Source, reason and reference remain optional. Stale edits require refresh/reconfirmation. Corrections preserve source descriptions/raw rows and old snapshots/downloads; operators rerun explicitly. Missing prior-run identity is omitted from carry-forward, never reconstructed from current transactions; requesting that unavailable historical detail returns an explicit limitation while stored downloads remain available. Assessments use claimed VIN fields or explicitly VIN-labelled short tokens, not unrelated reference codes.
+
+- **A required:** original April 794 BOA / 725 Dealertrack, 686 matches, 108 BOA-only / 39 Dealertrack-only, 147 exceptions, 833 merged rows. Cents: BOA 4,034,820,196; GL −3,599,702,841; difference/net 435,117,355; variance 0. The independent in-memory oracle checks source hash/row membership, amounts, ordering, native formulas/caches and layout.
+- **B required:** synthetic shared API/UI/PostgreSQL correction, stale/concurrent writes, audit atomicity and historical preservation across both sources and all three rooftops.
+- **C conditional:** corrected April 687 / 107 / 38 requires independent attestation. Missing evidence is `BLOCKED_EVIDENCE_MISSING`, a nonzero targeted gate; it does not block A+B eligibility. Never use the goal workbook as runtime enrichment.
+- **Native Excel required:** actual recalculation/edit/save/reopen/print evidence. Structural XLSX and browser downloads cannot pass this gate. Current execution found no Excel installation: `BLOCKED_NATIVE_EXCEL_UNAVAILABLE`.
+
+From `server`, run `FW_ACCEPTANCE_MODE=original FW_EVIDENCE_DIR=/Users/tcompy/Developer/dealer-recon/docs/discovery/hiley-artifacts/fw npm test -- src/acceptance/fortWorthEvidence.acceptance.test.ts`. Corrected mode additionally requires `FW_VERIFIED_CORRECTION_FILE` pointing to a protected JSON attestation within that realpath root. Required keys: `boa_sha256`, `dealertrack_sha256`, `source_side` (`boa` or `dealertrack`), 1-based `source_row_number`, `previous_vin` (normalized value or null), full `verified_vin`, `verified_by`, ISO `verified_at`, `verification_reference`, and `independent_of_goal:true`. This attestation records separately substantiated human evidence; schema validity alone does not substantiate it. The harness binds both raw hashes and the original row, then uses an authenticated in-memory test operator to GET the revision and explicitly confirm through the production API, omitting optional narratives. No protected transactions are written to a database. Ordinary CI reports A/C not evaluated.
+
+Initial-release eligibility requires A+B+native Excel+all quality gates and separate enablement authorization. C is not a required release gate. This work does not enable any rooftop.
