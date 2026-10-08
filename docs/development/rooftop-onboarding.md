@@ -91,7 +91,7 @@ Before changing the profile to `enabled: true`, require all of the following:
 - backend lint, typecheck, build, and full tests pass;
 - frontend lint, unit tests, build, and Playwright pass; and
 - whole-branch code and security reviews have no unresolved blocking finding; and
-- required native Excel recalculation, note edit/save/reopen and print verification passes for native XLSX rooftops.
+- required Excel usability verification passes where the approved rooftop contract requires it; the FW correction does not add retrospective Hurst/Acura checks.
 
 Record the profile-enablement change as a separate, reviewable step. A passing Acura gate does not authorize enabling Fort Worth, Burleson, Huntsville, or West.
 
@@ -103,15 +103,17 @@ Run repository-configured commands rather than guessed equivalents. At minimum, 
 
 ## Fort Worth release contract (2026-10-05)
 
-`fw-v1` remains disabled. Its implementation exports two genuine XLSX files for a single selected accounting month: `fw-merged-floorplan-YYYY-MM.xlsx` and `fw-fp-rec-YYYY-MM.xlsx`. Historical tabs and auxiliary legends are omitted. Merged source descriptions remain literal; clerks add research, description edits, follow-up notes and final sign-off after export. Manual FP REC notes start blank. Native XLSX upload is not added.
+`fw-v1` remains disabled. The 2026-10-08 decision supersedes the earlier native-XLSX approval. Its implementation exports two shared HTML-based `.xls` files for a single selected accounting month: `fw-merged-floorplan-YYYY-MM.xls` and `fw-fp-rec-YYYY-MM.xls`. Historical tabs and auxiliary legends are omitted. Post-reconciliation research and completion are shared rooftop workflows. Merged source descriptions remain literal; clerks add research, description edits, follow-up notes and final sign-off after export. Manual FP REC notes start blank. Native XLSX upload is not added.
 
 Shared VIN correction supports BOA and Dealertrack in Hurst, Acura and Fort Worth. `GET /transactions/:id/vin-verification` supplies the current revision; `POST /transactions/:id/vin-enrichment` requires `expected_revision` and explicit `confirmed:true`. Source, reason and reference remain optional. Stale edits require refresh/reconfirmation. Corrections preserve source descriptions/raw rows and old snapshots/downloads; operators rerun explicitly. Missing prior-run identity is omitted from carry-forward, never reconstructed from current transactions; requesting that unavailable historical detail returns an explicit limitation while stored downloads remain available. Assessments use claimed VIN fields or explicitly VIN-labelled short tokens, not unrelated reference codes.
 
-- **A required:** original April 794 BOA / 725 Dealertrack, 686 matches, 108 BOA-only / 39 Dealertrack-only, 147 exceptions, 833 merged rows. Cents: BOA 4,034,820,196; GL −3,599,702,841; difference/net 435,117,355; variance 0. The independent in-memory oracle checks source hash/row membership, amounts, ordering, native formulas/caches and layout.
+- **A required:** original April 794 BOA / 725 Dealertrack, 686 matches, 108 BOA-only / 39 Dealertrack-only, 147 exceptions, 833 merged rows. Cents: BOA 4,034,820,196; GL −3,599,702,841; difference/net 435,117,355; variance 0. The independent in-memory oracle checks source hash/row membership, amounts, ordering, serialized cells/formulas and layout.
 - **B required:** synthetic shared API/UI/PostgreSQL correction, stale/concurrent writes, audit atomicity and historical preservation across both sources and all three rooftops.
 - **C conditional:** corrected April 687 / 107 / 38 requires independent attestation. Missing evidence is `BLOCKED_EVIDENCE_MISSING`, a nonzero targeted gate; it does not block A+B eligibility. Never use the goal workbook as runtime enrichment.
-- **Native Excel required:** actual recalculation/edit/save/reopen/print evidence. Structural XLSX and browser downloads cannot pass this gate. Current execution found no Excel installation: `BLOCKED_NATIVE_EXCEL_UNAVAILABLE`.
+- **FW Excel usability required:** actual recalculation/edit/save/reopen/print evidence. Serialized HTML tests and browser downloads cannot pass this gate. Current execution found no Excel installation: `BLOCKED_EXCEL_UNAVAILABLE`.
 
 From `server`, run `FW_ACCEPTANCE_MODE=original FW_EVIDENCE_DIR=/Users/tcompy/Developer/dealer-recon/docs/discovery/hiley-artifacts/fw npm test -- src/acceptance/fortWorthEvidence.acceptance.test.ts`. Corrected mode additionally requires `FW_VERIFIED_CORRECTION_FILE` pointing to a protected JSON attestation within that realpath root. Required keys: `boa_sha256`, `dealertrack_sha256`, `source_side` (`boa` or `dealertrack`), 1-based `source_row_number`, `previous_vin` (normalized value or null), full `verified_vin`, `verified_by`, ISO `verified_at`, `verification_reference`, and `independent_of_goal:true`. This attestation records separately substantiated human evidence; schema validity alone does not substantiate it. The harness binds both raw hashes and the original row, then uses an authenticated in-memory test operator to GET the revision and explicitly confirm through the production API, omitting optional narratives. No protected transactions are written to a database. Ordinary CI reports A/C not evaluated.
 
-Initial-release eligibility requires A+B+native Excel+all quality gates and separate enablement authorization. C is not a required release gate. This work does not enable any rooftop.
+Initial-release eligibility requires A+B+FW Excel usability+all quality gates and separate enablement authorization. C is not a required release gate. This work does not enable any rooftop.
+
+Default/`xls` generates HTML-XLS. Explicit `xlsx` only serves an existing FW native artifact and otherwise returns 422; it never returns HTML. Existing stored artifacts retain original bytes/name/MIME. ExcelJS remains test-only at its locked version. OOXML/ZIP/cache/runtime-library checks are not release requirements. The independent April membership and monetary oracle remains unchanged.

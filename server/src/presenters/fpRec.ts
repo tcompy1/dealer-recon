@@ -1,3 +1,4 @@
+import {spreadsheetPrintMetadata,spreadsheetPageStyle} from "./spreadsheetHtml.js";
 import { formatCents } from "../domain/money.js";
 import {
   accountingMonthEndDate,
@@ -131,14 +132,14 @@ const FP_REC_PRESENTER_POLICIES: Record<
   },
   "fw-fp-rec-v1": {
     presenterId: "fw-fp-rec-v1",
-    statementLabel: "Outstanding STMT",
-    title: (workbook) => `Floorplan Reconciliation-${workbook.store_name}`,
+    statementLabel: "Outstanding on STMT",
+    title: (workbook) => `Floorplan Reconciliation - ${workbook.store_name}`,
     scheduleNoteHeaders: ["GL FLOORED", "BOA FLOORED"],
     statementNoteHeaders: ["BOA FLOORED", "GL FLOORED"],
-    scheduleMinimumRows: null,
-    statementMinimumRows: null,
+    scheduleMinimumRows: 1,
+    statementMinimumRows: 1,
     includeWorksheetMetadata: true,
-    totalGlFormula: (accountRow) => `=SUM(B${accountRow}:B${accountRow})`,
+    totalGlFormula: (accountRow) => `=SUM(B${accountRow})`,
   },
 };
 
@@ -280,8 +281,9 @@ function clerkHeaders(storeConfig: StoreWorkflowConfig): string[] {
 
 export function toFpRecXlsHtml(workbook: FpRecWorkbook): string {
   const policy = requireWorkbookPolicy(workbook);
+  const fortWorth = policy.presenterId === "fw-fp-rec-v1";
   const accountingNumberFormat = '_\\(\\* \\#\\,\\#\\#0\\.00_\\)\\;_\\(\\* \\(\\#\\,\\#\\#0\\.00\\)\\;_\\(\\* "-"??_\\)\\;_\\(@_\\)';
-  const styles = `
+  let styles = `
     body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #111827; }
     table { border-collapse: collapse; width: 760px; }
     td { border: 1px solid #d1d5db; padding: 4px 8px; text-align: left; vertical-align: top; }
@@ -294,10 +296,15 @@ export function toFpRecXlsHtml(workbook: FpRecWorkbook): string {
     td.amount { text-align: right; font-family: Calibri, Arial, sans-serif; mso-number-format: '${accountingNumberFormat}'; }
     td.note-entry { background-color: #ffffff; }
   `;
-  const colWidths = [260, 120, 110, 110];
+  if(fortWorth) styles = `${spreadsheetPageStyle("portrait")}
+    body {font-family:Calibri,Arial,sans-serif;font-size:12pt;} table {border-collapse:collapse;} td {padding:4px;vertical-align:top;white-space:pre-wrap;overflow-wrap:break-word;}
+    td.amount {text-align:right;mso-number-format:'${accountingNumberFormat}';} td:not(.amount) {mso-number-format:"\\@";}
+    tr.section-row td, tr.total-row td, tr.highlight-row td, tr.variance-row td {border-bottom:1px solid #111827;} tr.section-row, tr.title-row {font-weight:bold;}
+  `;
+  const colWidths = fortWorth ? [145,118,187,228,14,14] : [260, 120, 110, 110];
   const colgroup = `<colgroup>${colWidths.map((width) => `<col style="width:${width}px"/>`).join("")}</colgroup>`;
   const rows = buildWorkpaperRows(workbook, policy);
-  const worksheetMetadata = policy.includeWorksheetMetadata
+  const worksheetMetadata = fortWorth ? spreadsheetPrintMetadata(worksheetNameForWorkbook(workbook),"F",rows.length,"portrait") : policy.includeWorksheetMetadata
     ? toWorksheetMetadata(workbook, rows.length)
     : null;
 
@@ -313,7 +320,7 @@ export function toFpRecXlsHtml(workbook: FpRecWorkbook): string {
     "<body>",
     `<table>${colgroup}`,
     "<tbody>",
-    rows.map(workpaperRowHtml).join(""),
+    rows.map(row=>workpaperRowHtml(row,fortWorth)).join(""),
     "</tbody>",
     "</table>",
     "</body>",
@@ -322,6 +329,7 @@ export function toFpRecXlsHtml(workbook: FpRecWorkbook): string {
 }
 
 export function toFpRecFilename(workbook: FpRecWorkbook): string {
+  if(workbook.presentation?.presenter_id === "fw-fp-rec-v1") return `fw-fp-rec-${workbook.presentation.accounting_month}.xls`;
   const policy = requireWorkbookPolicy(workbook);
   const store = workbook.store_name
     .toLowerCase()
@@ -537,7 +545,9 @@ function buildWorkpaperRows(
     },
     {
       className: "period-row",
-      cells: [{ text: formatPeriodDateForWorkpaper(workbook.period_date), colspan: 4 }],
+      cells: policy.presenterId === "fw-fp-rec-v1"
+        ? [{text:accountingMonthEndDate(workbook.presentation!.accounting_month!).replace(/^(\d{4})-(\d{2})-(\d{2})$/,"$2/$3/$1")},{},{},{}]
+        : [{ text: formatPeriodDateForWorkpaper(workbook.period_date), colspan: 4 }],
     },
     labeledAmountRow(policy.statementLabel, workbook.summary.outstanding_per_stmt_amount_cents),
     sectionLabelRow("GL Balances"),
@@ -548,7 +558,7 @@ function buildWorkpaperRows(
       policy.totalGlFormula(5),
       "summary-row",
     ),
-    labeledAmountRow("Difference", workbook.summary.difference_amount_cents, "=SUM(B3+B6)", "highlight-row"),
+    labeledAmountRow("Difference", workbook.summary.difference_amount_cents, policy.presenterId === "fw-fp-rec-v1" ? "=B6+B3" : "=SUM(B3+B6)", "highlight-row"),
   ];
 
   let nextExcelRow = rows.length + 1;
@@ -690,12 +700,12 @@ function blankWorkpaperRow(): WorkpaperRow {
   return { cells: [{}, {}, {}, {}] };
 }
 
-function workpaperRowHtml(row: WorkpaperRow): string {
+function workpaperRowHtml(row: WorkpaperRow, literalText = false): string {
   const classAttr = row.className ? ` class="${escapeHtml(row.className)}"` : "";
-  return `<tr${classAttr}>${row.cells.map(workpaperCellHtml).join("")}</tr>`;
+  return `<tr${classAttr}>${row.cells.map(cell=>workpaperCellHtml(cell,literalText)).join("")}</tr>`;
 }
 
-function workpaperCellHtml(cell: WorkpaperCell): string {
+function workpaperCellHtml(cell: WorkpaperCell,literalText = false): string {
   const classes = [
     cell.className,
     cell.amountCents !== undefined ? "amount" : null,
@@ -703,7 +713,7 @@ function workpaperCellHtml(cell: WorkpaperCell): string {
   const classAttr = classes ? ` class="${escapeHtml(classes)}"` : "";
   const colspanAttr = cell.colspan && cell.colspan > 1 ? ` colspan="${cell.colspan}"` : "";
   const formulaAttr = cell.formula ? ` x:fmla="${escapeHtml(cell.formula)}"` : "";
-  const numberAttr = cell.amountCents !== undefined ? " x:num" : "";
+  const numberAttr = cell.amountCents !== undefined ? " x:num" : literalText ? " x:str" : "";
   const value = cell.amountCents !== undefined
     ? formatWorkpaperNumberCents(cell.amountCents)
     : neutralizeSpreadsheetText(cell.text ?? "");

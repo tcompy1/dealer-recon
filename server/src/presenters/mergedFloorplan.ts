@@ -1,3 +1,4 @@
+import {spreadsheetPrintMetadata,spreadsheetPageStyle} from "./spreadsheetHtml.js";
 import { formatCents } from "../domain/money.js";
 import { accountingMonthEndDate,parseAccountingMonth,type AccountingMonth } from "../domain/accountingMonth.js";
 import { computeVin6, extractVin6FromDescription } from "../domain/vin6.js";
@@ -91,6 +92,7 @@ export function buildMergedFloorplanWorkbookFromReconciliationDetail(
 }
 
 export function toMergedFloorplanXlsHtml(workbook: MergedFloorplanWorkbook): string {
+  if (workbook.store_config.storeKey === "fw") return fortWorthMergedHtml(workbook);
   const accountingFormat = '\\\\\\(\\#\\,\\#\\#0\\.00\\\\\\)\\;\\#\\,\\#\\#0\\.00';
   const styles = `
     body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #111827; }
@@ -134,6 +136,7 @@ export function toMergedFloorplanXlsHtml(workbook: MergedFloorplanWorkbook): str
 }
 
 export function toMergedFloorplanFilename(workbook: MergedFloorplanWorkbook): string {
+  if(workbook.store_config.storeKey === "fw") return `fw-merged-floorplan-${workbook.accounting_month}.xls`;
   const period = workbook.store_config.storeKey === "acura"
     ? accountingMonthLabelFromPeriodDate(workbook.period_date) ?? "period"
     : workbook.period_date?.replace(/[^0-9]/g, "-").replace(/^-|-$/g, "") || "period";
@@ -623,4 +626,21 @@ function compareCodePoints(left:string,right:string):number {
  const a=Array.from(left),b=Array.from(right);
  for(let index=0;index<Math.min(a.length,b.length);index++){const delta=a[index].codePointAt(0)!-b[index].codePointAt(0)!;if(delta)return delta;}
  return a.length-b.length;
+}
+
+/** Same HTML transport, with the characterized FW detail geometry. */
+function fortWorthMergedHtml(workbook:MergedFloorplanWorkbook):string {
+ const reviews=workbook.rows.some(row=>row.review!==undefined),last=workbook.rows.length+2;
+ const headers=[...workbook.headers,...(reviews?["Review","2100 component","2101 component","2101S component"]:[])];
+ const text=(value:string)=>`<td x:str class="text">${spreadsheetTextCell(value)}</td>`;
+ const money=(value:number|null,formula?:string)=>value===null?"<td></td>":`<td class="amount" x:num${formula?` x:fmla="${escapeHtml(formula)}"`:""}>${formatCents(value)}</td>`;
+ const rows=workbook.rows.map(row=>`<tr>${text(row.store_description)}${text(row.serial_no_vin)}${text(row.boa_vin6)}${money(row.ending_balance_cents)}${money(row.dealertrack_account_amount_cents)}${text(row.dealertrack_vin6)}${text(row.dealertrack_description)}${text(row.dealertrack_control)}${reviews?(row.review?text(row.review.label)+["2100","2101","2101S"].map(key=>money(row.review!.components[key as "2100"|"2101"|"2101S"])).join(""):"<td></td>".repeat(4)):""}</tr>`);
+ const totals=`<tr class="total-row"><td></td><td></td><td></td>${money(workbook.boa_total_amount_cents,workbook.rows.length?`=SUM(D2:D${last-1})`:"=0")}${money(workbook.dealertrack_total_amount_cents,workbook.rows.length?`=SUM(E2:E${last-1})`:"=0")}<td></td>${text("Final Totals:")}<td></td>${reviews?"<td></td>".repeat(4):""}</tr>`;
+ const widths=[224,154,84,126,126,84,336,126,...(reviews?[294,126,126,126]:[])];
+ return `<!DOCTYPE html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8">
+${spreadsheetPrintMetadata("MERGED",reviews?"L":"H",last,"landscape",true)}
+<style>${spreadsheetPageStyle("landscape")}
+body {font-family:Calibri,Arial,sans-serif;font-size:12pt;} table {border-collapse:collapse;} td,th {border:1px solid #9ca3af;padding:4px;vertical-align:top;white-space:pre-wrap;overflow-wrap:break-word;} .text {mso-number-format:"\\@";} .amount {text-align:right;mso-number-format:"#,##0.00;(#,##0.00);0.00";} .total-row {font-weight:bold;} thead {display:table-header-group;}
+</style></head><body><table><colgroup>${widths.map(width=>`<col style="width:${width}px"/>`).join("")}</colgroup><thead><tr>${headers.map(header=>`<th x:str>${spreadsheetTextCell(header)}</th>`).join("")}</tr></thead><tbody>${rows.join("\n")}${totals}</tbody></table></body></html>`;
 }

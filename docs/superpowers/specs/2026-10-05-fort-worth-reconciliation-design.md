@@ -8,7 +8,7 @@
 
 Dealer-recon imports and reconciles Fort Worth source data and exports two operational HTML-based `.xls` files through the shared export architecture. Clerks complete exception research, description edits, supporting references, follow-up notes and final workpaper completion in Excel. The app preserves source descriptions and blank clerk-entry cells; export does not mean accounting sign-off.
 
-The user's latest attached request approves all product choices below and supersedes previous FW-only correction protections, mandatory reference/reason policies, conflicting-VIN rejection, HTML-XLS proposal and historical-parity release gate. Those questions are settled. Engineering choices are specified here without additional approval questions. Implementation, cleanup, branching, staging, commits, PRs, deployment and enablement are not actions authorized by this documentation turn.
+The 2026-10-05 request approved the original product choices below; §5 now records the superseding 2026-10-08 export decision. The earlier request supersedes previous FW-only correction protections, mandatory reference/reason policies, conflicting-VIN rejection, HTML-XLS proposal and historical-parity release gate. Those questions are settled. Engineering choices are specified here without additional approval questions. Implementation, cleanup, branching, staging, commits, PRs, deployment and enablement are not actions authorized by this documentation turn.
 
 Read `AGENTS.md`, `docs/development/testing-policy.md`, `docs/development/rooftop-onboarding.md` and both `2026-09-18-fort-worth-*` characterization documents. Characterizations remain unchanged. Protected originals stay read-only at `docs/discovery/hiley-artifacts/fw`. Goal/completed output is an assertion oracle, never a runtime VIN lookup or enrichment input.
 
@@ -139,7 +139,7 @@ Empty sections give subtotal rows 10/13 and variance 15. Corrected April n=38,m=
 | C: corrected April | Independent historical correction evidence plus supported correction flow: 687 matches,107 BOA-only,38 DT-only and membership/accounting proof. | Currently `BLOCKED_EVIDENCE_MISSING`. Conditional; does not block completion or initial-release eligibility. Never passed by a silent skip or manufactured correction. |
 | Excel usability | Resulting FW `.xls` opens, recalculates, permits clerk edits/save/reopen and readable printing. | Required; report `BLOCKED_EXCEL_UNAVAILABLE` if unavailable. Serialized tests do not substitute. No retrospective Hurst/Acura Excel gate. |
 
-Initial release may qualify on A+B plus FW Excel usability and all applicable quality gates. Update onboarding guidance accordingly during implementation. Actual production enablement stays separate; FW remains disabled through this plan. No unresolved product decision blocks planning. Execution authorization, future test results and native verification are outstanding; C is a disclosed historical evidence gap only.
+Initial release may qualify on A+B plus FW Excel usability and all applicable quality gates. Update onboarding guidance accordingly during implementation. Actual production enablement stays separate; FW remains disabled through this plan. No unresolved product decision blocks planning. Correction execution is authorized; current test results and FW Excel usability evidence must be recorded in the new handoff; C is a disclosed historical evidence gap only.
 
 | April measure | Original | Corrected, conditional |
 | --- | ---: | ---: |
@@ -193,7 +193,7 @@ The user has approved future implementation Task 1 to replace references and rem
 
 ## 9. Review and execution boundary
 
-The companion plan separates fixture cleanup, shared correction schema/API/UI/history, FW accounting/presentation, native XLSX transport and acceptance into reviewable tasks. All listed product decisions are approved; no repeated intermediate approval questions are needed for routine implementation choices. Production work still requires execution authorization. Independent review and its resolved findings are recorded in the plan. No implementation tests, native Excel verification, migrations, cleanup or profile changes are claimed by this document.
+The companion plan separates fixture cleanup, shared correction schema/API/UI/history, FW accounting/presentation, shared HTML transport and acceptance into reviewable tasks. All listed product decisions are approved; no repeated intermediate approval questions are needed for routine implementation choices. The 2026-10-08 correction is authorized; actual production enablement is not. Independent review and its resolved findings are recorded in the plan. No implementation tests, native Excel verification, migrations, cleanup or profile changes are claimed by this document.
 
 
 Independent review of this specification and its implementation plan completed on 2026-10-05. Shared VIN/history and XLSX/artifact/cleanup reviewers rechecked the resolved exported-identity, migration-preflight, empty-total and print-fit findings and found no remaining actionable gaps in their scopes. See the plan’s final review record for findings and actual documentation-only verification. No implementation or native Excel verification is claimed.

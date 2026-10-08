@@ -4,8 +4,9 @@ import {createApp} from "./app.js";
 import {MemoryTransactionRepository,type TransactionRepository} from "./repositories/transactionRepository.js";
 import {ROOFTOP_PROFILES} from "./config/storeWorkflowConfig.js";
 import {FW_SANITIZED_FIXTURE_PATHS,readFwSyntheticFixture} from "./testFixtures/fw/index.js";
-import * as writers from "./presenters/fortWorthXlsx.js";
-import {XLSX_MIME} from "./services/floorplanExport.js";
+import * as writers from "./presenters/fpRec.js";
+const XLSX_MIME="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const XLS_MIME="application/vnd.ms-excel";
 async function workflow(repository:TransactionRepository=new MemoryTransactionRepository(),key:"fw"|"hurst"|"acura"="fw"){
  const app=createApp(repository,[],1,async()=>{}, {nodeEnv:"test",allowDevDealershipFallback:true});
  const store=(await repository.listDealershipStores(1)).find(s=>s.name===ROOFTOP_PROFILES[key].displayName) ?? await repository.createDealershipStore(1,{name:ROOFTOP_PROFILES[key].displayName});
@@ -15,18 +16,19 @@ async function workflow(repository:TransactionRepository=new MemoryTransactionRe
  return {app,repository,run};
 }
 async function enabled(assertion:()=>Promise<void>){const prior=ROOFTOP_PROFILES.fw.enabled;ROOFTOP_PROFILES.fw.enabled=true;try{await assertion();}finally{ROOFTOP_PROFILES.fw.enabled=prior;}}
-test("FW stores six artifacts, native binary selectors and JSON retain exact outcomes",async()=>enabled(async()=>{
+test("FW stores six artifacts, HTML binary selectors and JSON retain exact outcomes",async()=>enabled(async()=>{
  const {app,repository,run}=await workflow();const response=await run();expect(response.status).toBe(200);const id=response.body.reconciliation_run_id;
  expect(response.body.matched_count).toBe(2);const artifacts=await repository.listReconciliationArtifacts(1,id);expect(artifacts).toHaveLength(6);
  for(const [route,type] of [["merged-floorplan","MERGED_FLOORPLAN"],["fp-rec","FP_REC"]] as const){
-  const artifact=await repository.findReconciliationArtifact(1,id,type);expect(artifact?.content_type).toBe(XLSX_MIME);expect(artifact?.content.subarray(0,2).toString()).toBe("PK");
-  for(const format of [undefined,"xls","xlsx"]){const res=await request(app).get(`/reconciliation-runs/${id}/${route}`).buffer(true).parse(binary).query(format?{format}:{});expect(res.status).toBe(200);expect(res.headers["content-type"]).toContain(XLSX_MIME);expect((res.body as Buffer).equals(artifact!.content)).toBe(true);}
+  const artifact=await repository.findReconciliationArtifact(1,id,type);expect(artifact?.content_type).toBe(XLS_MIME);expect(artifact?.content.toString()).toContain("<!DOCTYPE html>");
+  for(const format of [undefined,"xls"]){const res=await request(app).get(`/reconciliation-runs/${id}/${route}`).buffer(true).parse(binary).query(format?{format}:{});expect(res.status).toBe(200);expect(res.headers["content-type"]).toContain(XLS_MIME);expect((res.body as Buffer).equals(artifact!.content)).toBe(true);}
+  expect((await request(app).get(`/reconciliation-runs/${id}/${route}`).query({format:"xlsx"})).status).toBe(422);
   expect((await request(app).get(`/reconciliation-runs/${id}/${route}`).query({format:"json"})).body.rows).toHaveLength(2);
  }
 }));
 test("second writer failure leaves no partial artifact batch and prior run stays downloadable",async()=>enabled(async()=>{
  const {app,repository,run}=await workflow();const first=await run();expect(first.status).toBe(200);const original=await repository.findReconciliationArtifact(1,first.body.reconciliation_run_id,"FP_REC");
- const spy=vi.spyOn(writers,"writeFortWorthFpRecXlsx").mockRejectedValue(new Error("synthetic serialization failure"));
+ const spy=vi.spyOn(writers,"toFpRecXlsHtml").mockImplementation(()=>{throw new Error("synthetic serialization failure");});
  try {expect((await run()).status).toBe(500);}finally{spy.mockRestore();}
  const runs=await repository.listReconciliationRuns(1);const failed=runs.find(r=>r.reconciliation_run_id!==first.body.reconciliation_run_id)!;expect(failed.status).toBe("artifact_failed");expect(await repository.listReconciliationArtifacts(1,failed.reconciliation_run_id)).toEqual([]);
  const old=await request(app).get(`/artifacts/${original!.id}/download`).buffer(true).parse(binary);expect(old.status).toBe(200);expect((old.body as Buffer).equals(original!.content)).toBe(true);
@@ -41,8 +43,8 @@ test("later correction changes rerun only; stored and regenerated original workb
  const rerun=await run();expect(rerun.status).toBe(200);expect(rerun.body.matched_count).toBe(1);
  const originalDetail=await request(app).get(`/reconciliation-runs/${id}`);expect(originalDetail.status).toBe(200);expect(originalDetail.body.matched_count).toBe(2);
  const stored=await request(app).get(`/reconciliation-runs/${id}/merged-floorplan`).buffer(true).parse(binary);expect((stored.body as Buffer).equals(old!.content)).toBe(true);
- const regenerated=await request(app).get(`/reconciliation-runs/${id}/merged-floorplan`).query({store_key:"fw",format:"xlsx"}).buffer(true).parse(binary);expect(regenerated.status).toBe(200);
- const {default:ExcelJS}=await import("exceljs");const a=new ExcelJS.Workbook(),b=new ExcelJS.Workbook();await a.xlsx.load(old!.content as unknown as import("exceljs").Buffer);await b.xlsx.load(regenerated.body as import("exceljs").Buffer);expect(b.worksheets[0].getSheetValues()).toEqual(a.worksheets[0].getSheetValues());
+ const regenerated=await request(app).get(`/reconciliation-runs/${id}/merged-floorplan`).query({store_key:"fw",format:"xls"}).buffer(true).parse(binary);expect(regenerated.status).toBe(200);
+ expect((regenerated.body as Buffer).equals(old!.content)).toBe(true);
  const override=await request(app).get(`/reconciliation-runs/${id}/merged-floorplan`).query({store_key:"acura",format:"xlsx"});expect(override.status).toBe(422);
 }));
 test("batch persistence failure leaves failed run empty and old artifact intact",async()=>enabled(async()=>{
@@ -61,7 +63,7 @@ test("absent stored FP REC regenerates saved identity after later correction",as
  const {app,repository,run}=await workflow();const first=await run();const id=first.body.reconciliation_run_id;const old=await repository.findReconciliationArtifact(1,id,"FP_REC");
  const t=(await repository.listBySource(1,"boa"))[0];expect((await request(app).post(`/transactions/${t.id}/vin-enrichment`).send({vin:"1ZZAA11A1ZA100004",expected_revision:0,confirmed:true})).status).toBe(200);
  const spy=vi.spyOn(repository,"findReconciliationArtifact").mockResolvedValueOnce(null);let response;try{response=await request(app).get(`/reconciliation-runs/${id}/fp-rec`).buffer(true).parse(binary);}finally{spy.mockRestore();}expect(response.status).toBe(200);
- const {default:ExcelJS}=await import("exceljs");const a=new ExcelJS.Workbook(),b=new ExcelJS.Workbook();await a.xlsx.load(old!.content as unknown as import("exceljs").Buffer);await b.xlsx.load(response.body as import("exceljs").Buffer);expect(b.worksheets[0].getSheetValues()).toEqual(a.worksheets[0].getSheetValues());
+ expect((response.body as Buffer).equals(old!.content)).toBe(true);
 }));
 test("legacy stored FW xls is served unchanged even with unavailable profile and no snapshot",async()=>enabled(async()=>{
  const {app,repository,run}=await workflow();const first=await run();const prior=await repository.getReconciliationRunMetadata(1,first.body.reconciliation_run_id);
@@ -69,11 +71,11 @@ test("legacy stored FW xls is served unchanged even with unavailable profile and
  const bytes=Buffer.from("<table><tr><td>invented legacy file</td></tr></table>");
  await repository.createReconciliationArtifactBatch(1,[{reconciliation_run_id:old.id,store_id:prior!.dealership_store_id,accounting_month:prior!.accounting_month!,uploaded_by:null,artifact_type:"FP_REC",filename:"legacy-fw.xls",content_type:"application/vnd.ms-excel",content:bytes}]);
  await repository.updateReconciliationRunStatus(1,old.id,"completed");
- for(const format of ["xls","xlsx"]){const response=await request(app).get(`/reconciliation-runs/${old.id}/fp-rec`).query({format}).buffer(true).parse(binary);expect(response.status).toBe(200);expect(response.headers["content-disposition"]).toContain("legacy-fw.xls");expect(response.headers["content-type"]).toContain("application/vnd.ms-excel");expect((response.body as Buffer).equals(bytes)).toBe(true);}
+ for(const format of ["xls"]){const response=await request(app).get(`/reconciliation-runs/${old.id}/fp-rec`).query({format}).buffer(true).parse(binary);expect(response.status).toBe(200);expect(response.headers["content-disposition"]).toContain("legacy-fw.xls");expect(response.headers["content-type"]).toContain("application/vnd.ms-excel");expect((response.body as Buffer).equals(bytes)).toBe(true);}
 }));
 
 const databaseUrl=process.env.DATABASE_URL;
-(databaseUrl?describe:describe.skip)("shared correction and native artifacts in disposable PostgreSQL",()=>{
+(databaseUrl?describe:describe.skip)("shared correction and immutable artifacts in disposable PostgreSQL",()=>{
  test.each(["hurst","acura","fw"] as const)("%s both sources preserve raw descriptions and old artifacts through reruns",async key=>enabled(async()=>{
   const {withDisposablePostgresDatabase}=await import("./testUtils/disposablePostgresDatabase.js");const {migrate}=await import("./db/migrate.js");const {createPool,PostgresTransactionRepository}=await import("./repositories/postgresTransactionRepository.js");
   await withDisposablePostgresDatabase(databaseUrl!,async url=>{
@@ -121,3 +123,18 @@ test.skipIf(!databaseUrl)("missing prior snapshot cannot block current PostgreSQ
  const {withDisposablePostgresDatabase}=await import("./testUtils/disposablePostgresDatabase.js"),{migrate}=await import("./db/migrate.js"),{createPool,PostgresTransactionRepository}=await import("./repositories/postgresTransactionRepository.js");
  await withDisposablePostgresDatabase(databaseUrl!,async url=>{await migrate(url);const pool=createPool(url);try{await unavailablePriorDoesNotBlockCurrent(new PostgresTransactionRepository(pool));}finally{await pool.end();}});
 }),30000);
+
+
+test.each(["merged-floorplan","fp-rec"])("stored native %s remains byte-identical and xlsx never returns HTML",async route=>enabled(async()=>{
+ const {app,repository,run}=await workflow();const first=await run(),id=first.body.reconciliation_run_id;
+ const original=await repository.findReconciliationArtifact(1,id,route==="fp-rec"?"FP_REC":"MERGED_FLOORPLAN");
+ const {default:ExcelJS}=await import("exceljs");const book=new ExcelJS.Workbook();book.addWorksheet("Stored").getCell("A1").value="Invented historical artifact";const bytes=Buffer.from(await book.xlsx.writeBuffer());
+ const find=vi.spyOn(repository,"findReconciliationArtifact").mockResolvedValue({...original!,filename:"stored-fw.xlsx",content_type:XLSX_MIME,content:bytes});
+ const detail=vi.spyOn(repository,"getReconciliationRunDetail").mockRejectedValue(new Error("historical snapshot unavailable"));
+ try{
+  for(const format of [undefined,"xls","xlsx"]){const response=await request(app).get(`/reconciliation-runs/${id}/${route}`).query(format?{format}:{}).buffer(true).parse(binary);expect(response.status).toBe(200);expect(response.headers["content-type"]).toContain(XLSX_MIME);expect(response.headers["content-disposition"]).toContain("stored-fw.xlsx");expect((response.body as Buffer).equals(bytes)).toBe(true);}
+  expect((await request(app).get(`/reconciliation-runs/${id}/${route}`).query({format:"xlsx",store_key:"acura"})).status).toBe(422);
+ }finally{find.mockRestore();detail.mockRestore();}
+ const absent=vi.spyOn(repository,"findReconciliationArtifact").mockResolvedValue(null);
+ try{expect((await request(app).get(`/reconciliation-runs/${id}/${route}`).query({format:"xlsx"})).status).toBe(422);}finally{absent.mockRestore();}
+}));

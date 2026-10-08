@@ -1610,6 +1610,7 @@ export function createApp(
         "MERGED_FLOORPLAN",
       );
       if (storedArtifact) {
+        if(format === "xlsx" && storedArtifact.content_type !== "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") throw new ValidationError("This artifact is HTML-XLS; request xls or omit format.", "UNSUPPORTED_EXPORT_FORMAT");
         await auditArtifactDownload(response, storedArtifact);
         sendArtifactDownload(response, storedArtifact);
         return;
@@ -1617,6 +1618,7 @@ export function createApp(
     }
 
     const storeConfig = resolveRunRooftopProfile(metadata, storeKey);
+    if(format === "xlsx") throw new ValidationError("Native XLSX generation is unavailable; request xls or omit format.", "UNSUPPORTED_EXPORT_FORMAT");
     const detail=await repository.getReconciliationRunDetail(getRequestDealershipId(response),reconciliationRunId);
     if(!detail) throw new NotFoundError("Reconciliation run");
     if (format === "json") {
@@ -1685,6 +1687,7 @@ export function createApp(
         "FP_REC",
       );
       if (storedArtifact) {
+        if(format === "xlsx" && storedArtifact.content_type !== "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") throw new ValidationError("This artifact is HTML-XLS; request xls or omit format.", "UNSUPPORTED_EXPORT_FORMAT");
         await auditArtifactDownload(response, storedArtifact);
         sendArtifactDownload(response, storedArtifact);
         return;
@@ -1692,6 +1695,7 @@ export function createApp(
     }
 
     const rooftopProfile = resolveRunRooftopProfile(metadata, storeKey);
+    if(format === "xlsx") throw new ValidationError("Native XLSX generation is unavailable; request xls or omit format.", "UNSUPPORTED_EXPORT_FORMAT");
     const detail=await repository.getReconciliationRunDetail(getRequestDealershipId(response),reconciliationRunId);
     if(!detail) throw new NotFoundError("Reconciliation run");
     if (format === "json") {
@@ -2516,5 +2520,5 @@ function routeNonFloorplanUpload(
 }
 
 function validateExportFormat(format:string,profile:string|null):void {
- if(!["json","xls","xlsx"].includes(format) || (format==="xlsx" && !profile?.startsWith("fw-")))throw new ValidationError("This rooftop supports JSON and its original spreadsheet format. Native XLSX is available for Fort Worth only.","UNSUPPORTED_EXPORT_FORMAT");
+ if(!["json","xls","xlsx"].includes(format) || (format==="xlsx" && !profile?.startsWith("fw-")))throw new ValidationError("This rooftop supports JSON and its original spreadsheet format. Explicit XLSX is supported only for an existing native Fort Worth artifact.","UNSUPPORTED_EXPORT_FORMAT");
 }

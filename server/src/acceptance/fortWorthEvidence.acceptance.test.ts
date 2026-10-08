@@ -1,13 +1,13 @@
 import {describe,expect,test,vi} from "vitest";
 import {buildOriginalAprilOracle,buildFortWorthActual,compareFortWorthSemantics,loadOriginalApril,requireCorrectionEvidence,parseCorrectionAttestation} from "./fortWorthEvidence.js";
-import * as writers from "../presenters/fortWorthXlsx.js";
-import ExcelJS from "exceljs";
+import * as fpWriter from "../presenters/fpRec.js";
+import * as mergedWriter from "../presenters/mergedFloorplan.js";
 import {createHash} from "node:crypto";
 import * as engine from "../services/fortWorthReconciliation.js";
 const boa="Dealer Billing Statement for: April 2026\nSerial,Stock Number,Description,Ending Balance,Maturity Date\n1ZZAA11A1ZA100001,T1,Invented first,125,2027-01-01\n1ZZAA11A1ZA100002,T2,Invented second,125,2027-01-01\n";
 const dt="Control,Description,2100,2101,2101S,2110\nT1,Invented 1ZZAA11A1ZA100001,-125,0,0,0\nT2,Invented 1ZZAA11A1ZA100002,-125,0,0,0\n";
 describe("FW safe independent acceptance comparator",()=>{
- test("accepts independently calculated membership, ordering, totals and native semantics",async()=>{expect(compareFortWorthSemantics(await buildFortWorthActual(boa,dt),buildOriginalAprilOracle(boa,dt))).toEqual([]);});
+ test("accepts independently calculated membership, ordering, totals and serialized HTML semantics",async()=>{expect(compareFortWorthSemantics(await buildFortWorthActual(boa,dt),buildOriginalAprilOracle(boa,dt))).toEqual([]);});
  test("rejects wrong pairs with unchanged counts and totals without serializing identities",async()=>{
   const original=engine.reconcileFortWorthTransactions;
   const spy=vi.spyOn(engine,"reconcileFortWorthTransactions").mockImplementation((boa,dt)=>{const result=original(boa,dt);const groups=result.match_groups;const indices=groups.map(g=>g.transactions.findIndex(t=>t.source_type==="dealertrack"));[groups[0].transactions[indices[0]],groups[1].transactions[indices[1]]]=[groups[1].transactions[indices[1]],groups[0].transactions[indices[0]]];return result;});
@@ -19,14 +19,14 @@ describe("FW safe independent acceptance comparator",()=>{
   const expected=buildOriginalAprilOracle(boa+boa.split("\n")[2]+"\n",dt);
   expect(expected.summary).toMatchObject({boa:3,dt:2,matches:1,boaOnly:2,dtOnly:1,ambiguous:1});
  });
- test("rejects native formula corruption with coordinate-only diagnostics",async()=>{
-  const original=writers.writeFortWorthFpRecXlsx;
-  const spy=vi.spyOn(writers,"writeFortWorthFpRecXlsx").mockImplementation(async model=>{const book=new ExcelJS.Workbook();await book.xlsx.load(await original(model) as unknown as ExcelJS.Buffer);book.worksheets[0].getCell("B7").value={formula:"1+1",result:0};return Buffer.from(await book.xlsx.writeBuffer());});
+ test("rejects serialized formula corruption with coordinate-only diagnostics",async()=>{
+  const original=fpWriter.toFpRecXlsHtml;
+  const spy=vi.spyOn(fpWriter,"toFpRecXlsHtml").mockImplementation(model=>original(model).replace('x:fmla="=B6+B3"','x:fmla="=1+1"'));
   try{expect(compareFortWorthSemantics(await buildFortWorthActual(boa,dt),buildOriginalAprilOracle(boa,dt))).toContain("fp_rec.B7");}finally{spy.mockRestore();}
  });
  test.each(["suffix","header","extra-row"])("rejects %s mutation",async kind=>{
-  const original=writers.writeFortWorthMergedXlsx,originalFp=writers.writeFortWorthFpRecXlsx;
-  const spy=kind==="suffix"?vi.spyOn(writers,"writeFortWorthMergedXlsx").mockImplementation(model=>{model.rows[0].boa_vin6="999999";return original(model);}):vi.spyOn(writers,"writeFortWorthFpRecXlsx").mockImplementation(async model=>{const book=new ExcelJS.Workbook();await book.xlsx.load(await originalFp(model) as unknown as ExcelJS.Buffer);book.worksheets[0].getCell(kind==="header"?"C8":"A1000").value="Invented bad layout";return Buffer.from(await book.xlsx.writeBuffer());});
+  const original=mergedWriter.toMergedFloorplanXlsHtml,originalFp=fpWriter.toFpRecXlsHtml;
+  const spy=kind==="suffix"?vi.spyOn(mergedWriter,"toMergedFloorplanXlsHtml").mockImplementation(model=>original(model).replace('>100001<','>999999<')):vi.spyOn(fpWriter,"toFpRecXlsHtml").mockImplementation(model=>kind==="header"?originalFp(model).replace('>GL FLOORED<','>Invented bad layout<'):originalFp(model).replace('</tbody>','<tr><td>Invented bad layout</td></tr></tbody>'));
   try{expect(compareFortWorthSemantics(await buildFortWorthActual(boa,dt),buildOriginalAprilOracle(boa,dt)).length).toBeGreaterThan(0);}finally{spy.mockRestore();}
  });
  test("verified synthetic attestation changes exactly its source identity through confirmed API",async()=>{

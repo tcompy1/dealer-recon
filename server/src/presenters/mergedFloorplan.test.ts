@@ -247,7 +247,7 @@ describe("merged floorplan presenter", () => {
 
     expect(workbook.headers).toEqual(HURST_HEADERS);
     expect(html).toContain("<th>HURST</th>");
-    expect(html).toContain("<th>2100</th>");
+    expect(html).toMatch(/<th(?: x:str)?>2100<\/th>/);
     expect(toMergedFloorplanFilename(workbook)).toBe("hurst-merged-floorplan-04-30-26.xls");
   });
 
@@ -294,8 +294,8 @@ describe("merged floorplan presenter", () => {
     const html = toMergedFloorplanXlsHtml(workbook);
 
     expect(workbook.headers).toEqual(FW_HEADERS);
-    expect(html).toContain("<th>FORT WORTH</th>");
-    expect(html).toContain("<th>2100</th>");
+    expect(html).toContain("<th x:str>FORT WORTH</th>");
+    expect(html).toMatch(/<th(?: x:str)?>2100<\/th>/);
     expect(workbook.store_config.dealertrackAmountColumns).toEqual(["2100", "2101", "2101S"]);
     expect(workbook.store_config.dealertrackExcludedAccountColumns).toEqual(["2110"]);
     expect(workbook.store_config.mergedSheetLabelAliases).toEqual(["FW", "FORT WORTH"]);
