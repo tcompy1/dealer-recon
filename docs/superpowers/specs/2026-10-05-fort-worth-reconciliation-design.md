@@ -1,20 +1,21 @@
 # Fort Worth reconciliation and shared VIN correction specification
 
 **Status:** Implementation correction authorized 2026-10-08. Fort Worth remains disabled. The 2026-10-08 decision supersedes the earlier native-XLSX approval. Earlier investigation/review records below describe their original dates, not current verification.
-**Inspected baseline:** `main`, `721e76cc8e690437f60cbdf4713a27572cadc92f`; no subsequent commits or tracked/staged changes.
+**Original 2026-10-05 inspected baseline:** `main`, `721e76cc8e690437f60cbdf4713a27572cadc92f`; no subsequent commits or tracked/staged changes.
+**Correction baseline (2026-10-08):** existing `codex/fort-worth-reconciliation` at `8b60feea479dfe588b0ddafeee349217833172ea`; current execution evidence is in the correction handoff.
 **Plan:** `../plans/2026-10-05-fort-worth-reconciliation.md`.
 
 ## 1. Purpose, authority and evidence status
 
 Dealer-recon imports and reconciles Fort Worth source data and exports two operational HTML-based `.xls` files through the shared export architecture. Clerks complete exception research, description edits, supporting references, follow-up notes and final workpaper completion in Excel. The app preserves source descriptions and blank clerk-entry cells; export does not mean accounting sign-off.
 
-The 2026-10-05 request approved the original product choices below; §5 now records the superseding 2026-10-08 export decision. The earlier request supersedes previous FW-only correction protections, mandatory reference/reason policies, conflicting-VIN rejection, HTML-XLS proposal and historical-parity release gate. Those questions are settled. Engineering choices are specified here without additional approval questions. Implementation, cleanup, branching, staging, commits, PRs, deployment and enablement are not actions authorized by this documentation turn.
+The 2026-10-05 request approved the original product choices below; §5 now records the superseding 2026-10-08 export decision. The earlier request supersedes previous FW-only correction protections, mandatory reference/reason policies, conflicting-VIN rejection, HTML-XLS proposal and historical-parity release gate. Those questions are settled. Engineering choices are specified here without additional approval questions. The original 2026-10-05 documentation-only turn did not authorize implementation, cleanup, branching, staging, commits, PRs, deployment or enablement. The 2026-10-08 request authorizes this correction and local commits; push, merge, deployment and enablement remain outside scope.
 
 Read `AGENTS.md`, `docs/development/testing-policy.md`, `docs/development/rooftop-onboarding.md` and both `2026-09-18-fort-worth-*` characterization documents. Characterizations remain unchanged. Protected originals stay read-only at `docs/discovery/hiley-artifacts/fw`. Goal/completed output is an assertion oracle, never a runtime VIN lookup or enrichment input.
 
-Current investigation inspected shared correction form/API/validator, lineage and audit records, transaction repositories, snapshots/replay, artifact/download paths, profile/preprocessing/presenters, existing tests, ExcelJS package/type/documentation and production Docker dependency installation. Installed ExcelJS is 4.4.0, currently dev-only; production image uses `npm ci --omit=dev`. Artifact storage is BYTEA and already carries MIME/filename. No library evaluation run, application test, database query/migration or native Excel execution occurred.
+The original 2026-10-05 investigation inspected shared correction form/API/validator, lineage and audit records, transaction repositories, snapshots/replay, artifact/download paths, profile/preprocessing/presenters, existing tests, ExcelJS package/type/documentation and production Docker dependency installation. Installed ExcelJS is 4.4.0, currently dev-only; production image uses `npm ci --omit=dev`. Artifact storage is BYTEA and already carries MIME/filename. No library evaluation run, application test, database query/migration or native Excel execution occurred.
 
-April calculations, workbook inspection and recording findings are inherited from characterization and user acceptance criteria, not freshly rerun. Independent evidence for the historical April correction is still absent. Seven untracked files exist: these two documents, both characterizations, `AGENTS.md`, testing policy and root lockfile. Preservation checks cover the five pre-existing non-target documents/files, 19 tracked evidence copies and 12 protected-directory files.
+At the original documentation review, April calculations, workbook inspection and recording findings were inherited from characterization and user acceptance criteria, not freshly rerun. Independent evidence for the historical April correction is still absent. At that original review, seven untracked files existed: these two documents, both characterizations, `AGENTS.md`, testing policy and root lockfile. Preservation checks cover the five pre-existing non-target documents/files, 19 tracked evidence copies and 12 protected-directory files.
 
 ## 2. Approved decisions and bounded design
 
