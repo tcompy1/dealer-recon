@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans after execution authorization. Execute reviewable tasks with RED → GREEN → REFACTOR and independent review. Checkbox steps below are future work, not completed checks.
 
-**Goal:** Deliver shared confirmed VIN correction and Fort Worth's current-period reconciliation with two native XLSX exports, preserving historical identities and other rooftops' accounting/output formats.
+**Superseding decision (2026-10-08):** The user authorizes the shared HTML-XLS correction below. The original Tasks 1–10 record the prior implementation at `8b60fee`; their native-XLSX instructions are superseded by Correction Tasks C1–C4. Do not reexecute cleanup, schema or shared VIN tasks. Fort Worth stays disabled; no push, merge, deploy or enablement.
 
-**Architecture:** Reuse shared form/endpoints, existing lineage/audit and immutable run snapshots; add atomic correction and a revision column. Scope FW input/offsetting/order/presentation through profile adapters. Serialize FW with existing ExcelJS; preserve legacy HTML export builders for other profiles behind a Buffer artifact adapter.
+**Goal:** Deliver shared confirmed VIN correction and Fort Worth's current-period reconciliation with two shared HTML-based `.xls` exports, preserving historical identities and other rooftops' accounting/output formats.
+
+**Architecture:** Reuse shared form/endpoints, existing lineage/audit and immutable run snapshots; add atomic correction and a revision column. Scope FW input/offsetting/order/presentation through profile adapters. Serialize FW through shared HTML presenters with scoped policies; preserve the async Buffer artifact adapter and other rooftops’ output.
 
 **Tech stack:** TypeScript/Express/PostgreSQL/React/Vitest/Playwright; installed ExcelJS 4.4.0 promoted to runtime dependency at the same locked version.
 
@@ -235,3 +237,28 @@ Independent review completed for both revised documents on 2026-10-05. One revie
 Both reviewers reported no remaining actionable gaps in their assigned scopes. No product decisions remain open. Historical C evidence remains conditional and nonblocking under the approved A+B release policy. Implementation, native Excel availability and all execution gates remain to be verified; review approval does not claim they passed.
 
 Actual documentation checks: Git remains on main at `721e76cc8e690437f60cbdf4713a27572cadc92f`, with no subsequent commits, tracked edits or staged changes. The same seven pre-existing untracked paths remain; only these two documents were revised. SHA-256 preservation check passed for 36 non-target files (19 tracked copies, 12 authoritative-area files including metadata, and five protected pre-existing files/reports). Authoritative-area tracked-path count is zero. `git diff --check` passed; because these documents are untracked, they were additionally checked directly for trailing whitespace (none). No application tests, database operations, native Excel checks, cleanup, branch/worktree creation, staging, commits, PR or enablement occurred.
+
+
+## Superseding correction execution plan — 2026-10-08
+
+Start from existing `codex/fort-worth-reconciliation` at `8b60feea479dfe588b0ddafeee349217833172ea` in `/private/tmp/dealer-recon-fort-worth`. Preserve original checkout, protected evidence and existing generated artifacts. Commit locally in the boundaries below; no push/merge/deploy/enablement. The amended specification §5 is authoritative over the original native writer tasks and review history above.
+
+### Correction C1 — Record approved contract before production changes
+
+Amend this plan and specification, then commit only those documents. Record the shared employee workflow, supersession, format selectors, stored native artifact compatibility, unchanged A/B/C and FW-only Excel usability gate. Inspection is not verification.
+
+### Correction C2 — Shared presenter policies and serialization (RED/GREEN)
+
+Files: `server/src/presenters/mergedFloorplan.ts`, `fpRec.ts`, their tests and replacement `fortWorthHtml.test.ts`; retain `fortWorthFpRec.ts`. Replace native writer tests with serialized HTML assertions before implementation and observe expected failures. Cover empty/single/April/large sections, exact labels/formulas, signed numbers, conditional offset columns, escaped descriptions, text identifiers, notes blank, print ranges/orientation/wrapping. Extend existing renderer policies, not the matching engine. Preserve Hurst/Acura bytes. Replace `floorplanExport.ts` writer selection and tests while preserving async Buffer interface; remove `fortWorthXlsx.ts` and its obsolete tests. Return server ExcelJS package/lock classification to dev-only at the same locked version. Commit this boundary after targeted tests and typecheck.
+
+### Correction C3 — Compatibility, acceptance and browser assertions (RED/GREEN)
+
+Files: `server/src/app.ts`, `fortWorthReconciliation.integration.test.ts`, applicable app tests; `server/src/acceptance/fortWorthEvidence.ts` and `.acceptance.test.ts`; `frontend/e2e/fort-worth-reconciliation.spec.ts`. Explicit xlsx is supported only for an existing FW native artifact, otherwise 422; default/xls preserves stored-artifact precedence and new generation is HTML. No conversion. Test denied access/overrides, stored native bytes, snapshot fallback, later correction/history, serialization failure and atomic batches. Convert actual-output oracle decoding from OOXML to HTML, retaining independent source-pair/exception membership, cents, source descriptions, VINs, headers, row counts, formulas and print semantics. Preserve mutation tests that detect equal-count wrong pairs and corrupted exports. Run targeted suites and commit.
+
+### Correction C4 — Verification, independent review and handoff
+
+Update `docs/development/rooftop-onboarding.md` and `docs/implementation/store-workflow-matrix.md`. Run full server suite (serial when SQL configured because the prior parallel disposable teardown had errors), server lint/typecheck/build, frontend unit/lint/build, full Chromium suite using a new output directory, prior-rooftop golden tests, disposable PostgreSQL integration, protected A and Acura regression. A remains original 686/108/39 with exact membership/cents; B shared correction unchanged; C remains conditional/nonblocking and missing evidence must be explicit, never a pass. No protected rows in logs or databases. Inspect dependency version invariance and production import graph.
+
+Produce synthetic `.xls` examples outside Git in a new handoff directory. Perform Excel open/recalculate/edit/save/reopen/print if available; otherwise record `BLOCKED_EXCEL_UNAVAILABLE`, never claim overall completion. Do not retest historical Hurst/Acura Excel usability. Independently review the correction diff and unchanged boundaries, including authorization, spreadsheet injection, literal identifiers, formulas, selector compatibility and oracle independence; resolve actionable findings with regression tests. Record exact commits/files, executed results, A/B/C/Excel status, remaining risks and disabled FW status in a new handoff. Preserve earlier handoffs/artifacts. No release action.
+
+Rollback boundaries: revert C2/C3 together before deployment, retain already stored artifacts and shared identity/persistence protections. Documentation records the chosen contract. No migration or accounting changes are part of rollback. Ordinary Hurst/Acura exports must remain byte-compatible with the starting commit. Native container tests are replaced with actual serialized-output tests, never model-only checks.
