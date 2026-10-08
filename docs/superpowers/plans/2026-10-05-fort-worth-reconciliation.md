@@ -4,11 +4,13 @@
 
 **Superseding decision (2026-10-08):** The user authorizes the shared HTML-XLS correction below. The original Tasks 1–10 record the prior implementation at `8b60fee`; their native-XLSX instructions are superseded by Correction Tasks C1–C4. Do not reexecute cleanup, schema or shared VIN tasks. Fort Worth stays disabled; no push, merge, deploy or enablement.
 
+**Approved policy supersession (2026-10-08):** Microsoft Excel open/recalculate/edit/save/reopen/print verification is a nonblocking pre-production operational smoke test. It does not block implementation completion or initial-release eligibility. Status: `NOT PERFORMED — Microsoft Excel unavailable`. No other application or structural test is represented as performing that smoke test. Any actual Excel interoperability/usability defect discovered later must be investigated and resolved. A and B and all applicable automated quality/review gates remain required; C remains conditional/nonblocking. Production enablement remains a separate authorization; Fort Worth stays disabled.
+
 **Goal:** Deliver shared confirmed VIN correction and Fort Worth's current-period reconciliation with two shared HTML-based `.xls` exports, preserving historical identities and other rooftops' accounting/output formats.
 
 **Architecture:** Reuse shared form/endpoints, existing lineage/audit and immutable run snapshots; add atomic correction and a revision column. Scope FW input/offsetting/order/presentation through profile adapters. Serialize FW through shared HTML presenters with scoped policies; preserve the async Buffer artifact adapter and other rooftops’ output.
 
-**Tech stack:** TypeScript/Express/PostgreSQL/React/Vitest/Playwright; installed ExcelJS 4.4.0 promoted to runtime dependency at the same locked version.
+**Tech stack:** TypeScript/Express/PostgreSQL/React/Vitest/Playwright; ExcelJS 4.4.0 remains development/test-only after the shared HTML correction.
 
 **Spec:** `../specs/2026-10-05-fort-worth-reconciliation-design.md` — normative approved product behavior and engineering contracts.
 
@@ -19,7 +21,7 @@
 - Shared correction allows replacement of valid full VINs on BOA/Dealertrack across rooftops; requires reviewed revision and explicit confirmation, not source/reference/reason or supervisor approval.
 - Preserve source bytes/descriptions, financial values, prior audits, snapshots and stored artifacts. Clerks enter references, narrative and notes in Excel; unresolved exceptions may be exported.
 - FW: accounts `2100 + 2101 + 2101S`, exclude `2110`; retain offsetting rows once as flagged unmatched exceptions; maturity flags cannot change amount/matching. Other rooftop policies/formats remain unchanged.
-- A+B plus native Excel/XLSX and applicable quality gates establish implementation completion and initial-release eligibility. C historical April remains conditional/disclosed; absence does not block those outcomes. Actual enablement is separate; keep FW disabled.
+- A+B and all applicable automated quality/review gates establish implementation completion and initial-release eligibility; Microsoft Excel operational smoke testing is nonblocking. C historical April remains conditional/disclosed; absence does not block those outcomes. Actual enablement is separate; keep FW disabled.
 - The 19-copy cleanup is approved for future implementation, but must follow this revision/review and execution authorization. No history rewrite; originals remain read-only in the existing protected directory.
 - Preserve the two original characterizations, `AGENTS.md`, testing policy and root `package-lock.json`. Do not copy client evidence into a new worktree or emit raw rows/VINs/reference text in test/review output.
 
@@ -160,9 +162,9 @@ Add `getReconciliationRunMetadata(dealershipId:number,id:number):Promise<Reconci
 - [ ] Test merged eight columns without offsets and I:L only when offsets exist, exact label/numeric components/nonflagged blanks. FP A wraps original descriptor plus generated explanation/components, B numeric0, C:D blank; no duplicate exception row. Validate finite A1:Fvariance portrait and merged A:H/A:L landscape print metadata, margins and fitted width. Explicitly set `pageSetup.fitToPage=true` for both sheets and assert its serialized OOXML flag alongside width1/height0; width/height mutations alone do not enable it reliably.
 - [ ] Run `npm test -- src/presenters/fortWorthXlsx.test.ts src/presenters/fortWorthFpRec.test.ts` before writer edits; record expected RED. Move existing ExcelJS entry to dependencies preserving lock versions; implement native writer and rerun.
 - [ ] Verify lock diff limited to runtime classification and unchanged package versions; run `npm ls exceljs`, server typecheck/build. In a disposable installation context outside the working dependency tree, use server manifest/lock with `npm ci --omit=dev` and import ExcelJS to verify runtime availability; no client files copied. Validate the configured production Docker build later if required by runtime packaging.
-- [ ] Generate synthetic outputs only for native Excel open/recalculate/edit blank notes/save-as-new/reopen/print-preview inspection. Validate formula results, signs/zero display, notes editable and long labels/components not clipped. Never save over protected originals. If Excel unavailable, explicitly record `BLOCKED_NATIVE_EXCEL_UNAVAILABLE`; structural tests do not pass that gate.
+- [ ] Generate synthetic outputs only for native Excel open/recalculate/edit blank notes/save-as-new/reopen/print-preview inspection. Validate formula results, signs/zero display, notes editable and long labels/components not clipped. Never save over protected originals. This original native-writer task is superseded: record `NOT PERFORMED — Microsoft Excel unavailable` for the nonblocking operational smoke test; structural tests do not perform it.
 
-**Gate/rollback:** Real XLSX Buffers with native verification evidence; dependency promotion is necessary and reviewable, not an upgrade project. Roll back writer/runtime promotion together only before deploying its callers; preserve old artifacts. Do not replace failing native verification with HTML.
+**Gate/rollback:** Historical native-writer boundary, superseded by C2 and the nonblocking smoke-test policy above: real XLSX Buffers and dependency promotion were formerly required. Roll back writer/runtime promotion together only before deploying its callers; preserve old artifacts. Do not replace failing native verification with HTML.
 
 ### Task 8 — Buffer artifact pipeline, downloads and regeneration
 
@@ -202,7 +204,7 @@ Routes authorize with Task3 metadata, prefer stored artifact unchanged, otherwis
 - [ ] B consumes Tasks2–4/9 synthetic API/UI/SQL confirmation/conflict/persistence/rerun/history results across rooftops, not historical evidence. All applicable shared regressions must execute successfully.
 - [ ] C only with independently substantiated protected attestation tied to source hash/row: authenticated in-memory operator reads revision and confirms correction with no mandatory narrative/reference. Compare 687/107/38,832 rows,DT-only-168,956,209/BOA-only604,073,564 cents and exactly intended identity change. Completed goal remains assertion-only. Attestation is a test evidence prerequisite, not normal API required fields.
 - [ ] New test gates `FW_ACCEPTANCE_MODE=original|corrected`, `FW_EVIDENCE_DIR` and optional `FW_VERIFIED_CORRECTION_FILE`. From `server`: `FW_ACCEPTANCE_MODE=original FW_EVIDENCE_DIR=/Users/tcompy/Developer/dealer-recon/docs/discovery/hiley-artifacts/fw npm test -- src/acceptance/fortWorthEvidence.acceptance.test.ts`. Original mode missing inputs fails; corrected mode missing attestation reports `BLOCKED_EVIDENCE_MISSING` with nonzero exit, never a green skip. Invalid supplied evidence fails safely. Ordinary CI without evidence runs synthetic comparator checks and labels A/C not evaluated.
-- [ ] Record A/B/C/native status separately. Missing C is nonblocking for completion and initial-release eligibility under the user's approved decision; do not roll back correct A/B work or reopen release policy. Missing A/B/native/quality proof still blocks completion. Update onboarding text accordingly; FW remains disabled.
+- [ ] Record A/B/C/native status separately. Missing C is nonblocking for completion and initial-release eligibility under the user's approved decision; do not roll back correct A/B work or reopen release policy. Missing A/B/applicable automated quality proof still blocks completion; Microsoft Excel smoke testing does not. Update onboarding text accordingly; FW remains disabled.
 - [ ] Execute full configured matrix below; `/review`, user-facing `/qa` and `/cso` for financial/upload/identity/dependency boundary. Resolve actionable findings within scope, review full diff and no-evidence-path checks. Hand off for separate enablement authorization; no automatic ship/push/PR.
 
 ## Planned final verification matrix — none executed in this revision
@@ -211,14 +213,14 @@ Inspect `docker compose ps` before assuming services. Compose has db/backend/fro
 
 | Gate | Commands/evidence |
 | --- | --- |
-| Server | From server: `npm test`, `npm run lint`, `npm run typecheck`, `npm run build`; conditional skips do not pass DB/A/native gates. |
+| Server | From server: `npm test`, `npm run lint`, `npm run typecheck`, `npm run build`; conditional skips do not pass required DB/A gates. |
 | PostgreSQL | Task9 exact integration command with validated local disposable URL; includes migration, atomic audit, snapshot, artifact and legacy compatibility tests. |
 | Prior rooftops | `npm test -- src/services/reconciliationGoldenFixtures.test.ts src/presenters/hurstFpRec.test.ts src/presenters/mergedFloorplan.test.ts src/services/reconciliationReplay.test.ts`; unchanged accounting/output with revised shared correction coverage. |
 | Acura protected regression | Existing `ACURA_EVIDENCE_DIR` + `npm test -- src/acceptance/acuraEvidence.acceptance.test.ts` only with approved local protected directory; not presumed available or run now. |
 | Frontend | From frontend: `npm test`, `npm run lint`, `npm run build` (includes tsc; no separate frontend typecheck script), `npm run test:e2e`. |
 | Runtime package | Same ExcelJS locked version, server-only dev/runtime reclassification; disposable production install/import and relevant Docker production build. |
 | XLSX structural | Task7/8 writer/artifact suites inspect typed cells, formulas/caches, styles, print area, blank editable cells, MIME/ZIP and stored/regenerated consistency. |
-| Native Excel | Recalculate, edit/save/reopen notes, print-preview with empty/large/offset cases; unavailable check explicitly blocked, never substituted by structural tests. |
+| Microsoft Excel operational smoke test | Nonblocking: open/recalculate/edit/save/reopen/print empty/large/offset cases when available. `NOT PERFORMED — Microsoft Excel unavailable`; not passed or substituted by structural tests or another application. |
 | Protected acceptance | A required, C conditional with explicit status; safe in-memory oracle, no target-driven correction. |
 | Preservation | Scoped diff, `git diff --check`, realpath fixture safety, exact 19 deletions only in authorized cleanup, originals/characterizations/unrelated untracked hashes, no raw evidence in reports/staging/worktree. |
 
@@ -245,7 +247,7 @@ Start from existing `codex/fort-worth-reconciliation` at `8b60feea479dfe588b0dda
 
 ### Correction C1 — Record approved contract before production changes
 
-Amend this plan and specification, then commit only those documents. Record the shared employee workflow, supersession, format selectors, stored native artifact compatibility, unchanged A/B/C and FW-only Excel usability gate. Inspection is not verification.
+Amend this plan and specification, then commit only those documents. Record the shared employee workflow, supersession, format selectors, stored native artifact compatibility, unchanged A/B/C and nonblocking FW Microsoft Excel operational smoke test. Inspection is not verification.
 
 ### Correction C2 — Shared presenter policies and serialization (RED/GREEN)
 
@@ -259,7 +261,7 @@ Files: `server/src/app.ts`, `fortWorthReconciliation.integration.test.ts`, appli
 
 Update `docs/development/rooftop-onboarding.md` and `docs/implementation/store-workflow-matrix.md`. Run full server suite (serial when SQL configured because the prior parallel disposable teardown had errors), server lint/typecheck/build, frontend unit/lint/build, full Chromium suite using a new output directory, prior-rooftop golden tests, disposable PostgreSQL integration, protected A and Acura regression. A remains original 686/108/39 with exact membership/cents; B shared correction unchanged; C remains conditional/nonblocking and missing evidence must be explicit, never a pass. No protected rows in logs or databases. Inspect dependency version invariance and production import graph.
 
-Produce synthetic `.xls` examples outside Git in a new handoff directory. Perform Excel open/recalculate/edit/save/reopen/print if available; otherwise record `BLOCKED_EXCEL_UNAVAILABLE`, never claim overall completion. Do not retest historical Hurst/Acura Excel usability. Independently review the correction diff and unchanged boundaries, including authorization, spreadsheet injection, literal identifiers, formulas, selector compatibility and oracle independence; resolve actionable findings with regression tests. Record exact commits/files, executed results, A/B/C/Excel status, remaining risks and disabled FW status in a new handoff. Preserve earlier handoffs/artifacts. No release action.
+Produce synthetic `.xls` examples outside Git in a new handoff directory. Perform Microsoft Excel open/recalculate/edit/save/reopen/print if available; otherwise record `NOT PERFORMED — Microsoft Excel unavailable`. This operational smoke test does not block implementation completion or initial-release eligibility, and is not represented as passed by structural tests or another application. Any actual defect discovered later must be investigated and resolved. Do not retest historical Hurst/Acura Excel usability. Independently review the correction diff and unchanged boundaries, including authorization, spreadsheet injection, literal identifiers, formulas, selector compatibility and oracle independence; resolve actionable findings with regression tests. Record exact commits/files, executed results, A/B/C/Excel status, remaining risks and disabled FW status in a new handoff. Preserve earlier handoffs/artifacts. No release action.
 
 Rollback boundaries: revert C2/C3 together before deployment, retain already stored artifacts and shared identity/persistence protections. Documentation records the chosen contract. No migration or accounting changes are part of rollback. Ordinary Hurst/Acura exports must remain byte-compatible with the starting commit. Native container tests are replaced with actual serialized-output tests, never model-only checks.
 
@@ -270,6 +272,11 @@ Independent read-only code/security review covered the correction from `8b60fee`
 
 Executed correction verification: full serial server suite with disposable SQL 651 passed / 1 protected Acura skip (Acura passed separately: 13); ordinary full server 614 passed / 38 conditional skips; focused SQL 47 passed; frontend unit 41 passed; Chromium 4 passed; server lint/typecheck/build and frontend lint/build passed. Twelve synthetic Hurst/Acura serialized outputs match starting-commit bytes. Protected A passed with unchanged counts/membership/cents and HTML semantics; B passed the shared API/UI/SQL gates. C explicitly exits nonzero with `BLOCKED_EVIDENCE_MISSING`, nonblocking. A separate production image exports HTML with ExcelJS absent and FW disabled. All locked dependency versions are unchanged.
 
-Excel usability remains `BLOCKED_EXCEL_UNAVAILABLE`: neither a local Excel installation nor a connected document session was available. Six invented workbooks are prepared outside Git; no actual Excel open/recalculate/edit/save/reopen/print pass is claimed. No retrospective Hurst/Acura Excel usability gate was added.
+Under the superseding approved policy, the nonblocking Microsoft Excel operational smoke-test status is `NOT PERFORMED — Microsoft Excel unavailable`: neither a local Excel installation nor a connected document session was available. Six invented workbooks are prepared outside Git; no actual Excel open/recalculate/edit/save/reopen/print pass is claimed. No retrospective Hurst/Acura Excel usability gate was added.
 
 Remaining risks: the first full SQL run had 645 passing assertions but exit1 from a PostgreSQL57P01 teardown error; focused SQL and the final 651-test serial run passed. Root cause remains unconfirmed; the failed run is retained, not erased by the rerun. A fresh runtime npm audit reports 9 affected package entries (1 critical,4 high,4 moderate), all at unchanged pre-existing locked versions. This correction removes ExcelJS from runtime but does not remediate unrelated dependency advisories. Production enablement remains unauthorized and FW disabled. The new handoff and full logs reside in `/private/tmp/fw-html-correction-20261008/`.
+
+
+### Final policy verification record
+
+The approved nonblocking policy supersedes all earlier native-XLSX and HTML-XLS Excel blocking language in this plan, specification and onboarding guide. Existing automated tests and production behavior are unchanged. See [final policy handoff](../handoffs/2026-10-08-fort-worth-release-policy.md) for completion, initial-release eligibility, retained SQL/dependency risks, and separate production enablement status. Prior failed SQL execution is still disclosed; the Excel policy does not waive automated failures or dependency/security risks.

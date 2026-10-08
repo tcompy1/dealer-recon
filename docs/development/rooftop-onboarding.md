@@ -90,8 +90,9 @@ Before changing the profile to `enabled: true`, require all of the following:
 - PostgreSQL migration, persistence, and vertical-slice tests pass;
 - backend lint, typecheck, build, and full tests pass;
 - frontend lint, unit tests, build, and Playwright pass; and
-- whole-branch code and security reviews have no unresolved blocking finding; and
-- required Excel usability verification passes where the approved rooftop contract requires it; the FW correction does not add retrospective Hurst/Acura checks.
+- whole-branch code and security reviews have no unresolved blocking finding.
+
+For other rooftops, retain any Microsoft Excel usability requirement in their approved contract. For Fort Worth, Microsoft Excel operational smoke testing is nonblocking for implementation completion and initial-release eligibility; no retrospective Hurst/Acura Excel check is added.
 
 Record the profile-enablement change as a separate, reviewable step. A passing Acura gate does not authorize enabling Fort Worth, Burleson, Huntsville, or West.
 
@@ -110,10 +111,10 @@ Shared VIN correction supports BOA and Dealertrack in Hurst, Acura and Fort Wort
 - **A required:** original April 794 BOA / 725 Dealertrack, 686 matches, 108 BOA-only / 39 Dealertrack-only, 147 exceptions, 833 merged rows. Cents: BOA 4,034,820,196; GL −3,599,702,841; difference/net 435,117,355; variance 0. The independent in-memory oracle checks source hash/row membership, amounts, ordering, serialized cells/formulas and layout.
 - **B required:** synthetic shared API/UI/PostgreSQL correction, stale/concurrent writes, audit atomicity and historical preservation across both sources and all three rooftops.
 - **C conditional:** corrected April 687 / 107 / 38 requires independent attestation. Missing evidence is `BLOCKED_EVIDENCE_MISSING`, a nonzero targeted gate; it does not block A+B eligibility. Never use the goal workbook as runtime enrichment.
-- **FW Excel usability required:** actual recalculation/edit/save/reopen/print evidence. Serialized HTML tests and browser downloads cannot pass this gate. Current execution found no Excel installation: `BLOCKED_EXCEL_UNAVAILABLE`.
+- **FW Microsoft Excel operational smoke test — nonblocking:** `NOT PERFORMED — Microsoft Excel unavailable`. Actual open/recalculate/edit/save/reopen/print checks are recommended before production use when Excel is available. Do not represent this as passed or structurally verified by another application. Any actual Excel interoperability/usability defect discovered later must be investigated and resolved.
 
 From `server`, run `FW_ACCEPTANCE_MODE=original FW_EVIDENCE_DIR=/Users/tcompy/Developer/dealer-recon/docs/discovery/hiley-artifacts/fw npm test -- src/acceptance/fortWorthEvidence.acceptance.test.ts`. Corrected mode additionally requires `FW_VERIFIED_CORRECTION_FILE` pointing to a protected JSON attestation within that realpath root. Required keys: `boa_sha256`, `dealertrack_sha256`, `source_side` (`boa` or `dealertrack`), 1-based `source_row_number`, `previous_vin` (normalized value or null), full `verified_vin`, `verified_by`, ISO `verified_at`, `verification_reference`, and `independent_of_goal:true`. This attestation records separately substantiated human evidence; schema validity alone does not substantiate it. The harness binds both raw hashes and the original row, then uses an authenticated in-memory test operator to GET the revision and explicitly confirm through the production API, omitting optional narratives. No protected transactions are written to a database. Ordinary CI reports A/C not evaluated.
 
-Initial-release eligibility requires A+B+FW Excel usability+all quality gates and separate enablement authorization. C is not a required release gate. This work does not enable any rooftop.
+Implementation completion and initial-release eligibility require A+B and all applicable automated server, PostgreSQL, frontend, browser, serialized-output, compatibility, persistence, security/review and protected-evidence gates. C is conditional/nonblocking; Microsoft Excel smoke testing is nonblocking. Actual production enablement requires separate authorization and remains disabled. This policy supersedes the earlier blocking Excel requirement and does not waive other risks. See [final policy handoff](../superpowers/handoffs/2026-10-08-fort-worth-release-policy.md).
 
 Default/`xls` generates HTML-XLS. Explicit `xlsx` only serves an existing FW native artifact and otherwise returns 422; it never returns HTML. Existing stored artifacts retain original bytes/name/MIME. ExcelJS remains test-only at its locked version. OOXML/ZIP/cache/runtime-library checks are not release requirements. The independent April membership and monetary oracle remains unchanged.
