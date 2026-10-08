@@ -94,3 +94,36 @@ describe("disposable PostgreSQL database target validation", () => {
     expect(createPoolMock).not.toHaveBeenCalled();
   });
 });
+
+describe("disposable cleanup failures", () => {
+  const url = "postgresql://dealer_recon:dealer_recon@localhost:5433/dealer_recon";
+  function admin(leaked = 0, dropError?: Error) {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.startsWith("DROP") && dropError) throw dropError;
+      return { rows: [{ count: sql.includes("pg_stat_activity") ? String(leaked) : "0" }] };
+    });
+    const pool = { query, end: vi.fn(async () => undefined), on: vi.fn() };
+    createPoolMock.mockReturnValue(pool);
+    return pool;
+  }
+  test("normal cleanup detects remaining sessions without force terminating them", async () => {
+    const pool = admin(1);
+    await expect(withDisposablePostgresDatabase(url, async () => undefined)).rejects.toThrow("Leaked PostgreSQL sessions");
+    expect(pool.query.mock.calls.some(([sql]) => sql.startsWith("DROP"))).toBe(false);
+  });
+  test("normal drop never uses FORCE", async () => {
+    const pool = admin();
+    await withDisposablePostgresDatabase(url, async () => undefined);
+    const drops = pool.query.mock.calls.filter(([sql]) => sql.startsWith("DROP"));
+    expect(drops).toHaveLength(1);
+    expect(drops[0][0]).not.toContain("FORCE");
+  });
+  test("operation and cleanup failures both survive with the operation as cause", async () => {
+    const operation = new Error("original operation failure"), cleanup = new Error("cleanup failure");
+    admin(0, cleanup);
+    const error = await withDisposablePostgresDatabase(url, async () => { throw operation; }).catch(e => e);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.cause).toBe(operation);
+    expect(error.errors).toEqual([operation, cleanup]);
+  });
+});

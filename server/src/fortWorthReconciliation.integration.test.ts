@@ -1,3 +1,4 @@
+import { createTestPool as createPool } from "./testUtils/testPostgresPool.js";
 import {expect,test,vi,describe} from "vitest";
 import request from "supertest";
 import {createApp} from "./app.js";
@@ -77,7 +78,7 @@ test("legacy stored FW xls is served unchanged even with unavailable profile and
 const databaseUrl=process.env.DATABASE_URL;
 (databaseUrl?describe:describe.skip)("shared correction and immutable artifacts in disposable PostgreSQL",()=>{
  test.each(["hurst","acura","fw"] as const)("%s both sources preserve raw descriptions and old artifacts through reruns",async key=>enabled(async()=>{
-  const {withDisposablePostgresDatabase}=await import("./testUtils/disposablePostgresDatabase.js");const {migrate}=await import("./db/migrate.js");const {createPool,PostgresTransactionRepository}=await import("./repositories/postgresTransactionRepository.js");
+  const {withDisposablePostgresDatabase}=await import("./testUtils/disposablePostgresDatabase.js");const {migrate}=await import("./db/migrate.js");const {PostgresTransactionRepository}=await import("./repositories/postgresTransactionRepository.js");
   await withDisposablePostgresDatabase(databaseUrl!,async url=>{
    await migrate(url);const pool=createPool(url);const repository=new PostgresTransactionRepository(pool);
    try {
@@ -120,7 +121,7 @@ async function unavailablePriorDoesNotBlockCurrent(repository:TransactionReposit
 }
 test("missing prior snapshot cannot block current memory run",async()=>enabled(()=>unavailablePriorDoesNotBlockCurrent(new MemoryTransactionRepository())));
 test.skipIf(!databaseUrl)("missing prior snapshot cannot block current PostgreSQL run",async()=>enabled(async()=>{
- const {withDisposablePostgresDatabase}=await import("./testUtils/disposablePostgresDatabase.js"),{migrate}=await import("./db/migrate.js"),{createPool,PostgresTransactionRepository}=await import("./repositories/postgresTransactionRepository.js");
+ const {withDisposablePostgresDatabase}=await import("./testUtils/disposablePostgresDatabase.js"),{migrate}=await import("./db/migrate.js"),{PostgresTransactionRepository}=await import("./repositories/postgresTransactionRepository.js");
  await withDisposablePostgresDatabase(databaseUrl!,async url=>{await migrate(url);const pool=createPool(url);try{await unavailablePriorDoesNotBlockCurrent(new PostgresTransactionRepository(pool));}finally{await pool.end();}});
 }),30000);
 

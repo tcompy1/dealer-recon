@@ -1,8 +1,8 @@
+import { createTestPool as createPool } from "../testUtils/testPostgresPool.js";
 import { execFile } from "node:child_process";
 
 import { describe, expect, test } from "vitest";
 
-import { createPool } from "../repositories/postgresTransactionRepository.js";
 import { withDisposablePostgresDatabase } from "../testUtils/disposablePostgresDatabase.js";
 import { migrate } from "./migrate.js";
 

@@ -1,3 +1,4 @@
+import { createTestPool as createPool } from "../testUtils/testPostgresPool.js";
 import { withDisposablePostgresDatabase } from "../testUtils/disposablePostgresDatabase.js";
 import request from "supertest";
 import { describe, expect, test } from "vitest";
@@ -7,7 +8,6 @@ import { PostgresAuthRepository } from "../auth.js";
 import { migrate } from "./migrate.js";
 import { seedDemoAuthUser } from "./seedDemoAuth.js";
 import {
-  createPool,
   PostgresTransactionRepository,
 } from "../repositories/postgresTransactionRepository.js";
 

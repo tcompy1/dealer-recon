@@ -1,3 +1,4 @@
+import { createTestPool as createPool } from "./testUtils/testPostgresPool.js";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 
@@ -25,7 +26,6 @@ import type {
 import type { FpRecWorkbook } from "./presenters/fpRec.js";
 import type { MergedFloorplanWorkbook } from "./presenters/mergedFloorplan.js";
 import {
-  createPool,
   PostgresTransactionRepository,
 } from "./repositories/postgresTransactionRepository.js";
 import {

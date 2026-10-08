@@ -1,6 +1,7 @@
+import { createTestPool as createPool } from "./testUtils/testPostgresPool.js";
 import {describe,expect,test} from "vitest";
 import {migrate} from "./db/migrate.js";
-import {createPool,PostgresTransactionRepository} from "./repositories/postgresTransactionRepository.js";
+import {PostgresTransactionRepository} from "./repositories/postgresTransactionRepository.js";
 import {withDisposablePostgresDatabase} from "./testUtils/disposablePostgresDatabase.js";
 import type {NewTransaction} from "./domain/types.js";
 import {LINEAGE_RAW_DATA_KEY} from "./services/preprocessing/types.js";

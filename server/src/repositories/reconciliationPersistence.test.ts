@@ -1,3 +1,4 @@
+import { createTestPool as createPool } from "../testUtils/testPostgresPool.js";
 import { createHash } from "node:crypto";
 
 import request from "supertest";
@@ -24,7 +25,6 @@ import { migrate } from "../db/migrate.js";
 import { withDatabaseTestLock } from "../testUtils/databaseTestLock.js";
 import { withDisposablePostgresDatabase } from "../testUtils/disposablePostgresDatabase.js";
 import {
-  createPool,
   PostgresTransactionRepository,
 } from "./postgresTransactionRepository.js";
 import {
