@@ -110,21 +110,19 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     selectedStore?.name ?? activeRun?.store_name ?? null;
 
   useEffect(() => {
-    void refreshLists();
-    return invalidateWorkflowRequests;
-    // Initial load only; store changes are handled explicitly in handleStoreChange.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    let cancelled = false;
+    void Promise.all([listDealerGroups(), listDealershipStores()]).then(([groups, storeList]) => {
+      // A discarded mount must not overwrite the current operator's store selection.
+      if (cancelled) return;
+      setDealerGroups(groups);
+      setStores(storeList);
+      setSelectedStoreId((current) => current ?? storeList[0]?.id ?? null);
+    });
+    return () => {
+      cancelled = true;
+      invalidateWorkflowRequests();
+    };
   }, []);
-
-  async function refreshLists() {
-    const [groups, storeList] = await Promise.all([listDealerGroups(), listDealershipStores()]);
-    const activeStoreId = selectedStoreId ?? storeList[0]?.id ?? null;
-    if (selectedStoreId === null && activeStoreId !== null) {
-      setSelectedStoreId(activeStoreId);
-    }
-    setDealerGroups(groups);
-    setStores(storeList);
-  }
 
   async function handleUpload(kind: SourceKind) {
     const slot = kind === "boa" ? boaUpload : dealertrackUpload;
