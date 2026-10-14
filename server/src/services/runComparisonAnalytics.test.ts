@@ -14,14 +14,14 @@ describe("compareReconciliationRuns", () => {
       reconciliation_run_id: 1,
       exceptions: [
         exception({ exception_id: 11, vin: "1FTFW1E80PFA11111", category: "missing_in_boa" }),
-        exception({ exception_id: 12, vin: "JM1NDAM72T0702171", category: "amount_mismatch" }),
+        exception({ exception_id: 12, vin: "1TESTCARXXA910160", category: "amount_mismatch" }),
       ],
     });
     const current = runDetail({
       reconciliation_run_id: 2,
       exceptions: [
-        exception({ exception_id: 21, vin: "JM1NDAM72T0702171", category: "amount_mismatch" }),
-        exception({ exception_id: 22, vin: "7MMVABCYXTN476280", category: "missing_in_boa" }),
+        exception({ exception_id: 21, vin: "1TESTCARXXA910160", category: "amount_mismatch" }),
+        exception({ exception_id: 22, vin: "1TESTCARXXA910815", category: "missing_in_boa" }),
       ],
     });
 

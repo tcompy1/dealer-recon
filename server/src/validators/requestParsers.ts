@@ -381,56 +381,22 @@ const VIN_ENRICHMENT_SOURCES = [
 export type VinEnrichmentSource = (typeof VIN_ENRICHMENT_SOURCES)[number];
 
 export type ParsedVinEnrichmentRequest = {
-  vin: string;
-  source: VinEnrichmentSource;
-  reason: string;
-  dms_reference: string | null;
+  vin:string; expected_revision?:number; confirmed?:boolean;
+  source:VinEnrichmentSource|null; reason:string|null; dms_reference:string|null;
 };
-
-const VIN_FULL_RE = /^[A-HJ-NPR-Z0-9]{17}$/i;
-
-export function parseVinEnrichmentRequest(
-  value: unknown,
-): ParsedVinEnrichmentRequest | { error: "invalid_vin" | "invalid_source" | "missing_reason" | "invalid_body" | "invalid_dms_reference" } {
-  if (typeof value !== "object" || value === null) {
-    return { error: "invalid_body" };
+export function parseVinEnrichmentRequest(value:unknown):ParsedVinEnrichmentRequest|{error:"invalid_vin"|"invalid_source"|"invalid_reason"|"invalid_body"|"invalid_dms_reference"|"invalid_revision"|"invalid_confirmation"} {
+  if(!value || typeof value!=="object" || Array.isArray(value)) return {error:"invalid_body"};
+  const body=value as Record<string,unknown>;
+  if(typeof body.vin!=="string" || !/^[A-HJ-NPR-Z0-9]{17}$/i.test(body.vin.trim())) return {error:"invalid_vin"};
+  if(body.expected_revision!==undefined && (!Number.isInteger(body.expected_revision) || Number(body.expected_revision)<0 || Number(body.expected_revision)>2147483647)) return {error:"invalid_revision"};
+  if(body.confirmed!==undefined && typeof body.confirmed!=="boolean") return {error:"invalid_confirmation"};
+  const fields:Record<string,string|null>={};
+  for(const key of ["source","reason","dms_reference"] as const) {
+    if(body[key]!==undefined && body[key]!==null && typeof body[key]!=="string") return {error:`invalid_${key}`};
+    fields[key]=typeof body[key]==="string" ? (body[key].trim() || null) : null;
   }
-  const body = value as {
-    vin?: unknown;
-    source?: unknown;
-    reason?: unknown;
-    dms_reference?: unknown;
-  };
-  if (typeof body.vin !== "string") {
-    return { error: "invalid_vin" };
-  }
-  const vin = body.vin.trim().toUpperCase();
-  if (!VIN_FULL_RE.test(vin)) {
-    return { error: "invalid_vin" };
-  }
-  if (
-    typeof body.source !== "string" ||
-    !VIN_ENRICHMENT_SOURCES.includes(body.source as VinEnrichmentSource)
-  ) {
-    return { error: "invalid_source" };
-  }
-  if (typeof body.reason !== "string" || body.reason.trim().length === 0) {
-    return { error: "missing_reason" };
-  }
-  let dmsReference: string | null = null;
-  if (body.dms_reference !== undefined && body.dms_reference !== null) {
-    if (typeof body.dms_reference !== "string") {
-      return { error: "invalid_dms_reference" };
-    }
-    const trimmed = body.dms_reference.trim();
-    dmsReference = trimmed.length > 0 ? trimmed : null;
-  }
-  return {
-    vin,
-    source: body.source as VinEnrichmentSource,
-    reason: body.reason.trim(),
-    dms_reference: dmsReference,
-  };
+  if(fields.source && !VIN_ENRICHMENT_SOURCES.includes(fields.source as VinEnrichmentSource)) return {error:"invalid_source"};
+  return {vin:body.vin.trim().toUpperCase(),expected_revision:body.expected_revision as number|undefined,confirmed:body.confirmed as boolean|undefined,source:fields.source as VinEnrichmentSource|null,reason:fields.reason,dms_reference:fields.dms_reference};
 }
 
 export function parseMonthEndReportQuery(

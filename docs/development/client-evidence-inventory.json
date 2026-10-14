@@ -1,0 +1,119 @@
+{
+  "baseline": "8320eefa7dc9567dcf82467347012517472d48d8",
+  "entries": [
+    {
+      "tracked_path": "docs/discovery/floorplan/acura/merged/ACURA APRIL MERGED(BillingStatementApril2026).csv",
+      "protected_path": "acura/ACURA APRIL MERGED(BillingStatementApril2026).csv",
+      "sha256": "f067bb857700b5bdbe2c96bf432f3d8d56946774db0a339d36f171d985b8cd9f",
+      "status": "verified byte-identical existing protected evidence"
+    },
+    {
+      "tracked_path": "docs/discovery/floorplan/acura/merged/ACURA FEB MERGED(BillingStatementFebruary2026).csv",
+      "protected_path": "acura/ACURA FEB MERGED(BillingStatementFebruary2026).csv",
+      "sha256": "3402037765d824c2f0420e2276be4729ae20b8665751b4cbcafd05f077640ef0",
+      "status": "verified byte-identical existing protected evidence"
+    },
+    {
+      "tracked_path": "docs/discovery/floorplan/acura/merged/ACURA MARCH MERGED(BillingStatementMarch2026).csv",
+      "protected_path": "acura/ACURA MARCH MERGED(BillingStatementMarch2026).csv",
+      "sha256": "0300994e697e9af5548bce493f42df51a2aae54364012ee8a7d4c30d449bc617",
+      "status": "verified byte-identical existing protected evidence"
+    },
+    {
+      "tracked_path": "docs/discovery/floorplan/acura/raw/ACURA BOA APRIL(in).csv",
+      "protected_path": "acura/ACURA BOA APRIL(in).csv",
+      "sha256": "a0c25eb1bdba598f4262254e85f26867fec359d8620ffb08211c3c4374a13a34",
+      "status": "verified byte-identical existing protected evidence"
+    },
+    {
+      "tracked_path": "docs/discovery/floorplan/acura/raw/ACURA BOA FEB(in).csv",
+      "protected_path": "acura/unverified-tracked-copy/ACURA BOA FEB(in).csv",
+      "sha256": "5d8ba5331bf76226a65d8ccef1d22077be34fd49d0642a67ed586c56ec92ea0a",
+      "status": "unverified provenance; not authoritative"
+    },
+    {
+      "tracked_path": "docs/discovery/floorplan/acura/raw/ACURA BOA MARCH(in).csv",
+      "protected_path": "acura/ACURA BOA MARCH(in).csv",
+      "sha256": "1a7a996954a5188828cc36fc41e8453971c38dc0119cc87620736e633466cd59",
+      "status": "verified byte-identical existing protected evidence"
+    },
+    {
+      "tracked_path": "docs/discovery/floorplan/acura/raw/ACURA DT APRIL(in).csv",
+      "protected_path": "acura/ACURA DT APRIL(in).csv",
+      "sha256": "8fe1259168eb940d580710edf786a3138d59390698df9e272b62a260e5852a4e",
+      "status": "verified byte-identical existing protected evidence"
+    },
+    {
+      "tracked_path": "docs/discovery/floorplan/acura/raw/ACURA DT FEB(in).csv",
+      "protected_path": "acura/ACURA DT FEB(in).csv",
+      "sha256": "7acdf2fcbd81c2f30034b67b78b183d9379f6e7e7b80847072734d4a9152b0b9",
+      "status": "verified byte-identical existing protected evidence"
+    },
+    {
+      "tracked_path": "docs/discovery/floorplan/acura/raw/ACURA DT MARCH(in).csv",
+      "protected_path": "acura/ACURA DT MARCH(in).csv",
+      "sha256": "60bb57ff2e0e60ff7e4fe0ec20543338597ca68a6d027f6dbc11176823e873df",
+      "status": "verified byte-identical existing protected evidence"
+    },
+    {
+      "tracked_path": "docs/discovery/floorplan/hurst/BOA HURST APRIL (1).csv",
+      "protected_path": "hurst/BOA HURST APRIL (1).csv",
+      "sha256": "4e2a572322d8525c27d56434be23c9da260c44551cb3ce2078b20499e0a3d300",
+      "status": "preserved original tracked client evidence; not runtime input"
+    },
+    {
+      "tracked_path": "docs/discovery/floorplan/hurst/BOA HURST APRIL (1).xlsx",
+      "protected_path": "hurst/BOA HURST APRIL (1).xlsx",
+      "sha256": "c128288a8c333fc4bee36fd9213c03c89d6f983aab1d9b96a1cea0b9cc0e4247",
+      "status": "preserved original tracked client evidence; not runtime input"
+    },
+    {
+      "tracked_path": "docs/discovery/floorplan/hurst/DT HURST APRIL (1).csv",
+      "protected_path": "hurst/DT HURST APRIL (1).csv",
+      "sha256": "bf6fa9b86d43fc30ef6f61d0a34c7f5b7e2320b998c50894cb043cf7c5ecb0cb",
+      "status": "preserved original tracked client evidence; not runtime input"
+    },
+    {
+      "tracked_path": "docs/discovery/floorplan/hurst/DT HURST APRIL (1).xlsx",
+      "protected_path": "hurst/DT HURST APRIL (1).xlsx",
+      "sha256": "911c234ccad18cff09003799075717aa22ee88a3caa5c8c461e6e33461d544a8",
+      "status": "preserved original tracked client evidence; not runtime input"
+    },
+    {
+      "tracked_path": "docs/discovery/floorplan/hurst/Hurst FP Rec (3).xlsx",
+      "protected_path": "hurst/Hurst FP Rec (3).xlsx",
+      "sha256": "2e92d502b1dd8db45baf3b5166ae8c197f41bf6975232dc3c2a76b9988f1dd76",
+      "status": "preserved original tracked client evidence; not runtime input"
+    },
+    {
+      "tracked_path": "server/src/services/__fixtures__/DT HURST APRIL (1).csv",
+      "protected_path": "hurst/DT HURST APRIL (1).csv",
+      "sha256": "bf6fa9b86d43fc30ef6f61d0a34c7f5b7e2320b998c50894cb043cf7c5ecb0cb",
+      "status": "duplicate test copy mapped to preserved source; no second authoritative copy"
+    },
+    {
+      "tracked_path": "sample-data/golden_dataset.csv",
+      "protected_path": "hurst/golden_dataset.csv",
+      "sha256": "75b20187b42e521d10cb3554d687871ccb66062fc51076d78a483c8dc221f580",
+      "status": "client-derived clerk-classified historical acceptance dataset; not raw source"
+    },
+    {
+      "tracked_path": "server/src/services/__fixtures__/golden_dataset.csv",
+      "protected_path": "hurst/golden_dataset.csv",
+      "sha256": "75b20187b42e521d10cb3554d687871ccb66062fc51076d78a483c8dc221f580",
+      "status": "client-derived clerk-classified historical acceptance dataset; not raw source"
+    },
+    {
+      "tracked_path": "server/src/presenters/hurstFpRec.test.ts#clerkContractDetail",
+      "protected_path": "hurst/clerk-contract-detail.json",
+      "sha256": "0cb8a74b9a5e71a8d3460edb460a364cbdd0c74beac54496372d7cabd6f9e8ae",
+      "status": "historical inline presenter example preserved as data for original byte checksum"
+    },
+    {
+      "tracked_path": "docs/dealer_recon_ground_truth_reverse_engineering.md",
+      "protected_path": "hurst/historical-ground-truth-analysis.md",
+      "sha256": "31795e4837de59971de21ed5cac077b2249f5d9f83be80f9f34958045fed48d6",
+      "status": "original historical report preserved; tracked version now aggregate contract and invented examples"
+    }
+  ]
+}

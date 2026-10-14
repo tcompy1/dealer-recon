@@ -1,5 +1,7 @@
 # v1 Final Validation Signoff
 
+> Evidence-location update (2026-10-14): discovery/fixture filenames below are historical references, not current test inputs. Client copies have moved outside Git to the ignored protected Hiley evidence root. Acura February BOA remains **unverified provenance**. Ordinary tests use invented fixtures; historical Hurst/Acura acceptance is explicitly opt-in. See `docs/development/client-evidence-policy.md`. Historical decisions and results below are unchanged.
+
 Date: Tuesday, June 23, 2026.
 Issue: #21.
 Validation branch: `integration-cleanup-2026-06-10`.

@@ -24,8 +24,8 @@ describe("runLocalFloorplanRecon", () => {
     expect(output).toContain("On statement-not on GL: 4");
     expect(output).toContain("On schedule-not on statement: 5");
     expect(output).toContain("Needs manual review: 0");
-    expect(output).toContain("stock=M20657");
-    expect(output).toContain("stock=M20450");
+    expect(output).toContain("stock=M70053");
+    expect(output).toContain("stock=M70080");
     stderr.mockRestore();
   });
 });

@@ -1,5 +1,6 @@
+import {spreadsheetPrintMetadata,spreadsheetPageStyle} from "./spreadsheetHtml.js";
 import { formatCents } from "../domain/money.js";
-import { accountingMonthEndDate } from "../domain/accountingMonth.js";
+import { accountingMonthEndDate,parseAccountingMonth,type AccountingMonth } from "../domain/accountingMonth.js";
 import { computeVin6, extractVin6FromDescription } from "../domain/vin6.js";
 import type { ReconciliationRunDetail, SourceType, TransactionSummary } from "../domain/types.js";
 import type { StoreWorkflowConfig } from "../config/storeWorkflowConfig.js";
@@ -8,6 +9,9 @@ import { neutralizeSpreadsheetText } from "../spreadsheetText.js";
 export type MergedFloorplanRowClassification = "matched" | "boa_only" | "dealertrack_only";
 
 export type MergedFloorplanRow = {
+  confirmed_dealertrack_vin?: string;
+  ordering?: readonly [string,string,string,number,number,number];
+  review?: {label:"Offsetting account balances—review.";components:Record<"2100"|"2101"|"2101S",number>};
   store_description: string;
   serial_no_vin: string;
   boa_vin6: string;
@@ -20,6 +24,7 @@ export type MergedFloorplanRow = {
 };
 
 export type MergedFloorplanWorkbook = {
+  accounting_month?:AccountingMonth;
   store_config: StoreWorkflowConfig;
   store_name: string;
   period_date: string | null;
@@ -47,6 +52,7 @@ type DetailMatchGroup = ReconciliationRunDetail["match_groups"][number];
 export function buildMergedFloorplanWorkbook(
   input: BuildMergedFloorplanWorkbookInput,
 ): MergedFloorplanWorkbook {
+  if(input.storeConfig.storeKey==="fw")throw new Error("Fort Worth exports require persisted reconciliation outcomes and source identity snapshots.");
   const dealertrackRecords = filterDealertrackRecordsByConfiguredAccount(
     input.dealertrackRecords,
     input.storeConfig,
@@ -70,9 +76,10 @@ export function buildMergedFloorplanWorkbookFromReconciliationDetail(
   detail: ReconciliationRunDetail,
   storeConfig: StoreWorkflowConfig,
 ): MergedFloorplanWorkbook {
+  if(storeConfig.storeKey==="fw"&&!parseAccountingMonth(detail.accounting_month))throw new Error("Selected accounting month required for Fort Worth export.");
   const rows = sortMergedRows([
-    ...detail.match_groups.flatMap(buildRowsFromMatchGroup),
-    ...detail.exceptions.flatMap(buildRowsFromException),
+    ...detail.match_groups.flatMap(group=>buildRowsFromMatchGroup(group,storeConfig.storeKey==="fw")),
+    ...detail.exceptions.flatMap(exception=>buildRowsFromException(exception,storeConfig.storeKey==="fw")),
   ], storeConfig);
 
   return buildWorkbookFromRows({
@@ -80,10 +87,12 @@ export function buildMergedFloorplanWorkbookFromReconciliationDetail(
     rows,
     storeName: detail.store_name ?? storeConfig.displayName,
     periodDate: resolvePeriodAnchorDate(detail),
+    accountingMonth:storeConfig.storeKey==="fw"?detail.accounting_month!:undefined,
   });
 }
 
 export function toMergedFloorplanXlsHtml(workbook: MergedFloorplanWorkbook): string {
+  if (workbook.store_config.storeKey === "fw") return fortWorthMergedHtml(workbook);
   const accountingFormat = '\\\\\\(\\#\\,\\#\\#0\\.00\\\\\\)\\;\\#\\,\\#\\#0\\.00';
   const styles = `
     body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #111827; }
@@ -127,6 +136,7 @@ export function toMergedFloorplanXlsHtml(workbook: MergedFloorplanWorkbook): str
 }
 
 export function toMergedFloorplanFilename(workbook: MergedFloorplanWorkbook): string {
+  if(workbook.store_config.storeKey === "fw") return `fw-merged-floorplan-${workbook.accounting_month}.xls`;
   const period = workbook.store_config.storeKey === "acura"
     ? accountingMonthLabelFromPeriodDate(workbook.period_date) ?? "period"
     : workbook.period_date?.replace(/[^0-9]/g, "-").replace(/^-|-$/g, "") || "period";
@@ -134,6 +144,7 @@ export function toMergedFloorplanFilename(workbook: MergedFloorplanWorkbook): st
 }
 
 function buildWorkbookFromRows(input: {
+  accountingMonth?:AccountingMonth;
   storeConfig: StoreWorkflowConfig;
   rows: MergedFloorplanRow[];
   storeName: string;
@@ -150,6 +161,7 @@ function buildWorkbookFromRows(input: {
   const varianceCents = boaTotalCents + dealertrackTotalCents;
 
   return {
+    ...(input.accountingMonth?{accounting_month:input.accountingMonth}:{}),
     store_config: input.storeConfig,
     store_name: input.storeName,
     period_date: input.periodDate,
@@ -206,30 +218,30 @@ function buildRowsFromCleanedRecords(
   return rows;
 }
 
-function buildRowsFromMatchGroup(group: DetailMatchGroup): MergedFloorplanRow[] {
+function buildRowsFromMatchGroup(group: DetailMatchGroup, fw=false): MergedFloorplanRow[] {
   const boa = group.transactions.find((linked) => isBoaSource(linked.source_type))?.transaction;
   const dealertrack = group.transactions.find((linked) =>
     isDealertrackSource(linked.source_type),
   )?.transaction;
 
   if (boa && dealertrack) {
-    return [buildMatchedRow(boa, dealertrack)];
+    return [buildMatchedRow(boa, dealertrack,fw)];
   }
   if (boa) {
-    return [buildBoaOnlyRow(boa)];
+    return [buildBoaOnlyRow(boa,fw)];
   }
   if (dealertrack) {
-    return [buildDealertrackOnlyRow(dealertrack)];
+    return [buildDealertrackOnlyRow(dealertrack,fw)];
   }
   return [];
 }
 
-function buildRowsFromException(exception: DetailException): MergedFloorplanRow[] {
+function buildRowsFromException(exception: DetailException, fw=false): MergedFloorplanRow[] {
   if (isBoaSource(exception.source_type)) {
-    return [buildBoaOnlyRow(exception.transaction)];
+    return [buildBoaOnlyRow(exception.transaction,fw)];
   }
   if (isDealertrackSource(exception.source_type)) {
-    return [buildDealertrackOnlyRow(exception.transaction)];
+    return [buildDealertrackOnlyRow(exception.transaction,fw)];
   }
   return [];
 }
@@ -237,35 +249,41 @@ function buildRowsFromException(exception: DetailException): MergedFloorplanRow[
 function buildMatchedRow(
   boa: TransactionSummary,
   dealertrack: TransactionSummary,
+  fw=false,
 ): MergedFloorplanRow {
   const resolvedDealertrackVin6 = dealertrackVin6(dealertrack) || boaVin6(boa);
   return {
     ...emptyMergedRow("matched"),
+    ...(fw ? fwMetadata(boa,dealertrack,0):{}),
+    ...(dealertrack.source_identity?.operator_confirmed_vin ? {confirmed_dealertrack_vin:dealertrack.vin!}:{}),
     store_description: boa.description ?? "",
     serial_no_vin: boaVin(boa),
     boa_vin6: boaVin6(boa),
-    ending_balance_cents: Math.abs(boa.amount_cents),
-    dealertrack_account_amount_cents: dealertrackAccountCents(dealertrack),
+    ending_balance_cents: fw ? boa.amount_cents : Math.abs(boa.amount_cents),
+    dealertrack_account_amount_cents: fw ? dealertrack.amount_cents : dealertrackAccountCents(dealertrack),
     dealertrack_vin6: resolvedDealertrackVin6,
     dealertrack_description: dealertrack.description ?? "",
     dealertrack_control: dealertrackControl(dealertrack),
   };
 }
 
-function buildBoaOnlyRow(boa: TransactionSummary): MergedFloorplanRow {
+function buildBoaOnlyRow(boa: TransactionSummary,fw=false): MergedFloorplanRow {
   return {
     ...emptyMergedRow("boa_only"),
+    ...(fw ? fwMetadata(boa,null,1):{}),
     store_description: boa.description ?? "",
     serial_no_vin: boaVin(boa),
     boa_vin6: boaVin6(boa),
-    ending_balance_cents: Math.abs(boa.amount_cents),
+    ending_balance_cents: fw ? boa.amount_cents : Math.abs(boa.amount_cents),
   };
 }
 
-function buildDealertrackOnlyRow(dealertrack: TransactionSummary): MergedFloorplanRow {
+function buildDealertrackOnlyRow(dealertrack: TransactionSummary,fw=false): MergedFloorplanRow {
   return {
     ...emptyMergedRow("dealertrack_only"),
-    dealertrack_account_amount_cents: dealertrackAccountCents(dealertrack),
+    ...(fw ? fwMetadata(null,dealertrack,2):{}),
+    ...(dealertrack.source_identity?.operator_confirmed_vin ? {confirmed_dealertrack_vin:dealertrack.vin!}:{}),
+    dealertrack_account_amount_cents: fw ? dealertrack.amount_cents : dealertrackAccountCents(dealertrack),
     dealertrack_vin6: dealertrackVin6(dealertrack),
     dealertrack_description: dealertrack.description ?? "",
     dealertrack_control: dealertrackControl(dealertrack),
@@ -316,6 +334,11 @@ function compareTieBreakers(
   right: MergedFloorplanRow,
   storeConfig: StoreWorkflowConfig,
 ): number {
+  if(storeConfig.storeKey==="fw") {
+    if(!left.ordering || !right.ordering)throw new Error("Fort Worth source ordering identity is unavailable.");
+    for(let i=0;i<left.ordering.length;i++){const a=left.ordering[i],b=right.ordering[i];if(a!==b)return typeof a==="string"&&typeof b==="string"?compareCodePoints(a,b):a<b?-1:1;}
+    return 0;
+  }
   if (storeConfig.dtOnlyPlacementRule === "interleave_by_amount") {
     return (
       left.dealertrack_vin6.localeCompare(right.dealertrack_vin6) ||
@@ -457,6 +480,7 @@ function boaVin6(transaction: TransactionSummary): string {
 }
 
 function dealertrackVin6(transaction: TransactionSummary): string {
+  if(transaction.source_identity?.operator_confirmed_vin)return computeVin6(transaction.vin)??"";
   return extractVin6FromDescription(transaction.description) ?? computeVin6(transaction.vin) ?? "";
 }
 
@@ -583,4 +607,40 @@ function escapeHtml(value: string | null | undefined): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function fwMetadata(boa:TransactionSummary|null,dt:TransactionSummary|null,rank:number):Pick<MergedFloorplanRow,"ordering"|"review"> {
+ function ordinal(t:TransactionSummary|null):number {
+  if(!t)return -1;
+  const row=t.source_identity?.source_row_number;
+  if(!Number.isInteger(row)||Number(row)<=0)throw new Error("Fort Worth source ordering identity is unavailable.");
+  return Number(row);
+ }
+ const full=(t:TransactionSummary|null)=>/^[A-HJ-NPR-Z0-9]{17}$/.test(cleanVin(t?.vin))?cleanVin(t?.vin):"";
+ const components=dt?.source_identity?.offsetting_components;
+ if(components && (rank!==2 || dt?.amount_cents!==0 || Object.values(components).some(v=>!Number.isSafeInteger(v)) || Object.values(components).reduce((a,b)=>a+b,0)!==0))throw new Error("Invalid offset review identity.");
+ return {ordering:[full(boa),full(dt),dt?dealertrackControl(dt):"",rank,ordinal(boa),ordinal(dt)],...(components?{review:{label:"Offsetting account balances—review." as const,components:{...components}}}:{})};
+}
+
+function compareCodePoints(left:string,right:string):number {
+ const a=Array.from(left),b=Array.from(right);
+ for(let index=0;index<Math.min(a.length,b.length);index++){const delta=a[index].codePointAt(0)!-b[index].codePointAt(0)!;if(delta)return delta;}
+ return a.length-b.length;
+}
+
+/** Same HTML transport, with the characterized FW detail geometry. */
+function fortWorthMergedHtml(workbook:MergedFloorplanWorkbook):string {
+ const reviews=workbook.rows.some(row=>row.review!==undefined),last=workbook.rows.length+2;
+ const headers=[...workbook.headers,...(reviews?["Review","2100 component","2101 component","2101S component"]:[])];
+ const text=(value:string)=>`<td x:str class="text">${spreadsheetTextCell(value)}</td>`;
+ const money=(value:number|null,formula?:string)=>value===null?"<td></td>":`<td class="amount" x:num${formula?` x:fmla="${escapeHtml(formula)}"`:""}>${formatCents(value)}</td>`;
+ const rows=workbook.rows.map(row=>`<tr>${text(row.store_description)}${text(row.serial_no_vin)}${text(row.boa_vin6)}${money(row.ending_balance_cents)}${money(row.dealertrack_account_amount_cents)}${text(row.dealertrack_vin6)}${text(row.dealertrack_description)}${text(row.dealertrack_control)}${reviews?(row.review?text(row.review.label)+["2100","2101","2101S"].map(key=>money(row.review!.components[key as "2100"|"2101"|"2101S"])).join(""):"<td></td>".repeat(4)):""}</tr>`);
+ const totals=`<tr class="total-row"><td></td><td></td><td></td>${money(workbook.boa_total_amount_cents,workbook.rows.length?`=SUM(D2:D${last-1})`:"=0")}${money(workbook.dealertrack_total_amount_cents,workbook.rows.length?`=SUM(E2:E${last-1})`:"=0")}<td></td>${text("Final Totals:")}<td></td>${reviews?"<td></td>".repeat(4):""}</tr>`;
+ const widths=[224,154,84,126,126,84,336,126,...(reviews?[294,126,126,126]:[])];
+ return `<!DOCTYPE html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8">
+${spreadsheetPrintMetadata("MERGED",reviews?"L":"H",last,"landscape",true)}
+<style>${spreadsheetPageStyle("landscape")}
+body {font-family:Calibri,Arial,sans-serif;font-size:12pt;} table {border-collapse:collapse;} td,th {border:1px solid #9ca3af;padding:4px;vertical-align:top;white-space:pre-wrap;overflow-wrap:break-word;} .text {mso-number-format:"\\@";} .amount {text-align:right;mso-number-format:"#,##0.00;(#,##0.00);0.00";} .total-row {font-weight:bold;} thead {display:table-header-group;}
+</style></head><body><table><colgroup>${widths.map(width=>`<col style="width:${width}px"/>`).join("")}</colgroup><thead><tr>${headers.map(header=>`<th x:str>${spreadsheetTextCell(header)}</th>`).join("")}</tr></thead><tbody>${rows.join("\n")}${totals}</tbody></table></body></html>`;
 }

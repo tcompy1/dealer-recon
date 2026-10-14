@@ -1,0 +1,46 @@
+import {expect,test} from "@playwright/test";
+import {loadSyntheticWorkflow,openCorrection,propose,confirm,download,correctedVin} from "./vinWorkflow";
+for(const key of ["hurst","acura"] as const)test(`${key} rejects delayed stale form and keeps legacy downloads`,async({page,context})=>{
+ const tag=`browser-stale-${key}`;
+ const first=await loadSyntheticWorkflow(page,key,tag);
+ await page.getByRole("button",{name:"Run Workflow"}).click();
+ await expect(page.getByRole("link",{name:"Download FP REC"})).toBeVisible();
+ const old=await download(page,"Download FP REC");expect(old.name).toMatch(/\.xls$/);
+ const other=await context.newPage();
+ const second=await loadSyntheticWorkflow(other,key,tag);
+ expect(second.storeId).toBe(first.storeId);
+ for(const source of ["boaUpload","dtUpload"] as const){
+  expect(second[source].source_file_id).toBe(first[source].source_file_id);
+  expect(second[source].reused_existing_file).toBe(true);
+ }
+ const reviewed=await openCorrection(page,0);await propose(page,correctedVin);
+ const stale=await openCorrection(other,0);await propose(other,"1ZZAA11A1ZA100004");
+ expect(stale).toMatchObject({id:reviewed.id,source_file_id:first.boaUpload.source_file_id,dealership_store_id:first.storeId,vin_enrichment_revision:reviewed.vin_enrichment_revision});
+ const accepted=await confirm(page);
+ expect(accepted.request().url()).toContain(`/transactions/${reviewed.id}/vin-enrichment`);
+ expect(accepted.request().postDataJSON()).toMatchObject({expected_revision:reviewed.vin_enrichment_revision,confirmed:true});
+ const updated=await accepted.json();
+ expect(updated.transaction.vin_revision).toBe(reviewed.vin_enrichment_revision+1);
+ expect(updated.audit_event_id).not.toBeNull();
+ const pending=other.waitForResponse(r=>r.url().endsWith(`/transactions/${reviewed.id}/vin-enrichment`) && r.request().method()==="POST");
+ await other.getByRole("button",{name:"Confirm VIN correction"}).click();
+ const conflict=await pending;
+ expect(conflict.request().postDataJSON()).toMatchObject({expected_revision:reviewed.vin_enrichment_revision,confirmed:true});
+ expect(conflict.status()).toBe(409);
+ const current=await other.request.get(conflict.url().replace("vin-enrichment","vin-verification"));
+ expect(current.status()).toBe(200);
+ expect(await current.json()).toMatchObject({id:reviewed.id,vin:correctedVin,vin_enrichment_revision:reviewed.vin_enrichment_revision+1});
+ await expect(other.getByRole("button",{name:"Refresh and review"})).toBeVisible();
+ await expect(other.getByRole("button",{name:"Confirm VIN correction"})).toBeDisabled();
+ const refreshed=other.waitForResponse(r=>r.url().endsWith(`/transactions/${reviewed.id}/vin-verification`));
+ await other.getByRole("button",{name:"Refresh and review"}).click();
+ expect((await (await refreshed).json()).vin_enrichment_revision).toBe(reviewed.vin_enrichment_revision+1);
+ await expect(other.getByRole("textbox",{name:"Proposed VIN",exact:true})).toHaveValue("");
+ await expect(other.getByRole("checkbox")).not.toBeChecked();
+ await expect(other.getByRole("button",{name:"Confirm VIN correction"})).toBeDisabled();
+ await propose(other,"1ZZAA11A1ZA100004");
+ const reconfirmed=await confirm(other);
+ expect(reconfirmed.request().postDataJSON()).toMatchObject({expected_revision:reviewed.vin_enrichment_revision+1,confirmed:true});
+ expect((await reconfirmed.json()).transaction.vin_revision).toBe(reviewed.vin_enrichment_revision+2);
+ expect((await download(page,"Download FP REC")).bytes.equals(old.bytes)).toBe(true);await other.close();
+});

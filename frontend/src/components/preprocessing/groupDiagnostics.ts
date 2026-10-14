@@ -23,6 +23,9 @@ export type DiagnosticGroup = {
 };
 
 const KIND_TO_GROUP: Record<PreprocessingDiagnosticKind, DiagnosticGroupId> = {
+  offsetting_accounts_retained:"amount_warnings",
+  excluded_only_row_removed:"removed_automatically",
+  invalid_or_missing_maturity:"amount_warnings",
   banner_row_removed: "removed_automatically",
   header_row_detected: "removed_automatically",
   zero_balance_row_removed: "removed_automatically",
@@ -108,6 +111,9 @@ export function groupDiagnostics(diagnostics: PreprocessingDiagnostic[]): Diagno
 }
 
 const KIND_LABELS: Record<PreprocessingDiagnosticKind, string> = {
+  offsetting_accounts_retained:"Offsetting account balances—review.",
+  excluded_only_row_removed:"Excluded-account-only row removed",
+  invalid_or_missing_maturity:"Maturity date missing or invalid",
   banner_row_removed: "Banner/subtotal row removed",
   header_row_detected: "Header row detected",
   zero_balance_row_removed: "Zero-balance row removed",

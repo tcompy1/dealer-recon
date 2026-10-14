@@ -1,0 +1,41 @@
+{
+  "headers": [
+    "FW",
+    "Serial No/VIN",
+    "VIN6",
+    "Ending Balance",
+    "2100",
+    "VIN6",
+    "Description",
+    "Control"
+  ],
+  "cases": {
+    "core": {
+      "matched": 2,
+      "boaOnly": 0,
+      "dealertrackOnly": 0,
+      "boaCents": 35500,
+      "dealertrackCents": -35500
+    },
+    "mismatch": {
+      "matched": 1,
+      "boaOnly": 1,
+      "dealertrackOnly": 1,
+      "boaCents": 36500,
+      "dealertrackCents": -35500
+    },
+    "enrichment": {
+      "matched": 1,
+      "boaOnly": 0,
+      "dealertrackOnly": 0,
+      "boaCents": 12500,
+      "dealertrackCents": -12500
+    }
+  },
+  "fpRec": {
+    "title": "Floorplan Reconciliation - Hiley Cars Fort Worth",
+    "difference": "statement_plus_gl",
+    "netAdjustments": "schedule_plus_statement",
+    "variance": "net_adjustments_minus_difference"
+  }
+}

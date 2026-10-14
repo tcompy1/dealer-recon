@@ -1,3 +1,4 @@
+import {parseAccountingMonth} from "../domain/accountingMonth.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -27,6 +28,7 @@ import {
 } from "./fpRec.js";
 import {
   buildMergedFloorplanWorkbook,
+  buildMergedFloorplanWorkbookFromReconciliationDetail,
   type MergedFloorplanWorkbook,
   type MergedFloorplanRow,
 } from "./mergedFloorplan.js";
@@ -46,7 +48,7 @@ const CLERK_HEADERS = [
 ];
 
 const goldenCsv = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "../../../sample-data/golden_dataset.csv"),
+  join(dirname(fileURLToPath(import.meta.url)), "../../../sample-data/hurst-synthetic.csv"),
   "utf8",
 );
 
@@ -116,6 +118,7 @@ function sourceFile(source_file_id: number, source_type: SourceType) {
 
 function transaction(overrides: Partial<TransactionSummary> = {}): TransactionSummary {
   return {
+    source_identity:{source_row_number:2,vin_revision:0},
     id: 1,
     dealership_id: 1,
     source_type: "boa",
@@ -211,9 +214,9 @@ function clerkMatchGroup(): ReconciliationRunDetail["match_groups"][number] {
           source_type: "boa",
           amount: "29855.00",
           amount_cents: 2_985_500,
-          description: "2025 Mazda CX5",
+          description: "Invented matched unit 1TESTCARXXA910021",
           stock_number: null,
-          vin: "JM3KFBAL0S0764873",
+          vin: "1TESTCARXXA910021",
         }),
       },
       {
@@ -224,10 +227,10 @@ function clerkMatchGroup(): ReconciliationRunDetail["match_groups"][number] {
           source_type: "dealertrack",
           amount: "-29855.00",
           amount_cents: -2_985_500,
-          description: "2025 MAZDA CX-5         1/09/26  JM3KFBAL0S0764873",
-          reference_number: "M21276",
-          stock_number: "M21276",
-          vin: "JM3KFBAL0S0764873",
+          description: "Invented matched unit 1TESTCARXXA910021",
+          reference_number: "M70020",
+          stock_number: "M70020",
+          vin: "1TESTCARXXA910021",
         }),
       },
     ],
@@ -248,9 +251,9 @@ function clerkContractDetail(): ReconciliationRunDetail {
           source_type: "boa",
           amount: "35999.00",
           amount_cents: 3_599_900,
-          description: "BOA ONLY CX5 PF XA",
+          description: "Invented exception 1TESTCARXXA910142",
           stock_number: null,
-          vin: "JM3KMCHA6T0126368",
+          vin: "1TESTCARXXA910142",
         }),
       }),
       exception({
@@ -263,10 +266,10 @@ function clerkContractDetail(): ReconciliationRunDetail {
           source_type: "dealertrack",
           amount: "-26251.00",
           amount_cents: -2_625_100,
-          description: "TRANSFER JM3KFBAL0S0764873   2/27/26  JM1BPABL0T1867950",
-          reference_number: "M21317",
-          stock_number: "M21317",
-          vin: "JM1BPABL0T1867950",
+          description: "Invented exception 1TESTCARXXA910260",
+          reference_number: "M70007",
+          stock_number: "M70007",
+          vin: "1TESTCARXXA910260",
         }),
       }),
       exception({
@@ -274,15 +277,15 @@ function clerkContractDetail(): ReconciliationRunDetail {
         exception_type: "needs_review_vin6_only",
         exception_category: "vin6_match_amount_mismatch",
         source_type: "boa",
-        reason: "Needs review: VIN6 870612 matches dealertrack transaction 304 but amount differs.",
+        reason: "Needs review: VIN6 910269 matches dealertrack transaction 304 but amount differs.",
         transaction: transaction({
           id: 303,
           source_type: "boa",
           amount: "32283.00",
           amount_cents: 3_228_300,
-          description: "AMOUNT MISMATCH BOA",
+          description: "Invented exception 1TESTCARXXA910269",
           stock_number: null,
-          vin: "JM1BPBLL0T1870612",
+          vin: "1TESTCARXXA910269",
         }),
       }),
       exception({
@@ -290,16 +293,16 @@ function clerkContractDetail(): ReconciliationRunDetail {
         exception_type: "needs_review_vin6_only",
         exception_category: "vin6_match_amount_mismatch",
         source_type: "dealertrack",
-        reason: "Needs review: VIN6 870612 matches boa transaction 303 but amount differs.",
+        reason: "Needs review: VIN6 910269 matches boa transaction 303 but amount differs.",
         transaction: transaction({
           id: 304,
           source_type: "dealertrack",
           amount: "-31771.00",
           amount_cents: -3_177_100,
-          description: "AMOUNT MISMATCH DT   4/01/26  JM1BPBLL0T1870612",
-          reference_number: "M21472",
-          stock_number: "M21472",
-          vin: "JM1BPBLL0T1870612",
+          description: "Invented exception 1TESTCARXXA910269",
+          reference_number: "M70492",
+          stock_number: "M70492",
+          vin: "1TESTCARXXA910269",
         }),
       }),
     ],
@@ -566,7 +569,7 @@ function mergedWorkbookForStore(storeKey: StoreKey): MergedFloorplanWorkbook {
   const boaOnlyVin = "5NPE24AF7KH700001";
   const dealertrackOnlyVin = "3FA6P0H75HR200002";
 
-  return buildMergedFloorplanWorkbook({
+  const input={
     storeConfig: config,
     storeName: config.displayName,
     periodDate: "02-28-26",
@@ -614,14 +617,19 @@ function mergedWorkbookForStore(storeKey: StoreKey): MergedFloorplanWorkbook {
         vin: dealertrackOnlyVin,
       }),
     ],
-  });
+  };
+  if(storeKey!=="fw")return buildMergedFloorplanWorkbook(input);
+  return buildMergedFloorplanWorkbookFromReconciliationDetail(buildDetail({accounting_month:parseAccountingMonth("2026-02")!,store_name:config.displayName,
+    match_groups:[{...matchGroup(1500000,-1500000),transactions:[{side:"boa",source_type:"boa",transaction:input.boaRecords[0]},{side:"dealertrack",source_type:"dealertrack",transaction:input.dealertrackRecords[0]}]}],
+    exceptions:[...input.boaRecords.slice(1),...input.dealertrackRecords.slice(1)].map(t=>exception({source_type:t.source_type,transaction:t})),
+  }),config);
 }
 
 describe("Hurst FP Rec draft accounting workpaper contract", () => {
-  test("preserves the byte-observable Hurst HTML export", () => {
+  test("preserves the synthetic-identity Hurst HTML export", () => {
     const html = toHurstFpRecXlsHtml(buildHurstFpRecWorkbook(clerkContractDetail()));
     expect(createHash("sha256").update(html).digest("hex")).toBe(
-      "fd2f02b03ec1d62eece7d509e1d055a80f3eb1170938abe8c1cd6896192e9ebb",
+      "d6ba9a3b4b9a2fe71dfa0485c7330fde352bc85b44c18819b5406bfc152c1ddd",
     );
   });
 
@@ -673,10 +681,10 @@ describe("Hurst FP Rec draft accounting workpaper contract", () => {
             source_type: "dealertrack",
             amount: "-123.45",
             amount_cents: -12_345,
-            description: "TRANSFER JM1BPABL0T1867950",
+            description: "TRANSFER 1TESTCARXXA910260",
             reference_number: "=SUM(1+1)",
             stock_number: "=SUM(1+1)",
-            vin: "JM1BPABL0T1867950",
+            vin: "1TESTCARXXA910260",
           }),
         }),
       ],
@@ -684,7 +692,7 @@ describe("Hurst FP Rec draft accounting workpaper contract", () => {
     const html = toHurstFpRecXlsHtml(buildHurstFpRecWorkbook(detail));
     const flattened = workpaperHtmlRows(detail).flat().join(" ");
 
-    expect(flattened).toContain("'=SUM(1+1) - T1867950");
+    expect(flattened).toContain("'=SUM(1+1) - XA910260");
     expect(flattened).toContain("(123.45)");
     expect(html).toContain('x:fmla="=B5"');
     expect(html).toContain('x:fmla="=SUM(B3+B6)"');
@@ -694,15 +702,15 @@ describe("Hurst FP Rec draft accounting workpaper contract", () => {
     const rows = workpaperHtmlRows();
     const flattened = rows.flat().join(" ");
 
-    expect(flattened).not.toContain("2025 Mazda CX5");
-    expect(flattened).not.toContain("JM3KFBAL0S0764873");
-    expect(flattened).toContain("M21317 - T1867950");
-    expect(flattened).toContain("T0126368");
+    expect(flattened).not.toContain("Invented matched unit 1TESTCARXXA910021");
+    expect(flattened).not.toContain("1TESTCARXXA910021");
+    expect(flattened).toContain("M70007 - XA910260");
+    expect(flattened).toContain("XA910142");
   });
 
   test("maps Dealertrack-only rows to schedule-not-on-statement with blank clerk-entry cells", () => {
     const scheduleRows = workpaperSectionRows(workpaperHtmlRows(), "On schedule-not on statement");
-    const dealertrackOnlyRow = findRow(scheduleRows, (row) => row[0] === "M21317 - T1867950");
+    const dealertrackOnlyRow = findRow(scheduleRows, (row) => row[0] === "M70007 - XA910260");
 
     expect(dealertrackOnlyRow).toBeDefined();
     expect(dealertrackOnlyRow?.[1]).toBe("(26,251.00)");
@@ -712,7 +720,7 @@ describe("Hurst FP Rec draft accounting workpaper contract", () => {
 
   test("maps BOA-only rows to statement-not-on-GL with blank clerk-entry cells", () => {
     const statementRows = workpaperSectionRows(workpaperHtmlRows(), "On statement-not on GL");
-    const boaOnlyRow = findRow(statementRows, (row) => row[0] === "T0126368");
+    const boaOnlyRow = findRow(statementRows, (row) => row[0] === "XA910142");
 
     expect(boaOnlyRow).toBeDefined();
     expect(boaOnlyRow?.[1]).toBe("35,999.00");
@@ -725,45 +733,15 @@ describe("Hurst FP Rec draft accounting workpaper contract", () => {
     const scheduleRows = workpaperSectionRows(rows, "On schedule-not on statement");
     const statementRows = workpaperSectionRows(rows, "On statement-not on GL");
 
-    expect(findRow(scheduleRows, (row) => row[0] === "M21472 - T1870612")?.[1]).toBe("(31,771.00)");
-    expect(findRow(statementRows, (row) => row[0] === "T1870612")?.[1]).toBe("32,283.00");
+    expect(findRow(scheduleRows, (row) => row[0] === "M70492 - XA910269")?.[1]).toBe("(31,771.00)");
+    expect(findRow(statementRows, (row) => row[0] === "XA910269")?.[1]).toBe("32,283.00");
   });
 
   test.each([
-    [
-      "FEB26",
-      {
-        scheduleRows: 16,
-        statementRows: 0,
-        scheduleTotal: -57_316_800,
-        statementTotal: 0,
-        netAdjustments: -57_316_800,
-        variance: 0,
-      },
-    ],
-    [
-      "MAR26",
-      {
-        scheduleRows: 6,
-        statementRows: 10,
-        scheduleTotal: -22_475_800,
-        statementTotal: 36_051_600,
-        netAdjustments: 13_575_800,
-        variance: 0,
-      },
-    ],
-    [
-      "APRIL26",
-      {
-        scheduleRows: 2,
-        statementRows: 4,
-        scheduleTotal: -6_354_200,
-        statementTotal: 13_576_500,
-        netAdjustments: 7_222_300,
-        variance: 0,
-      },
-    ],
-  ])("exports %s draft FP REC exception sections from the Hurst golden fixture", (month, expected) => {
+    ["FEB26", {scheduleRows:1,statementRows:0,scheduleTotal:-30000,statementTotal:0,netAdjustments:-30000,variance:0}],
+    ["MAR26", {scheduleRows:1,statementRows:1,scheduleTotal:-10000,statementTotal:40000,netAdjustments:30000,variance:0}],
+    ["APRIL26", {scheduleRows:2,statementRows:2,scheduleTotal:-75000,statementTotal:70000,netAdjustments:-5000,variance:0}],
+  ])("exports %s draft FP REC exception sections from the invented Hurst fixture", (month, expected) => {
     const workbook = buildHurstFpRecWorkbook(goldenDetailForMonth(month));
     const rows = workpaperHtmlRows(goldenDetailForMonth(month));
 
@@ -854,18 +832,18 @@ describe("buildHurstFpRecWorkbook", () => {
       expect.arrayContaining([
         expect.objectContaining({
           classification: "matched",
-          hurst_description: "2025 Mazda CX5",
-          boa_vin: "JM3KFBAL0S0764873",
-          boa_vin6: "764873",
+          hurst_description: "Invented matched unit 1TESTCARXXA910021",
+          boa_vin: "1TESTCARXXA910021",
+          boa_vin6: "910021",
           ending_balance_cents: 2_985_500,
           dt_2100_cents: -2_985_500,
-          dt_vin6: "764873",
-          dt_description: "2025 MAZDA CX-5         1/09/26  JM3KFBAL0S0764873",
-          dt_control: "M21276",
+          dt_vin6: "910021",
+          dt_description: "Invented matched unit 1TESTCARXXA910021",
+          dt_control: "M70020",
         }),
         expect.objectContaining({
           classification: "boa_only",
-          hurst_description: "BOA ONLY CX5 PF XA",
+          hurst_description: "Invented exception 1TESTCARXXA910142",
           ending_balance_cents: 3_599_900,
           dt_2100_cents: null,
         }),
@@ -874,8 +852,8 @@ describe("buildHurstFpRecWorkbook", () => {
           hurst_description: "",
           ending_balance_cents: null,
           dt_2100_cents: -2_625_100,
-          dt_vin6: "867950",
-          dt_control: "M21317",
+          dt_vin6: "910260",
+          dt_control: "M70007",
         }),
       ]),
     );
@@ -988,7 +966,7 @@ describe("store-configured FP Rec from merged floorplan workbook", () => {
   test.each([
     ["hurst", ["HURST", "2100"]],
     ["acura", ["ACURA", "324"]],
-    ["fw", ["FW", "2100"]],
+    ["fw", ["FORT WORTH", "2100"]],
   ] as Array<[StoreKey, [string, string]]>)(
     "preserves %s merged row semantics and configured FP REC labels",
     (storeKey, [storeLabel, accountLabel]) => {
@@ -1035,11 +1013,18 @@ describe("store-configured FP Rec from merged floorplan workbook", () => {
 
     expect(mergedWorkbook.store_config.dealertrackAmountColumns).toEqual(["2100", "2101", "2101S"]);
     expect(mergedWorkbook.store_config.dealertrackExcludedAccountColumns).toEqual(["2110"]);
-    expect(fpRecWorkbook.headers[0]).toBe("FW");
+    expect(fpRecWorkbook.headers[0]).toBe("FORT WORTH");
     expect(fpRecWorkbook.headers[4]).toBe("2100");
     expect(matchedRow?.dt_2100_cents).toBe(-1_500_000);
     expect(fpRecWorkbook.dealertrack_total_amount_cents).toBe(
       mergedWorkbook.dealertrack_total_amount_cents,
     );
   });
+});
+test.each(["hurst","acura"] as const)("%s saved corrected full VIN controls workpaper tail; unmarked rendering remains historical",key=>{
+ const t=transaction({source_type:"dealertrack",vin:"1ZZAA11A1ZA100002",description:"original 1ZZAA11A1ZA100001",source_identity:{source_row_number:2,vin_revision:1,operator_confirmed_vin:true}});
+ const d=buildDetail({exceptions:[exception({source_type:"dealertrack",transaction:t})]});
+ expect(buildFpRecWorkbook(d,ROOFTOP_PROFILES[key]).schedule_not_on_statement.rows[0].unit_reference).toContain("ZA100002");
+ t.source_identity=undefined;
+ expect(buildFpRecWorkbook(d,ROOFTOP_PROFILES[key]).schedule_not_on_statement.rows[0].unit_reference).toContain("ZA100001");
 });

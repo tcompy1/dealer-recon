@@ -1,5 +1,7 @@
 # Acura Rooftop Reconciliation Evidence Characterization
 
+> Evidence-location update (2026-10-14): discovery/fixture filenames below are historical references, not current test inputs. Client copies have moved outside Git to the ignored protected Hiley evidence root. Acura February BOA remains **unverified provenance**. Ordinary tests use invented fixtures; historical Hurst/Acura acceptance is explicitly opt-in. See `docs/development/client-evidence-policy.md`. Historical decisions and results below are unchanged.
+
 **Date:** 2026-09-14
 **Scope:** Read-only characterization of the local Acura discovery package before production changes
 **Canonical acceptance month:** April 2026

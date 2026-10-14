@@ -510,3 +510,28 @@ describe("preprocessBoa", () => {
     );
   });
 });
+
+describe("Fort Worth strict BOA policy",()=>{
+ const policy={amountSource:"ending_balance_required",maturityReview:"on_or_before_month_end"} as const;
+ test.each(["", "broken"])("never falls back from invalid Ending Balance %s",amount=>{
+  const result=preprocessBoa(table(["VIN","Original Amount","Ending Balance"],[["1ZZAA11A1ZA100001","100.00",amount]]),{policy});
+  expect(result.transactions).toHaveLength(0);expect(result.validationErrors).toHaveLength(1);
+ });
+ test("requires exactly one Ending Balance header even for an empty file",()=>{
+  for(const headers of [["VIN","Original Amount"],["VIN","Ending Balance","Ending Balance"]]) {
+   expect(preprocessBoa(table(headers,[]),{policy}).validationErrors.length).toBeGreaterThan(0);
+  }
+ });
+ test("past and month-end maturity warn; invalid/missing warn; later dates do not; all retained",()=>{
+  const result=preprocessBoa(table(["VIN","Ending Balance","Maturity Date"],["03/31/2026","04/30/2026","05/01/2026","02/30/2026", ""].map(date=>["1ZZAA11A1ZA100001","100.00",date])),{policy});
+  expect(result.transactions).toHaveLength(5);expect(result.summary.ending_balance_autosum_cents).toBe(50000);
+  expect(result.diagnostics.filter(d=>d.kind==="current_month_maturity_payoff_review")).toHaveLength(2);
+  expect(result.diagnostics.filter(d=>d.kind==="invalid_or_missing_maturity")).toHaveLength(2);
+ });
+});
+test("FW malformed detail blocks and literal source description stays unchanged",()=>{
+ const policy={amountSource:"ending_balance_required",maturityReview:"on_or_before_month_end"} as const;
+ const desc=' "Invented car" ';
+ const result=preprocessBoa(table(["VIN","Description","Ending Balance"],[["1ZZAA11A1ZA100001",desc,"12.00"],["1ZZAA11A1ZA100002","truncated"]]),{policy});
+ expect(result.validationErrors).toHaveLength(1);expect(result.transactions[0].description).toBe(desc);expect(result.transactions[0].raw_data.__lineage).toMatchObject({raw_row_snapshot:{Description:desc}});
+});

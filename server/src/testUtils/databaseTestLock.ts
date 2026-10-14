@@ -1,4 +1,4 @@
-import { createPool } from "../repositories/postgresTransactionRepository.js";
+import { createTestPool as createPool } from "./testPostgresPool.js";
 
 const DATABASE_TEST_LOCK_ID = 762733002;
 

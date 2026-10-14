@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-import { createPool } from "../repositories/postgresTransactionRepository.js";
+import { createTestPool as createPool } from "./testPostgresPool.js";
 
 const DISPOSABLE_DATABASE_PREFIX = "dealer_recon_task10_";
 const DISPOSABLE_DATABASE_NAME = /^dealer_recon_task10_[a-z0-9_]+$/;
@@ -24,6 +24,7 @@ export async function withDisposablePostgresDatabase<T>(
   let created = false;
   let result: T | undefined;
   let operationError: unknown;
+  let operationFailed = false;
 
   try {
     await adminPool.query(`CREATE DATABASE ${quotedDatabaseName}`);
@@ -34,12 +35,20 @@ export async function withDisposablePostgresDatabase<T>(
     result = await callback(disposableUrl.toString(), databaseName);
   } catch (error) {
     operationError = error;
+    operationFailed = true;
   }
 
-  let cleanupError: unknown;
+  const cleanupErrors: unknown[] = [];
   if (created) {
     try {
-      await adminPool.query(`DROP DATABASE ${quotedDatabaseName} WITH (FORCE)`);
+      const sessions = await adminPool.query<{ count: string }>(
+        "SELECT COUNT(*)::text AS count FROM pg_stat_activity WHERE datname = $1",
+        [databaseName],
+      );
+      if (Number(sessions.rows[0]!.count) !== 0) {
+        throw new Error(`Leaked PostgreSQL sessions prevent cleanup of ${databaseName}.`);
+      }
+      await adminPool.query(`DROP DATABASE ${quotedDatabaseName}`);
       const remaining = await adminPool.query<{ count: string }>(
         "SELECT COUNT(*)::text AS count FROM pg_database WHERE datname = $1",
         [databaseName],
@@ -48,20 +57,23 @@ export async function withDisposablePostgresDatabase<T>(
         throw new Error(`Disposable PostgreSQL database ${databaseName} was not removed.`);
       }
     } catch (error) {
-      cleanupError = error;
+      cleanupErrors.push(error);
     }
   }
 
   try {
     await adminPool.end();
   } catch (error) {
-    cleanupError ??= error;
+    cleanupErrors.push(error);
   }
 
-  if (cleanupError) {
-    throw cleanupError;
+  if (operationFailed && cleanupErrors.length) {
+    throw new AggregateError([operationError, ...cleanupErrors],
+      "Disposable database operation failed; cleanup also failed.", { cause: operationError });
   }
-  if (operationError) {
+  if (cleanupErrors.length === 1) throw cleanupErrors[0];
+  if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "Disposable database cleanup failed.");
+  if (operationFailed) {
     throw operationError;
   }
   return result as T;

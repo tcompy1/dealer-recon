@@ -1,3 +1,5 @@
+import {HistoricalIdentityUnavailableError,hydrateRunIdentity,validateSavedTransaction} from "../services/runIdentity.js";
+import { prepareVinCorrection, type VinCorrectionInput } from "../services/vinVerification.js";
 import type {
   AccountDetail,
   AccountSummary,
@@ -41,7 +43,6 @@ import type {
   TransactionSummary,
 } from "../domain/types.js";
 import { formatCents } from "../domain/money.js";
-import { categorizeRunDetailExceptions } from "../services/exceptionCategorizer.js";
 import type { PriorExceptionRecord } from "../services/exceptionCarryForward.js";
 
 export type SourceFileImport = {
@@ -140,6 +141,7 @@ export interface TransactionRepository {
   ): Promise<AuditEvent[]>;
   listBySource(dealershipId: number, sourceType: SourceType): Promise<Transaction[]>;
   listBySourceFile(dealershipId: number, sourceFileId: number): Promise<Transaction[]>;
+  confirmTransactionVinEnrichment(dealershipId:number,transactionId:number,input:VinCorrectionInput):Promise<{transaction:Transaction;auditEvent:AuditEvent}|null>;
   getTransactionById(
     dealershipId: number,
     transactionId: number,
@@ -203,6 +205,7 @@ export interface TransactionRepository {
     filters?: ReconciliationRunListFilters,
   ): Promise<ReconciliationRunListItem[]>;
   getReconciliationRunDealershipId(reconciliationRunId: number): Promise<number | null>;
+  getReconciliationRunMetadata(dealershipId:number,id:number):Promise<ReconciliationRunListItem|null>;
   getReconciliationRunDetail(
     dealershipId: number,
     reconciliationRunId: number,
@@ -428,6 +431,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
         transaction.account ??
         defaultAccountIdentifier(transaction.source_type),
       id: this.nextId++,
+      vin_revision: 0,
     }));
     this.transactions.push(...inserted);
     return inserted;
@@ -700,6 +704,22 @@ export class MemoryTransactionRepository implements TransactionRepository {
     return transaction ? cloneTransaction(transaction) : null;
   }
 
+  async confirmTransactionVinEnrichment(dealershipId:number,transactionId:number,input:VinCorrectionInput):Promise<{transaction:Transaction;auditEvent:AuditEvent}|null> {
+    const index=this.transactions.findIndex(t=>t.id===transactionId && t.dealership_id===dealershipId);
+    if(index<0) return null;
+    const current=this.transactions[index];
+    const source=this.sourceFiles.find(s=>s.id===current.source_file_id && s.dealership_id===dealershipId) ?? null;
+    const prepared=prepareVinCorrection(current,source,input,this.nextAuditEventId);
+    const transaction=cloneTransaction(prepared.transaction);
+    const auditEvent:AuditEvent={...prepared.audit,id:this.nextAuditEventId,dealership_id:dealershipId,timestamp:input.confirmedAt};
+    const savedAudit=cloneAuditEvent(auditEvent);
+    // No await: validate and clone everything before the atomic in-memory swap.
+    this.transactions[index]=transaction;
+    this.auditEvents.push(savedAudit);
+    this.nextAuditEventId++;
+    return {transaction:cloneTransaction(transaction),auditEvent:cloneAuditEvent(savedAudit)};
+  }
+
   async updateTransactionVinAndRawData(
     dealershipId: number,
     transactionId: number,
@@ -880,7 +900,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
         inputs: input.input_snapshot.inputs.map((snapshotInput) => ({
           ...snapshotInput,
           parser_metadata: cloneJson(snapshotInput.parser_metadata),
-          transactions: snapshotInput.transactions.map(cloneTransaction),
+          transactions: snapshotInput.transactions.map(transaction=>{validateSavedTransaction(transaction);return cloneTransaction(transaction);}),
         })),
       });
     }
@@ -1124,7 +1144,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
       inputs: snapshot.inputs.map((snapshotInput) => ({
         ...snapshotInput,
         parser_metadata: cloneJson(snapshotInput.parser_metadata),
-        transactions: snapshotInput.transactions.map(cloneTransaction),
+        transactions: snapshotInput.transactions.map(transaction=>{validateSavedTransaction(transaction);return cloneTransaction(transaction);}),
       })),
     };
   }
@@ -1150,6 +1170,11 @@ export class MemoryTransactionRepository implements TransactionRepository {
     return (
       this.reconciliationRuns.find((run) => run.id === reconciliationRunId)?.dealership_id ?? null
     );
+  }
+
+  async getReconciliationRunMetadata(dealershipId:number,id:number):Promise<ReconciliationRunListItem|null> {
+    const run=this.reconciliationRuns.find(run=>run.id===id && run.dealership_id===dealershipId);
+    return run?this.toReconciliationRunListItem(run):null;
   }
 
   async getReconciliationRunDetail(
@@ -1202,29 +1227,13 @@ export class MemoryTransactionRepository implements TransactionRepository {
       .filter((exception) => exception.reconciliation_run_id === run.id)
       .sort((left, right) => left.id - right.id)
       .map((exception) => this.toRunDetailException(exception));
-    const boaTransactions = this.transactions.filter(
-      (transaction) =>
-        transaction.dealership_id === dealershipId &&
-        transaction.source_file_id === run.boa_source_file_id,
-    );
-    const dealertrackTransactions = this.transactions.filter(
-      (transaction) =>
-        transaction.dealership_id === dealershipId &&
-        transaction.source_file_id === run.dealertrack_source_file_id,
-    );
-    const categorizedExceptions = categorizeRunDetailExceptions(
-      { exceptions, match_groups: matchGroups },
-      boaTransactions,
-      dealertrackTransactions,
-    ).filter((exception) => matchesExceptionFilters(exception, filters));
-
-    return {
+    const hydrated=hydrateRunIdentity({
       ...listItem,
-      boa_source_file: this.toSourceFileSummary(boaSourceFile),
-      dealertrack_source_file: this.toSourceFileSummary(dealertrackSourceFile),
-      match_groups: matchGroups,
-      exceptions: categorizedExceptions,
-    };
+      boa_source_file:this.toSourceFileSummary(boaSourceFile),
+      dealertrack_source_file:this.toSourceFileSummary(dealertrackSourceFile),
+      match_groups:matchGroups,exceptions,
+    },await this.getReconciliationRunSnapshot(dealershipId,reconciliationRunId));
+    return {...hydrated,exceptions:hydrated.exceptions.filter(exception=>matchesExceptionFilters(exception,filters))};
   }
 
   async updateReconciliationExceptionReview(
@@ -1243,6 +1252,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
       return null;
     }
 
+    await this.getReconciliationRunDetail(dealershipId,reconciliationRunId);
     if (update.status !== undefined) {
       exception.status = update.status;
       exception.review_status = reviewStatusFromLegacyStatus(update.status);
@@ -1283,7 +1293,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
       }
     }
 
-    return this.toRunDetailException(exception);
+    return (await this.getReconciliationRunDetail(dealershipId,reconciliationRunId))?.exceptions.find(saved=>saved.exception_id===exceptionId) ?? null;
   }
 
   async getReconciliationExceptionDealershipId(
@@ -1307,6 +1317,7 @@ export class MemoryTransactionRepository implements TransactionRepository {
     },
   ): Promise<PriorExceptionRecord[]> {
     const records: PriorExceptionRecord[] = [];
+    const details=new Map<number,ReconciliationRunDetail|null>();
     for (const exception of this.reconciliationExceptions) {
       if (exception.dealership_id !== dealershipId) {
         continue;
@@ -1327,7 +1338,11 @@ export class MemoryTransactionRepository implements TransactionRepository {
       if (options.createdBefore && run.created_at >= options.createdBefore) {
         continue;
       }
-      const transaction = this.transactions.find((candidate) => candidate.id === exception.transaction_id);
+      if(!details.has(run.id)) {
+        try{details.set(run.id,await this.getReconciliationRunDetail(dealershipId,run.id));}
+        catch(error){if(!(error instanceof HistoricalIdentityUnavailableError))throw error;details.set(run.id,null);}
+      }
+      const transaction=details.get(run.id)?.exceptions.find(saved=>saved.exception_id===exception.id)?.transaction;
       if (!transaction) {
         continue;
       }

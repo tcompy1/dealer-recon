@@ -205,6 +205,9 @@ export function preprocessBoa(
   const headerLookup = header ? buildHeaderLookup(header) : null;
   const dataRows = header ? parsed.rows.slice(dataStartIndex) : parsed.rows;
 
+  const strict = options.policy?.amountSource === "ending_balance_required";
+  const endingColumns = header?.filter(name=>isHeaderAlias(name,ENDING_BALANCE_ALIASES)).length ?? 0;
+  if(strict && endingColumns!==1) validationErrors.push({row:null,field:"amount",message:"Exactly one Ending Balance column is required."});
   const acceptedRows: BoaWorkingRow[] = [];
 
   dataRows.forEach((rawRow, index) => {
@@ -212,8 +215,10 @@ export function preprocessBoa(
       ? (parsed.preambleRows?.length ?? 0) + index + 2
       : dataStartIndex + index + 1;
     rowsScanned += 1;
+    if(strict && endingColumns!==1)return;
 
     if (header && rawRow.length !== header.length) {
+      if(strict && !looksLikeTotalsRow(rawRow.join(" ").trim().toLowerCase()) && rawRow.some(cell=>cell.trim())) validationErrors.push({row:sourceRowNumber,field:"row",message:"Required detail cells are missing or malformed."});
       rowsSkippedUnknown += 1;
       diagnostics.push({
         kind: "row_skipped_malformed",
@@ -239,7 +244,7 @@ export function preprocessBoa(
       return;
     }
 
-    const rawSnapshot = buildRawSnapshot(cleaned, header);
+    const rawSnapshot = buildRawSnapshot(strict ? rawRow : cleaned, header);
     const rowText = cleaned.join(" ").toLowerCase();
     const lineage: RowLineageEntry[] = [{ stage: "raw_parsed" }];
 
@@ -272,7 +277,10 @@ export function preprocessBoa(
 
     let amountCents: number | null;
     let amountProvenance: string;
-    if (endingBalanceCents !== null) {
+    if(strict) {
+      amountCents=endingBalanceCents;
+      amountProvenance="ending_balance";
+    } else if (endingBalanceCents !== null) {
       amountCents = endingBalanceCents;
       amountProvenance = "ending_balance";
     } else if (originalAmountCents !== null) {
@@ -315,7 +323,8 @@ export function preprocessBoa(
 
     lineage.push({ stage: "amount_resolved", detail: amountProvenance });
 
-    const description = headerLookup ? findCellByAliases(cleaned, headerLookup, DESCRIPTION_ALIASES) : null;
+    const descriptionIndex=header ? findHeaderIndex(header,DESCRIPTION_ALIASES) : null;
+    const description = strict && descriptionIndex!==null ? (rawRow[descriptionIndex]??null) : headerLookup ? findCellByAliases(cleaned, headerLookup, DESCRIPTION_ALIASES) : null;
     const stockFromColumn = headerLookup
       ? findCellByAliases(cleaned, headerLookup, STOCK_COLUMN_ALIASES)
       : null;
@@ -404,7 +413,7 @@ export function preprocessBoa(
       vin6,
       vinProvenance,
       stockNumber,
-      description: buildDescription(description, cleaned),
+      description: strict && description!==null ? description : buildDescription(description, cleaned),
       transactionDate,
       maturityDate,
       lineage,
@@ -438,12 +447,13 @@ export function preprocessBoa(
   }
 
   let currentMonthMaturityCount = 0;
-  if (acceptedRows.some((row) => row.maturityDate !== null)) {
+  if (strict || acceptedRows.some((row) => row.maturityDate !== null)) {
     acceptedRows.sort(compareByMaturityDate);
     for (const row of acceptedRows) {
       row.lineage.push({ stage: "sorted", detail: "maturity_date_asc_for_payoff_review" });
-      const normalizedMaturity = normalizeIsoDate(row.maturityDate ?? "");
-      if (normalizedMaturity?.startsWith(selectedAccountingMonth)) {
+      const normalizedMaturity = strict ? strictIsoDate(row.maturityDate ?? "") : normalizeIsoDate(row.maturityDate ?? "");
+      if(strict && !normalizedMaturity) diagnostics.push({kind:"invalid_or_missing_maturity",message:"Maturity date is missing or invalid; review in spreadsheet.",source_row_number:row.sourceRowNumber});
+      if (normalizedMaturity && (strict ? normalizedMaturity.slice(0,7)<=selectedAccountingMonth : normalizedMaturity.startsWith(selectedAccountingMonth))) {
         currentMonthMaturityCount += 1;
         row.lineage.push({
           stage: "maturity_payoff_review_flagged",
@@ -451,7 +461,7 @@ export function preprocessBoa(
         });
         diagnostics.push({
           kind: "current_month_maturity_payoff_review",
-          message: "BOA row has a selected-accounting-month maturity and requires payoff review.",
+          message: strict ? "BOA maturity is on or before accounting month-end; review payoff in spreadsheet." : "BOA row has a selected-accounting-month maturity and requires payoff review.",
           source_row_number: row.sourceRowNumber,
           vin6: row.vin6,
           stock_number: row.stockNumber,
@@ -825,4 +835,10 @@ function locateHeaderInRows(rows: string[][]): { index: number; header: string[]
     }
   }
   return null;
+}
+
+function strictIsoDate(value:string):string|null {
+ const iso=normalizeIsoDate(value);if(!iso)return null;
+ const date=new Date(`${iso}T00:00:00Z`);
+ return Number.isFinite(date.getTime()) && date.toISOString().slice(0,10)===iso ? iso : null;
 }

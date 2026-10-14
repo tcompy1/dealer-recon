@@ -1,3 +1,4 @@
+import {ROOFTOP_PROFILES} from "../config/storeWorkflowConfig.js";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
 
@@ -14,6 +15,10 @@ export async function startE2eServer(): Promise<Server> {
     name: "Hiley Acura",
     dealer_group_id: 1,
   });
+  await repository.createDealershipStore(1,{name:"Hiley Cars Fort Worth",dealer_group_id:1});
+  // This entry point is exclusively the in-memory browser-test server.
+  const priorEnabled=ROOFTOP_PROFILES.fw.enabled;
+  ROOFTOP_PROFILES.fw.enabled=true;
   const app = createApp(repository, E2E_WEB_ORIGINS, 1, async () => undefined, {
     nodeEnv: "test",
     allowDevDealershipFallback: true,
@@ -21,9 +26,11 @@ export async function startE2eServer(): Promise<Server> {
 
   return new Promise((resolve, reject) => {
     const server = app.listen(E2E_PORT, E2E_HOST);
-    server.once("error", reject);
+    const failed=(error:Error)=>{ROOFTOP_PROFILES.fw.enabled=priorEnabled;reject(error);};
+    server.once("close",()=>{ROOFTOP_PROFILES.fw.enabled=priorEnabled;});
+    server.once("error", failed);
     server.once("listening", () => {
-      server.off("error", reject);
+      server.off("error", failed);
       resolve(server);
     });
   });

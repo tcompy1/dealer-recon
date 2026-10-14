@@ -1,7 +1,8 @@
+import {HistoricalIdentityUnavailableError,hydrateRunIdentity,validateSavedTransaction} from "../services/runIdentity.js";
+import { prepareVinCorrection, type VinCorrectionInput } from "../services/vinVerification.js";
 import pg from "pg";
 
 import { formatCents } from "../domain/money.js";
-import { categorizeRunDetailExceptions } from "../services/exceptionCategorizer.js";
 import type {
   AccountDetail,
   AccountSourceTotal,
@@ -103,6 +104,7 @@ type ReconciliationArtifactRow = {
 };
 
 type TransactionRow = {
+  vin_revision:number;
   id: number;
   dealership_id: number;
   source_file_id: number | null;
@@ -797,6 +799,25 @@ export class PostgresTransactionRepository implements TransactionRepository {
     return result.rows[0] ? toTransaction(result.rows[0]) : null;
   }
 
+  async confirmTransactionVinEnrichment(dealershipId:number,transactionId:number,input:VinCorrectionInput):Promise<{transaction:Transaction;auditEvent:AuditEvent}|null> {
+    const client=await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const rows=await client.query<TransactionRow>("SELECT * FROM transactions WHERE dealership_id=$1 AND id=$2 FOR UPDATE",[dealershipId,transactionId]);
+      if(!rows.rows[0]) { await client.query("ROLLBACK"); return null; }
+      const current=toTransaction(rows.rows[0]);
+      const sources=await client.query<SourceFileRow>("SELECT * FROM source_files WHERE id=$1 AND dealership_id=$2 FOR SHARE",[current.source_file_id,dealershipId]);
+      const ids=await client.query<{id:number}>("SELECT nextval(pg_get_serial_sequence('audit_events','id'))::integer AS id");
+      const prepared=prepareVinCorrection(current,sources.rows[0]?toSourceFile(sources.rows[0]):null,input,ids.rows[0].id);
+      const audit=prepared.audit;
+      const saved=await client.query<AuditEventRow>(`INSERT INTO audit_events(id,dealership_id,actor_user_id,action_type,entity_type,entity_id,previous_state,new_state,timestamp) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,[ids.rows[0].id,dealershipId,audit.actor_user_id,audit.action_type,audit.entity_type,audit.entity_id,audit.previous_state,audit.new_state,input.confirmedAt]);
+      await client.query("UPDATE transactions SET vin=$3,raw_data=$4,vin_revision=$5 WHERE dealership_id=$1 AND id=$2",[dealershipId,transactionId,prepared.transaction.vin,prepared.transaction.raw_data,prepared.transaction.vin_revision]);
+      await client.query("COMMIT");
+      return {transaction:prepared.transaction,auditEvent:toAuditEvent(saved.rows[0])};
+    } catch(error) { await client.query("ROLLBACK"); throw error; }
+    finally {client.release();}
+  }
+
   async updateTransactionVinAndRawData(
     dealershipId: number,
     transactionId: number,
@@ -1489,6 +1510,11 @@ export class PostgresTransactionRepository implements TransactionRepository {
     return result.rows[0]?.dealership_id ?? null;
   }
 
+  async getReconciliationRunMetadata(dealershipId:number,id:number):Promise<ReconciliationRunListItem|null> {
+    const runs=await this.listReconciliationRuns(dealershipId);
+    return runs.find(run=>run.reconciliation_run_id===id) ?? null;
+  }
+
   async getReconciliationRunDetail(
     dealershipId: number,
     reconciliationRunId: number,
@@ -1621,15 +1647,6 @@ export class PostgresTransactionRepository implements TransactionRepository {
       ORDER BY re.id`,
       [reconciliationRunId, dealershipId],
     );
-    const runTransactionRows = await this.pool.query<TransactionRow>(
-      `SELECT *
-       FROM transactions
-       WHERE dealership_id = $1
-         AND source_file_id IN ($2, $3)
-       ORDER BY id`,
-      [dealershipId, runRow.boa_source_file_id, runRow.dealertrack_source_file_id],
-    );
-
     const matchGroups = matchGroupRows.rows.map((matchGroup) => ({
       match_group_id: matchGroup.id,
       match_type: matchGroup.match_type,
@@ -1663,16 +1680,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
       created_at: toDateTimeString(row.exception_created_at),
       transaction: toTransactionSummary(toTransaction(row)),
     }));
-    const runTransactions = runTransactionRows.rows.map(toTransaction);
-    const categorizedExceptions = categorizeRunDetailExceptions(
-      { exceptions, match_groups: matchGroups },
-      runTransactions.filter((transaction) => transaction.source_file_id === runRow.boa_source_file_id),
-      runTransactions.filter(
-        (transaction) => transaction.source_file_id === runRow.dealertrack_source_file_id,
-      ),
-    ).filter((exception) => matchesExceptionFilters(exception, filters));
-
-    return {
+    const detail:ReconciliationRunDetail = {
       ...toReconciliationRunListItem(runRow),
       boa_source_file: toSourceFileSummary({
         id: runRow.boa_source_file_id,
@@ -1717,8 +1725,10 @@ export class PostgresTransactionRepository implements TransactionRepository {
         created_at: toDateTimeString(runRow.dealertrack_created_at),
       }),
       match_groups: matchGroups,
-      exceptions: categorizedExceptions,
+      exceptions,
     };
+    const hydrated=hydrateRunIdentity(detail,await this.getReconciliationRunSnapshot(dealershipId,reconciliationRunId));
+    return {...hydrated,exceptions:hydrated.exceptions.filter(exception=>matchesExceptionFilters(exception,filters))};
   }
 
   async updateReconciliationExceptionReview(
@@ -1739,8 +1749,9 @@ export class PostgresTransactionRepository implements TransactionRepository {
       return null;
     }
 
+    await this.getReconciliationRunDetail(dealershipId,reconciliationRunId);
     const reviewNotesValue = update.review_notes ?? update.note ?? null;
-    const result = await this.pool.query<ReconciliationExceptionRow>(
+    await this.pool.query<ReconciliationExceptionRow>(
       `UPDATE reconciliation_exceptions
        SET
          review_status = COALESCE($3, review_status),
@@ -1802,27 +1813,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
       ],
     );
 
-    const row = result.rows[0];
-
-    return {
-      exception_id: row.exception_id,
-      dealership_id: row.dealership_id,
-      exception_type: exceptionTypeFromReason(row.reason),
-      exception_category: "unclassified",
-      status: row.status,
-      note: row.note,
-      review_status: row.review_status,
-      assigned_to: row.assigned_to,
-      review_notes: row.review_notes,
-      boa_notes: row.boa_notes ?? "",
-      gl_notes: row.gl_notes ?? "",
-      reviewed_at: row.reviewed_at ? toDateTimeString(row.reviewed_at) : null,
-      reviewed_by: row.reviewed_by,
-      source_type: row.exception_source_type,
-      reason: row.reason,
-      created_at: toDateTimeString(row.exception_created_at),
-      transaction: toTransactionSummary(toTransaction(row)),
-    };
+    return (await this.getReconciliationRunDetail(dealershipId,reconciliationRunId))?.exceptions.find(saved=>saved.exception_id===exceptionId) ?? null;
   }
 
   async listPriorUnresolvedExceptions(
@@ -1882,16 +1873,22 @@ export class PostgresTransactionRepository implements TransactionRepository {
         options.createdBefore ?? null,
       ],
     );
-    return result.rows.map((row) => ({
+    const identities=new Map<number,TransactionSummary>();
+    for(const runId of new Set(result.rows.map(row=>row.reconciliation_run_id))) {
+      try{const detail=await this.getReconciliationRunDetail(dealershipId,runId);
+      for(const exception of detail?.exceptions ?? []) identities.set(exception.exception_id,exception.transaction);}
+      catch(error){if(!(error instanceof HistoricalIdentityUnavailableError))throw error;}
+    }
+    return result.rows.filter(row=>identities.has(row.exception_id)).map((row) => ({
       exception_id: row.exception_id,
       reconciliation_run_id: row.reconciliation_run_id,
       dealership_store_id: row.dealership_store_id,
       source_type: row.source_type,
-      amount_cents: Number(row.amount_cents),
-      vin: row.vin,
-      stock_number: row.stock_number,
-      reference_number: row.reference_number,
-      description: row.description,
+      amount_cents: identities.get(row.exception_id)!.amount_cents,
+      vin: identities.get(row.exception_id)!.vin,
+      stock_number: identities.get(row.exception_id)!.stock_number,
+      reference_number: identities.get(row.exception_id)!.reference_number,
+      description: identities.get(row.exception_id)!.description,
       boa_notes: row.boa_notes ?? "",
       gl_notes: row.gl_notes ?? "",
       review_notes: row.review_notes ?? "",
@@ -2440,6 +2437,7 @@ function toReconciliationRunListItem(row: ReconciliationRunListRow): Reconciliat
 function toTransaction(row: TransactionRow): Transaction {
   return {
     id: row.id,
+    vin_revision: row.vin_revision,
     dealership_id: row.dealership_id,
     source_file_id: row.source_file_id,
     source_type: row.source_type,
@@ -2458,6 +2456,7 @@ function toTransaction(row: TransactionRow): Transaction {
 }
 
 function normalizeSnapshotTransaction(transaction: Transaction): Transaction {
+  validateSavedTransaction(transaction);
   return {
     ...transaction,
     amount_cents: Number(transaction.amount_cents),

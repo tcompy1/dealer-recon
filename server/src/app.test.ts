@@ -1,3 +1,4 @@
+import { FW_SANITIZED_FIXTURE_PATHS, readFwSyntheticFixture } from "./testFixtures/fw/index.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
@@ -128,7 +129,7 @@ function boaUploadRow(
   stockNumber: string,
   vin: string,
   amount: string,
-  reference = "382882",
+  reference = "910091",
 ): string {
   return [
     "storeA",
@@ -173,7 +174,7 @@ function dealertrackUploadRow(stockNumber: string, amount: string, vin?: string)
 
 // Single-upload helpers that include the header so each call produces a
 // well-formed CSV the source-specific preprocessor can ingest.
-const boaUploadCsv = (stockNumber: string, vin: string, amount: string, reference = "382882") =>
+const boaUploadCsv = (stockNumber: string, vin: string, amount: string, reference = "910091") =>
   [BOA_CSV_HEADER, boaUploadRow(stockNumber, vin, amount, reference)].join("\n");
 
 const dealertrackUploadCsv = (stockNumber: string, amount: string, vin?: string) =>
@@ -184,7 +185,7 @@ function boaUploadCsvMulti(
 ): string {
   return [
     BOA_CSV_HEADER,
-    ...rows.map((r) => boaUploadRow(r.stock, r.vin, r.amount, r.reference ?? "382882")),
+    ...rows.map((r) => boaUploadRow(r.stock, r.vin, r.amount, r.reference ?? "910091")),
   ].join("\n");
 }
 
@@ -808,8 +809,8 @@ describe("app", () => {
     expect(adminRunsResponse.body).toEqual(
       expect.arrayContaining([expect.objectContaining({ reconciliation_run_id: nullRun.id })]),
     );
-    expect(adminRunResponse.status).toBe(200);
-    expect(adminRunResponse.body.reconciliation_run_id).toBe(nullRun.id);
+    expect(adminRunResponse.status).toBe(409);
+    expect(adminRunResponse.body.error.code).toBe("HISTORICAL_IDENTITY_UNAVAILABLE");
     expect(adminRunArtifactsResponse.status).toBe(200);
     expect(adminRunArtifactsResponse.body).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: nullRunArtifact.id })]),
@@ -1911,7 +1912,7 @@ describe("app", () => {
     const repository = new MemoryTransactionRepository();
     const app = createFallbackApp(repository);
     const dealertrackFixture = await loadFixture(
-      "server/src/services/__fixtures__/DT HURST APRIL (1).csv",
+      "server/src/testFixtures/hurst/dealertrack-reprocessing-synthetic.csv",
     );
     const fileHash = createHash("sha256").update(dealertrackFixture).digest("hex");
     const badImport = await repository.createSourceFileWithTransactions(
@@ -1919,11 +1920,11 @@ describe("app", () => {
       {
         source_type: "dealertrack",
         dealership_store_id: 1,
-        original_filename: "DT HURST APRIL (1).csv",
+        original_filename: "dealertrack-reprocessing-synthetic.csv",
         stored_filename: null,
         file_hash: fileHash,
         row_count: 0,
-        validation_error_count: 201,
+        validation_error_count: 2,
       },
       [],
     );
@@ -1933,14 +1934,14 @@ describe("app", () => {
       .field("source_type", "dealertrack")
       .field("store_id", "1")
       .field("accounting_month", "2026-04")
-      .attach("file", dealertrackFixture, "DT HURST APRIL (1).csv");
+      .attach("file", dealertrackFixture, "dealertrack-reprocessing-synthetic.csv");
 
     expect(uploadResponse.status).toBe(200);
     expect(uploadResponse.body).toMatchObject({
       source_file_id: badImport.sourceFile.id,
       reused_existing_file: false,
-      transaction_count: expect.any(Number),
-      stored_row_count: expect.any(Number),
+      transaction_count: 2,
+      stored_row_count: 2,
       stored_validation_error_count: 0,
       source_file_health: expect.objectContaining({
         status: "reprocessed",
@@ -1948,16 +1949,17 @@ describe("app", () => {
         reasons: [],
       }),
     });
-    expect(uploadResponse.body.transaction_count).toBeGreaterThan(0);
-    expect(uploadResponse.body.stored_row_count).toBeGreaterThan(0);
+    expect(uploadResponse.body.transaction_count).toBe(2);
+    expect(uploadResponse.body.stored_row_count).toBe(2);
 
     const repairedTransactions = await repository.listBySourceFile(1, badImport.sourceFile.id);
-    expect(repairedTransactions.length).toBeGreaterThan(0);
+    expect(repairedTransactions.length).toBe(2);
+    expect(repairedTransactions.map(t => t.amount_cents).sort((a,b) => a-b)).toEqual([-123456, -20000]);
 
     const boaUpload = await uploadCsv(
       app,
       "boa",
-      boaUploadCsv("M21324", "JM1BPAAL7T1869826", "$25,895.00", "M21324"),
+      boaUploadCsv("M70256", "1TESTCARXXA910265", "$25,895.00", "M70256"),
       "boa-april-match.csv",
       1,
     );
@@ -1976,7 +1978,7 @@ describe("app", () => {
       reconciliation.body.reconciliation_run_id,
     );
     const dealertrackInput = snapshot?.inputs.find((input) => input.side === "dealertrack");
-    expect(dealertrackInput?.transactions.length).toBeGreaterThan(0);
+    expect(dealertrackInput?.transactions.length).toBe(2);
   });
 
   test("uploads are scoped by dealership and attach dealership_id", async () => {
@@ -2635,7 +2637,7 @@ describe("app", () => {
         details: {
           source: null,
           accounting_month: "2026-04",
-          rooftop_profile_id: "fw-v0",
+          rooftop_profile_id: "fw-v1",
           recovery: "Select an enabled rooftop or complete that rooftop's evidence onboarding.",
         },
       });
@@ -3411,7 +3413,7 @@ describe("app", () => {
       boaCsv: boaUploadCsv("M80101", "1HGCM82633A004352", "$801.00", "80101"),
       dealertrackCsv: [
         DEALERTRACK_CSV_HEADER,
-        'M80202,"=SUM(1+1) JM3KFBAL0S0764873",-802,0',
+        'M80202,"=SUM(1+1) 1TESTCARXXA910021",-802,0',
       ].join("\n"),
       boaFilename: "boa-formula.csv",
       dealertrackFilename: "dealertrack-formula.csv",
@@ -3431,13 +3433,13 @@ describe("app", () => {
 
     expect(exceptionsCsv.status).toBe(200);
     expect(exceptionsCsv.text).toContain(",-802.00,-80200,");
-    expect(exceptionsCsv.text).toContain("'=SUM(1+1) JM3KFBAL0S0764873");
+    expect(exceptionsCsv.text).toContain("'=SUM(1+1) 1TESTCARXXA910021");
     expect(exceptionsCsv.text).not.toContain(",'-802.00,-80200");
     expect(artifactsResponse.status).toBe(200);
     expect(cleanedDealertrack).toBeDefined();
     expect(cleanedCsv.status).toBe(200);
     expect(cleanedCsv.text).toContain(",-802.00,-80200,");
-    expect(cleanedCsv.text).toContain("'=SUM(1+1) JM3KFBAL0S0764873");
+    expect(cleanedCsv.text).toContain("'=SUM(1+1) 1TESTCARXXA910021");
     expect(cleanedCsv.text).not.toContain(",'-802.00,-80200");
   });
 
@@ -3614,8 +3616,8 @@ describe("app", () => {
       .field("accounting_month", "2026-04")
       .attach(
         "file",
-        await loadFixture("server/src/presenters/__fixtures__/fw/FW BOA FEB.csv"),
-        "FW BOA FEB.csv",
+        Buffer.from(readFwSyntheticFixture(FW_SANITIZED_FIXTURE_PATHS.core.boa)),
+        "fw-synthetic.csv",
       );
 
     expect(response.status).toBe(422);
@@ -3737,6 +3739,10 @@ describe("app", () => {
       accounting_month: null,
       rooftop_profile_id: "acura-v1",
       rooftop_profile_version: "1",
+      input_snapshot:{engine_version:"test",inputs:[
+        {side:"boa",source_type:"boa",source_file_id:boaImport.sourceFile.id,parser_version:"1",parser_metadata:{},transactions:boaImport.transactions},
+        {side:"dealertrack",source_type:"dealertrack",source_file_id:dealertrackImport.sourceFile.id,parser_version:"1",parser_metadata:{},transactions:dealertrackImport.transactions},
+      ]},
       result: {
         matched_count: 0, exception_count: 0, duplicate_count: 0,
         match_groups: [], exceptions: [],
@@ -3826,15 +3832,15 @@ describe("app", () => {
     const boaUpload = await uploadCsv(
       app,
       "boa",
-      boaUploadCsv("M21055", "1HGCM82633A004352", "$31,051.00", "116411"),
+      boaUploadCsv("M70035", "1HGCM82633A004352", "$31,051.00", "910632"),
       "boa-weak-duplicates.csv",
     );
     const dealertrackUpload = await uploadCsv(
       app,
       "dealertrack",
       [
-        'M21055,"BOA FLOORPLAN CX-30 1HGCM82633A004352",-31051,0',
-        'M21286,"BOA FLOORPLAN CX-30 3MVDMBXL6TM128759",-31051,0',
+        'M70035,"BOA FLOORPLAN CX-30 1HGCM82633A004352",-31051,0',
+        'M70037,"BOA FLOORPLAN CX-30 1TESTCARXXA910637",-31051,0',
       ].join("\n"),
       "dealertrack-weak-duplicates.csv",
     );
@@ -3870,7 +3876,7 @@ describe("app", () => {
       [
         "Control,Description,2100,2110",
         "BOA,BANK OF AMERICA,0,-250000",
-        "M20552,JM3KFBCM9S0716259,-34050,0",
+        "M70105,1TESTCARXXA910008,-34050,0",
       ].join("\n"),
       "dealertrack-hiley-regression.csv",
     );
@@ -3886,8 +3892,8 @@ describe("app", () => {
 
     expect(reconciliation.status).toBe(200);
     expect(response.status).toBe(200);
-    expect(response.text).toContain("M20552");
-    expect(response.text).toContain("JM3KFBCM9S0716259");
+    expect(response.text).toContain("M70105");
+    expect(response.text).toContain("1TESTCARXXA910008");
     expect(response.text).not.toContain("BANK OF AMERICA");
   });
 
@@ -4811,3 +4817,16 @@ function setMemorySourceFileFields(
   }
   Object.assign(sourceFile, fields);
 }
+test("FW mixed invalid details never persist a partial source",async()=>{
+ const {ROOFTOP_PROFILES}=await import("./config/storeWorkflowConfig.js");
+ const repository=new MemoryTransactionRepository();const app=createFallbackApp(repository);
+ const store=await repository.createDealershipStore(1,{name:"Hiley Cars Fort Worth"});
+ const original=ROOFTOP_PROFILES.fw.enabled;ROOFTOP_PROFILES.fw.enabled=true;
+ try {
+  for(const bad of ["M12346,broken,bad,,,","M12346,truncated"]){
+   const response=await request(app).post("/upload").field("source_type","dealertrack").field("store_id",String(store.id)).field("accounting_month","2026-04").attach("file",Buffer.from(`Control,Description,2100,2101,2101S,2110\nM12345,1ZZAA11A1ZA100001,-12.00,,,\n${bad}\n`),"2026-04.csv");
+   expect(response.status).toBe(422);expect(response.body.error.code).toBe("STRUCTURALLY_INVALID_TRANSACTIONS");
+   expect(await repository.listSourceFiles(1)).toEqual([]);expect(await repository.listBySource(1,"dealertrack")).toEqual([]);
+  }
+ } finally {ROOFTOP_PROFILES.fw.enabled=original;}
+});

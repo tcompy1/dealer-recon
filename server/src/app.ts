@@ -64,8 +64,6 @@ import type {
 import { toExceptionsCsv, toMonthEndReportCsv } from "./presenters/csv.js";
 import {
   buildFpRecWorkbook,
-  toFpRecFilename,
-  toFpRecXlsHtml,
 } from "./presenters/fpRec.js";
 import {
   getRooftopProfile,
@@ -82,7 +80,8 @@ import {
   type RooftopFailureDetails,
   type RooftopValidationErrorCode,
 } from "./services/rooftopValidation.js";
-import { buildMergedFloorplanArtifact } from "./services/mergedFloorplanExport.js";
+import {buildFloorplanExports} from "./services/floorplanExport.js";
+import {buildMergedFloorplanWorkbookFromReconciliationDetail} from "./presenters/mergedFloorplan.js";
 import { applyCarryForwardToDetail } from "./services/exceptionCarryForward.js";
 import {
   parseExceptionReviewUpdate,
@@ -98,13 +97,9 @@ import {
   parseStoreCreateRequest,
   parseVinEnrichmentRequest,
 } from "./validators/requestParsers.js";
-import {
-  applyManualVinEnrichment,
-  type ManualVinEnrichmentInput,
-} from "./services/preprocessing/manualVinEnrichment.js";
+import { assessVin, getVinRevision } from "./services/vinVerification.js";
 import {
   readLineage,
-  type RawDataLineage,
 } from "./services/preprocessing/types.js";
 import {
   authorizedStoreIds,
@@ -118,6 +113,7 @@ import { logError, logInfo, serializeError } from "./logger.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { asyncHandler } from "./middleware/asyncHandler.js";
 import {
+  HttpError,
   UnauthorizedError,
   ForbiddenError,
   NotFoundError,
@@ -168,7 +164,7 @@ export function withRooftopSupport(
 }
 
 function resolveRunRooftopProfile(
-  detail: ReconciliationRunDetail,
+  detail: Omit<ReconciliationRunDetail,"boa_source_file"|"dealertrack_source_file"|"match_groups"|"exceptions">,
   requestedStoreKey: StoreKey | null,
 ): RooftopProfile {
   const hasProfileId = detail.rooftop_profile_id !== null;
@@ -221,7 +217,7 @@ function resolveRunRooftopProfile(
   return legacyHurst;
 }
 
-function runProfileError(detail: ReconciliationRunDetail, message: string): ValidationError {
+function runProfileError(detail: Pick<ReconciliationRunDetail,"dealership_store_id"|"rooftop_profile_id"|"rooftop_profile_version">, message: string): ValidationError {
   return new ValidationError(message, "ROOFTOP_PROFILE_UNSUPPORTED", {
     dealership_store_id: detail.dealership_store_id,
     rooftop_profile_id: detail.rooftop_profile_id,
@@ -1303,6 +1299,15 @@ export function createApp(
     );
   }));
 
+  app.use("/reconciliation-runs/:id",asyncHandler(async(request,response,next)=>{
+    const id=parsePositiveInteger(request.params.id);
+    if(id!==null){
+      const metadata=await repository.getReconciliationRunMetadata(getRequestDealershipId(response),id);
+      if(metadata && !(await canAccessStore(repository,getAuthenticatedUser(response),metadata.dealership_store_id))) throw new ForbiddenError("Not authorized for this store.","STORE_ACCESS_DENIED");
+    }
+    next();
+  }));
+
   app.get("/reconciliation-runs/:id", async (request, response, next) => {
     try {
       const reconciliationRunId = parsePositiveInteger(request.params.id);
@@ -1472,7 +1477,7 @@ export function createApp(
       throw new NotFoundError("Reconciliation run");
     }
 
-    const detail = await repository.getReconciliationRunDetail(
+    const detail = await repository.getReconciliationRunMetadata(
       getRequestDealershipId(response),
       reconciliationRunId,
     );
@@ -1513,7 +1518,7 @@ export function createApp(
     if (!(await canAccessStore(repository, getAuthenticatedUser(response), artifact.store_id))) {
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
-    const runDetail = await repository.getReconciliationRunDetail(
+    const runDetail = await repository.getReconciliationRunMetadata(
       getRequestDealershipId(response),
       artifact.reconciliation_run_id,
     );
@@ -1570,11 +1575,11 @@ export function createApp(
       throw new NotFoundError("Reconciliation run");
     }
 
-    const detail = await repository.getReconciliationRunDetail(
+    const metadata = await repository.getReconciliationRunMetadata(
       getRequestDealershipId(response),
       reconciliationRunId,
     );
-    if (!detail) {
+    if (!metadata) {
       const ownerDealershipId =
         await repository.getReconciliationRunDealershipId(reconciliationRunId);
       if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
@@ -1582,10 +1587,10 @@ export function createApp(
       }
       throw new NotFoundError("Reconciliation run");
     }
-    if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), metadata.dealership_store_id))) {
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
-    assertReconciliationArtifactsAvailable(detail.status);
+    assertReconciliationArtifactsAvailable(metadata.status);
 
     const storeKeyOverrideProvided = request.query.store_key !== undefined;
     const storeKey = parseStoreKey(request.query.store_key);
@@ -1596,8 +1601,8 @@ export function createApp(
         { supported_store_keys: [...STORE_KEYS] },
       );
     }
-    const storeConfig = resolveRunRooftopProfile(detail, storeKey);
     const format = typeof request.query.format === "string" ? request.query.format : "xls";
+    validateExportFormat(format,metadata.rooftop_profile_id);
     if (format !== "json" && !storeKeyOverrideProvided) {
       const storedArtifact = await repository.findReconciliationArtifact(
         getRequestDealershipId(response),
@@ -1605,26 +1610,31 @@ export function createApp(
         "MERGED_FLOORPLAN",
       );
       if (storedArtifact) {
+        if(format === "xlsx" && storedArtifact.content_type !== "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") throw new ValidationError("This artifact is HTML-XLS; request xls or omit format.", "UNSUPPORTED_EXPORT_FORMAT");
         await auditArtifactDownload(response, storedArtifact);
         sendArtifactDownload(response, storedArtifact);
         return;
       }
     }
 
-    const artifact = buildMergedFloorplanArtifact(detail, storeConfig);
+    const storeConfig = resolveRunRooftopProfile(metadata, storeKey);
+    if(format === "xlsx") throw new ValidationError("Native XLSX generation is unavailable; request xls or omit format.", "UNSUPPORTED_EXPORT_FORMAT");
+    const detail=await repository.getReconciliationRunDetail(getRequestDealershipId(response),reconciliationRunId);
+    if(!detail) throw new NotFoundError("Reconciliation run");
     if (format === "json") {
-      response.json(artifact.workbook);
+      response.json(buildMergedFloorplanWorkbookFromReconciliationDetail(detail,storeConfig));
       return;
     }
+    const {merged:artifact}=await buildFloorplanExports(detail,storeConfig);
 
     await auditGeneratedArtifactDownload(response, {
       reconciliationRunId,
       artifactType: "MERGED_FLOORPLAN",
-      storeId: detail.dealership_store_id,
-      accountingMonth: detail.accounting_month,
+      storeId: metadata.dealership_store_id,
+      accountingMonth: metadata.accounting_month,
       filename: artifact.filename,
       contentType: artifact.contentType,
-      fileSize: Buffer.byteLength(artifact.html, "utf8"),
+      fileSize: artifact.content.length,
     });
     response
       .status(200)
@@ -1633,7 +1643,7 @@ export function createApp(
         "Content-Disposition",
         `attachment; filename="${artifact.filename}"`,
       )
-      .send(artifact.html);
+      .send(artifact.content);
   }));
 
   const fpRecExportHandler = asyncHandler(async (request, response) => {
@@ -1642,11 +1652,11 @@ export function createApp(
       throw new NotFoundError("Reconciliation run");
     }
 
-    const detail = await repository.getReconciliationRunDetail(
+    const metadata = await repository.getReconciliationRunMetadata(
       getRequestDealershipId(response),
       reconciliationRunId,
     );
-    if (!detail) {
+    if (!metadata) {
       const ownerDealershipId =
         await repository.getReconciliationRunDealershipId(reconciliationRunId);
       if (ownerDealershipId !== null && ownerDealershipId !== getRequestDealershipId(response)) {
@@ -1654,10 +1664,10 @@ export function createApp(
       }
       throw new NotFoundError("Reconciliation run");
     }
-    if (!(await canAccessStore(repository, getAuthenticatedUser(response), detail.dealership_store_id))) {
+    if (!(await canAccessStore(repository, getAuthenticatedUser(response), metadata.dealership_store_id))) {
       throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
     }
-    assertReconciliationArtifactsAvailable(detail.status);
+    assertReconciliationArtifactsAvailable(metadata.status);
 
     const storeKeyOverrideProvided = request.query.store_key !== undefined;
     const storeKey = parseStoreKey(request.query.store_key);
@@ -1668,8 +1678,8 @@ export function createApp(
         { supported_store_keys: [...STORE_KEYS] },
       );
     }
-    const rooftopProfile = resolveRunRooftopProfile(detail, storeKey);
     const format = typeof request.query.format === "string" ? request.query.format : "xls";
+    validateExportFormat(format,metadata.rooftop_profile_id);
     if (format !== "json" && !storeKeyOverrideProvided) {
       const storedArtifact = await repository.findReconciliationArtifact(
         getRequestDealershipId(response),
@@ -1677,37 +1687,40 @@ export function createApp(
         "FP_REC",
       );
       if (storedArtifact) {
+        if(format === "xlsx" && storedArtifact.content_type !== "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") throw new ValidationError("This artifact is HTML-XLS; request xls or omit format.", "UNSUPPORTED_EXPORT_FORMAT");
         await auditArtifactDownload(response, storedArtifact);
         sendArtifactDownload(response, storedArtifact);
         return;
       }
     }
 
-    const workbook = buildFpRecWorkbook(detail, rooftopProfile);
+    const rooftopProfile = resolveRunRooftopProfile(metadata, storeKey);
+    if(format === "xlsx") throw new ValidationError("Native XLSX generation is unavailable; request xls or omit format.", "UNSUPPORTED_EXPORT_FORMAT");
+    const detail=await repository.getReconciliationRunDetail(getRequestDealershipId(response),reconciliationRunId);
+    if(!detail) throw new NotFoundError("Reconciliation run");
     if (format === "json") {
-      response.json(workbook);
+      response.json(buildFpRecWorkbook(detail,rooftopProfile));
       return;
     }
-    const fpRecHtml = toFpRecXlsHtml(workbook);
-    const fpRecFilename = toFpRecFilename(workbook);
+    const {fpRec:artifact}=await buildFloorplanExports(detail,rooftopProfile);
 
     await auditGeneratedArtifactDownload(response, {
       reconciliationRunId,
       artifactType: "FP_REC",
-      storeId: detail.dealership_store_id,
-      accountingMonth: detail.accounting_month,
-      filename: fpRecFilename,
-      contentType: "application/vnd.ms-excel",
-      fileSize: Buffer.byteLength(fpRecHtml, "utf8"),
+      storeId: metadata.dealership_store_id,
+      accountingMonth: metadata.accounting_month,
+      filename: artifact.filename,
+      contentType: artifact.contentType,
+      fileSize: artifact.content.length,
     });
     response
       .status(200)
-      .type("application/vnd.ms-excel")
+      .type(artifact.contentType)
       .setHeader(
         "Content-Disposition",
-        `attachment; filename="${fpRecFilename}"`,
+        `attachment; filename="${artifact.filename}"`,
       )
-      .send(fpRecHtml);
+      .send(artifact.content);
   });
 
   app.get("/reconciliation-runs/:id/fp-rec", fpRecExportHandler);
@@ -1803,13 +1816,28 @@ export function createApp(
             source_file_id: transaction.source_file_id,
             stock_number: transaction.stock_number,
             vin: transaction.vin,
+            dealership_store_id: sourceFile.dealership_store_id,
+            vin_enrichment_revision: getVinRevision(transaction),
+            assessment: assessVin(transaction),
             source_row_number: lineage?.source_row_number ?? null,
-            vin_provenance: lineage?.vin_provenance ?? null,
+            vin_provenance: lineage?.vin_provenance ? {source:lineage.vin_provenance.source,vin:lineage.vin_provenance.vin,vin6:lineage.vin_provenance.vin6,trusted:lineage.vin_provenance.trusted} : null,
           };
         }),
       );
     }),
   );
+
+  app.get("/transactions/:transactionId/vin-verification", asyncHandler(async (request,response)=>{
+    const id=parsePositiveInteger(request.params.transactionId);
+    const transaction=id===null?null:await repository.getTransactionById(getRequestDealershipId(response),id);
+    if(!transaction) throw new NotFoundError("Transaction");
+    const source=transaction.source_file_id?await repository.getSourceFile(transaction.source_file_id):null;
+    if(!source || source.dealership_id!==transaction.dealership_id || source.dealership_store_id===null) throw new ConflictError("Transaction source scope unavailable.","VIN_SOURCE_SCOPE_UNAVAILABLE");
+    if(!(await canAccessStore(repository,getAuthenticatedUser(response),source.dealership_store_id))) throw new ForbiddenError("Not authorized for this store.","STORE_ACCESS_DENIED");
+    if(transaction.source_type!=="boa" && transaction.source_type!=="dealertrack") throw new ValidationError("VIN correction supports BOA and Dealertrack.","UNSUPPORTED_SOURCE_TYPE");
+    const saved=readLineage(transaction.raw_data);
+    response.json({id:transaction.id,source_type:transaction.source_type,source_file_id:source.id,dealership_store_id:source.dealership_store_id,stock_number:transaction.stock_number,vin:transaction.vin,vin_enrichment_revision:getVinRevision(transaction),assessment:assessVin(transaction),source_row_number:saved?.source_row_number??null});
+  }));
 
   app.post(
     "/transactions/:transactionId/vin-enrichment",
@@ -1832,9 +1860,9 @@ export function createApp(
       if (!transaction) {
         throw new NotFoundError("Transaction");
       }
-      if (transaction.source_type !== "dealertrack") {
+      if (transaction.source_type !== "dealertrack" && transaction.source_type !== "boa") {
         throw new ValidationError(
-          "Manual VIN enrichment is only supported for Dealertrack transactions.",
+          "VIN correction is supported for BOA and Dealertrack transactions.",
           "UNSUPPORTED_SOURCE_TYPE"
         );
       }
@@ -1847,58 +1875,20 @@ export function createApp(
         throw new ForbiddenError("Not authorized for this store.", "STORE_ACCESS_DENIED");
       }
 
-      const user = getAuthenticatedUser(response);
-      const enrichmentInput: ManualVinEnrichmentInput = {
-        vin: parsed.vin,
-        source: parsed.source,
-        enriched_by: user.email || `user:${user.id}`,
-        note: parsed.dms_reference
-          ? `${parsed.reason} dms_reference=${parsed.dms_reference}`
-          : parsed.reason,
-      };
-      const result = applyManualVinEnrichment(transaction, enrichmentInput);
-      if (!result.ok) {
-        if (result.reason === "no_change") {
-          throw new ConflictError("VIN is already set to the requested value.", "VIN_NO_CHANGE");
-        }
-        throw new ValidationError("Invalid VIN.", "INVALID_VIN");
-      }
-
-      const previousLineage = readLineage(transaction.raw_data ?? {});
-      const updated = await repository.updateTransactionVinAndRawData(
-        dealershipId,
-        transactionId,
-        { vin: result.vin, raw_data: result.raw_data },
-      );
-      if (!updated) {
-        throw new NotFoundError("Transaction");
-      }
-
-      const auditEvent = await repository.createAuditEvent(dealershipId, {
-        actor_user_id: user.id === 0 ? null : user.id,
-        action_type: "vin_enrichment_applied",
-        entity_type: "transaction",
-        entity_id: String(transactionId),
-        previous_state: toAuditState({
-          vin: transaction.vin,
-          lineage_summary: summarizeLineage(previousLineage),
-        }),
-        new_state: toAuditState({
-          transaction_id: transactionId,
-          source_file_id: transaction.source_file_id,
-          dealership_store_id: storeId,
-          vin: result.vin,
-          vin6: result.vin6,
-          source: parsed.source,
-          reason: parsed.reason,
-          dms_reference: parsed.dms_reference,
-        }),
+      if(!sourceFile || sourceFile.dealership_id!==dealershipId || storeId===null) throw new ConflictError("Transaction source scope unavailable.","VIN_SOURCE_SCOPE_UNAVAILABLE");
+      if(parsed.expected_revision===undefined) throw new HttpError("Load the current VIN revision and explicitly confirm the correction.",428,"VIN_ENRICHMENT_REVISION_REQUIRED");
+      if(parsed.confirmed!==true) throw new HttpError("Explicit VIN confirmation is required.",400,"VIN_CONFIRMATION_REQUIRED");
+      const user=getAuthenticatedUser(response);
+      const result=await repository.confirmTransactionVinEnrichment(dealershipId,transactionId,{
+        expectedRevision:parsed.expected_revision,vin:parsed.vin,actorUserId:user.id===0?null:user.id,actorLabel:user.email||`user:${user.id}`,
+        confirmedAt:new Date().toISOString(),operatorSource:parsed.source,reason:parsed.reason,reference:parsed.dms_reference,expectedStoreId:storeId,
       });
-
+      if(!result) throw new NotFoundError("Transaction");
+      const {transaction:updated,auditEvent}=result;
       response.json({
         transaction: updated,
         enrichment_applied: true,
-        vin6: result.vin6,
+        vin6: updated.vin?.slice(-6),
         source: parsed.source,
         audit_event_id: auditEvent?.id ?? null,
         requires_rerun: true,
@@ -1999,7 +1989,7 @@ function sanitizeLogPath(path: string): string {
       "/reconciliation-runs/:id/exceptions/:exception_id",
     )
     .replace(/^\/source-files\/[^/]+\/transactions$/, "/source-files/:sourceFileId/transactions")
-    .replace(/^\/transactions\/[^/]+\/vin-enrichment$/, "/transactions/:transactionId/vin-enrichment");
+    .replace(/^\/transactions\/[^/]+\/(vin-enrichment|vin-verification)$/, "/transactions/:transactionId/$1");
 }
 
 type LoginFailure = {
@@ -2324,15 +2314,15 @@ function warningsForReusedSourceFile(
 // uploadErrorMessage function removed - now handled in errorHandler middleware
 
 function vinEnrichmentErrorMessage(
-  error: "invalid_vin" | "invalid_source" | "missing_reason" | "invalid_body" | "invalid_dms_reference",
+  error: string,
 ): string {
   switch (error) {
     case "invalid_vin":
       return "VIN must be a valid 17-character VIN.";
     case "invalid_source":
       return "source must be one of manual_enrichment, dms_assisted_reconstruction, stock_number_lookup.";
-    case "missing_reason":
-      return "reason is required.";
+    case "invalid_reason":
+      return "reason must be a string when supplied.";
     case "invalid_dms_reference":
       return "dms_reference must be a string.";
     case "invalid_body":
@@ -2340,20 +2330,6 @@ function vinEnrichmentErrorMessage(
       return "Invalid VIN enrichment request.";
   }
 }
-
-function summarizeLineage(lineage: RawDataLineage | null): Record<string, unknown> | null {
-  if (!lineage) {
-    return null;
-  }
-  return {
-    source_kind: lineage.source_kind,
-    source_row_number: lineage.source_row_number,
-    retained_reason: lineage.retained_reason,
-    vin_provenance: lineage.vin_provenance,
-    transformations_count: lineage.transformations.length,
-  };
-}
-
 
 const REMOVAL_KINDS = new Set<PreprocessingDiagnosticKind>([
   "banner_row_removed",
@@ -2541,4 +2517,8 @@ function routeNonFloorplanUpload(
       ? "OOXML native parser not yet implemented; resubmit as CSV or SpreadsheetML export."
       : `Detected format ${detection.format} cannot be used for ${sourceType} uploads.`,
   };
+}
+
+function validateExportFormat(format:string,profile:string|null):void {
+ if(!["json","xls","xlsx"].includes(format) || (format==="xlsx" && !profile?.startsWith("fw-")))throw new ValidationError("This rooftop supports JSON and its original spreadsheet format. Explicit XLSX is supported only for an existing native Fort Worth artifact.","UNSUPPORTED_EXPORT_FORMAT");
 }

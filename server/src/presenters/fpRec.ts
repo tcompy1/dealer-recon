@@ -1,3 +1,4 @@
+import {spreadsheetPrintMetadata,spreadsheetPageStyle} from "./spreadsheetHtml.js";
 import { formatCents } from "../domain/money.js";
 import {
   accountingMonthEndDate,
@@ -10,12 +11,14 @@ import {
   type RooftopProfile,
   type StoreWorkflowConfig,
 } from "../config/storeWorkflowConfig.js";
-import type { MergedFloorplanWorkbook, MergedFloorplanRow } from "./mergedFloorplan.js";
+import { buildMergedFloorplanWorkbookFromReconciliationDetail, type MergedFloorplanWorkbook, type MergedFloorplanRow } from "./mergedFloorplan.js";
 import { neutralizeSpreadsheetText } from "../spreadsheetText.js";
 
 export type HurstFpRecRowClassification = "matched" | "boa_only" | "dealertrack_only";
 
 export type HurstFpRecClerkRow = {
+  confirmed_dealertrack_vin?:string;
+  review?:MergedFloorplanRow["review"];
   hurst_description: string;
   boa_vin: string;
   boa_vin6: string;
@@ -127,12 +130,24 @@ const FP_REC_PRESENTER_POLICIES: Record<
     includeWorksheetMetadata: true,
     totalGlFormula: (accountRow) => `=SUM(B${accountRow}:B${accountRow})`,
   },
+  "fw-fp-rec-v1": {
+    presenterId: "fw-fp-rec-v1",
+    statementLabel: "Outstanding on STMT",
+    title: (workbook) => `Floorplan Reconciliation - ${workbook.store_name}`,
+    scheduleNoteHeaders: ["GL FLOORED", "BOA FLOORED"],
+    statementNoteHeaders: ["BOA FLOORED", "GL FLOORED"],
+    scheduleMinimumRows: 1,
+    statementMinimumRows: 1,
+    includeWorksheetMetadata: true,
+    totalGlFormula: (accountRow) => `=SUM(B${accountRow})`,
+  },
 };
 
 export function buildFpRecWorkbook(
   detail: ReconciliationRunDetail,
   profile: RooftopProfile,
 ): FpRecWorkbook {
+  if(profile.profileId==="fw-v1")return buildFortWorthFpRecWorkbook(buildMergedFloorplanWorkbookFromReconciliationDetail(detail,profile),profile);
   const rows = sortClerkRows([
     ...detail.match_groups.flatMap(buildRowsFromMatchGroup),
     ...detail.exceptions.flatMap(buildRowsFromException),
@@ -158,7 +173,7 @@ export function buildFpRecWorkbookFromMergedFloorplan(
     periodDate: mergedWorkbook.period_date,
     rows: mergedWorkbook.rows.map(clerkRowFromMergedRow),
     policy: FP_REC_PRESENTER_POLICIES[profile.presenterId],
-    accountingMonth: accountingMonthFromPeriodDate(mergedWorkbook.period_date),
+    accountingMonth: profile.profileId==="fw-v1" ? mergedWorkbook.accounting_month??null : accountingMonthFromPeriodDate(mergedWorkbook.period_date),
   });
 }
 
@@ -223,7 +238,7 @@ function buildWorkbookFromClerkRows(input: {
     },
     schedule_not_on_statement: scheduleSection,
     statement_not_on_gl: statementSection,
-    ...(input.policy.presenterId === "acura-fp-rec-v1"
+    ...(input.policy.presenterId === "acura-fp-rec-v1" || input.policy.presenterId === "fw-fp-rec-v1"
       ? {
         presentation: {
           presenter_id: input.policy.presenterId,
@@ -237,6 +252,8 @@ function buildWorkbookFromClerkRows(input: {
 
 function clerkRowFromMergedRow(row: MergedFloorplanRow): HurstFpRecClerkRow {
   return {
+    ...(row.confirmed_dealertrack_vin?{confirmed_dealertrack_vin:row.confirmed_dealertrack_vin}:{}),
+    ...(row.review?{review:row.review}:{}),
     hurst_description: row.store_description,
     boa_vin: row.serial_no_vin,
     boa_vin6: row.boa_vin6,
@@ -264,8 +281,9 @@ function clerkHeaders(storeConfig: StoreWorkflowConfig): string[] {
 
 export function toFpRecXlsHtml(workbook: FpRecWorkbook): string {
   const policy = requireWorkbookPolicy(workbook);
+  const fortWorth = policy.presenterId === "fw-fp-rec-v1";
   const accountingNumberFormat = '_\\(\\* \\#\\,\\#\\#0\\.00_\\)\\;_\\(\\* \\(\\#\\,\\#\\#0\\.00\\)\\;_\\(\\* "-"??_\\)\\;_\\(@_\\)';
-  const styles = `
+  let styles = `
     body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #111827; }
     table { border-collapse: collapse; width: 760px; }
     td { border: 1px solid #d1d5db; padding: 4px 8px; text-align: left; vertical-align: top; }
@@ -278,10 +296,15 @@ export function toFpRecXlsHtml(workbook: FpRecWorkbook): string {
     td.amount { text-align: right; font-family: Calibri, Arial, sans-serif; mso-number-format: '${accountingNumberFormat}'; }
     td.note-entry { background-color: #ffffff; }
   `;
-  const colWidths = [260, 120, 110, 110];
+  if(fortWorth) styles = `${spreadsheetPageStyle("portrait")}
+    body {font-family:Calibri,Arial,sans-serif;font-size:12pt;} table {border-collapse:collapse;} td {padding:4px;vertical-align:top;white-space:pre-wrap;overflow-wrap:break-word;}
+    td.amount {text-align:right;mso-number-format:'${accountingNumberFormat}';} td:not(.amount) {mso-number-format:"\\@";}
+    tr.section-row td, tr.total-row td, tr.highlight-row td, tr.variance-row td {border-bottom:1px solid #111827;} tr.section-row, tr.title-row {font-weight:bold;}
+  `;
+  const colWidths = fortWorth ? [145,118,187,228,14,14] : [260, 120, 110, 110];
   const colgroup = `<colgroup>${colWidths.map((width) => `<col style="width:${width}px"/>`).join("")}</colgroup>`;
   const rows = buildWorkpaperRows(workbook, policy);
-  const worksheetMetadata = policy.includeWorksheetMetadata
+  const worksheetMetadata = fortWorth ? spreadsheetPrintMetadata(worksheetNameForWorkbook(workbook),"F",rows.length,"portrait") : policy.includeWorksheetMetadata
     ? toWorksheetMetadata(workbook, rows.length)
     : null;
 
@@ -297,7 +320,7 @@ export function toFpRecXlsHtml(workbook: FpRecWorkbook): string {
     "<body>",
     `<table>${colgroup}`,
     "<tbody>",
-    rows.map(workpaperRowHtml).join(""),
+    rows.map(row=>workpaperRowHtml(row,fortWorth)).join(""),
     "</tbody>",
     "</table>",
     "</body>",
@@ -306,6 +329,7 @@ export function toFpRecXlsHtml(workbook: FpRecWorkbook): string {
 }
 
 export function toFpRecFilename(workbook: FpRecWorkbook): string {
+  if(workbook.presentation?.presenter_id === "fw-fp-rec-v1") return `fw-fp-rec-${workbook.presentation.accounting_month}.xls`;
   const policy = requireWorkbookPolicy(workbook);
   const store = workbook.store_name
     .toLowerCase()
@@ -423,6 +447,7 @@ function buildMatchedRow(
     dt_2100_cents: dealertrackAccountCents(dealertrack),
     dt_vin6: dealertrackVin6(dealertrack),
     dt_description: dealertrack.description ?? "",
+    ...(dealertrack.source_identity?.operator_confirmed_vin?{confirmed_dealertrack_vin:dealertrack.vin!}:{}),
     dt_control: dealertrackControl(dealertrack),
   };
 }
@@ -443,6 +468,7 @@ function buildDealertrackOnlyRow(dealertrack: TransactionSummary): HurstFpRecCle
     dt_2100_cents: dealertrackAccountCents(dealertrack),
     dt_vin6: dealertrackVin6(dealertrack),
     dt_description: dealertrack.description ?? "",
+    ...(dealertrack.source_identity?.operator_confirmed_vin?{confirmed_dealertrack_vin:dealertrack.vin!}:{}),
     dt_control: dealertrackControl(dealertrack),
   };
 }
@@ -519,7 +545,9 @@ function buildWorkpaperRows(
     },
     {
       className: "period-row",
-      cells: [{ text: formatPeriodDateForWorkpaper(workbook.period_date), colspan: 4 }],
+      cells: policy.presenterId === "fw-fp-rec-v1"
+        ? [{text:accountingMonthEndDate(workbook.presentation!.accounting_month!).replace(/^(\d{4})-(\d{2})-(\d{2})$/,"$2/$3/$1")},{},{},{}]
+        : [{ text: formatPeriodDateForWorkpaper(workbook.period_date), colspan: 4 }],
     },
     labeledAmountRow(policy.statementLabel, workbook.summary.outstanding_per_stmt_amount_cents),
     sectionLabelRow("GL Balances"),
@@ -530,7 +558,7 @@ function buildWorkpaperRows(
       policy.totalGlFormula(5),
       "summary-row",
     ),
-    labeledAmountRow("Difference", workbook.summary.difference_amount_cents, "=SUM(B3+B6)", "highlight-row"),
+    labeledAmountRow("Difference", workbook.summary.difference_amount_cents, policy.presenterId === "fw-fp-rec-v1" ? "=B6+B3" : "=SUM(B3+B6)", "highlight-row"),
   ];
 
   let nextExcelRow = rows.length + 1;
@@ -672,12 +700,12 @@ function blankWorkpaperRow(): WorkpaperRow {
   return { cells: [{}, {}, {}, {}] };
 }
 
-function workpaperRowHtml(row: WorkpaperRow): string {
+function workpaperRowHtml(row: WorkpaperRow, literalText = false): string {
   const classAttr = row.className ? ` class="${escapeHtml(row.className)}"` : "";
-  return `<tr${classAttr}>${row.cells.map(workpaperCellHtml).join("")}</tr>`;
+  return `<tr${classAttr}>${row.cells.map(cell=>workpaperCellHtml(cell,literalText)).join("")}</tr>`;
 }
 
-function workpaperCellHtml(cell: WorkpaperCell): string {
+function workpaperCellHtml(cell: WorkpaperCell,literalText = false): string {
   const classes = [
     cell.className,
     cell.amountCents !== undefined ? "amount" : null,
@@ -685,7 +713,7 @@ function workpaperCellHtml(cell: WorkpaperCell): string {
   const classAttr = classes ? ` class="${escapeHtml(classes)}"` : "";
   const colspanAttr = cell.colspan && cell.colspan > 1 ? ` colspan="${cell.colspan}"` : "";
   const formulaAttr = cell.formula ? ` x:fmla="${escapeHtml(cell.formula)}"` : "";
-  const numberAttr = cell.amountCents !== undefined ? " x:num" : "";
+  const numberAttr = cell.amountCents !== undefined ? " x:num" : literalText ? " x:str" : "";
   const value = cell.amountCents !== undefined
     ? formatWorkpaperNumberCents(cell.amountCents)
     : neutralizeSpreadsheetText(cell.text ?? "");
@@ -709,6 +737,7 @@ function boaVin6(transaction: TransactionSummary): string {
 }
 
 function dealertrackVin6(transaction: TransactionSummary): string {
+  if(transaction.source_identity?.operator_confirmed_vin)return computeVin6(transaction.vin)??"";
   const descriptionVin6 = finalVin6FromDescription(transaction.description);
   return descriptionVin6 ?? computeVin6(transaction.vin) ?? "";
 }
@@ -752,7 +781,7 @@ function legacyStatementRow(row: HurstFpRecClerkRow): HurstFpRecRow {
 function legacyScheduleRow(row: HurstFpRecClerkRow): HurstFpRecRow {
   const amountCents = row.dt_2100_cents ?? 0;
   return {
-    unit_reference: scheduleUnitReference(row),
+    unit_reference: scheduleUnitReference(row)+(row.review ? `\n${row.review.label}\n2100: ${formatCents(row.review.components["2100"])}; 2101: ${formatCents(row.review.components["2101"])}; 2101S: ${formatCents(row.review.components["2101S"])}` : ""),
     amount: formatCents(amountCents),
     amount_cents: amountCents,
     gl_floored_note: "",
@@ -761,7 +790,7 @@ function legacyScheduleRow(row: HurstFpRecClerkRow): HurstFpRecRow {
 }
 
 function scheduleUnitReference(row: HurstFpRecClerkRow): string {
-  const vinTail = vinTailForWorkpaper(row.dt_description, row.dt_vin6);
+  const vinTail = vinTailForWorkpaper(row.confirmed_dealertrack_vin??row.dt_description, row.dt_vin6);
   return [row.dt_control, vinTail].filter(Boolean).join(" - ") || row.dt_description || row.dt_vin6;
 }
 
@@ -875,4 +904,9 @@ function escapeHtml(value: string | null | undefined): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+export function buildFortWorthFpRecWorkbook(merged:MergedFloorplanWorkbook,profile:RooftopProfile):FpRecWorkbook {
+ if(profile.profileId!=="fw-v1" || merged.store_config.storeKey!=="fw" || !merged.accounting_month)throw new Error("Fort Worth profile required.");
+ return buildFpRecWorkbookFromMergedFloorplan(merged,profile);
 }

@@ -7,7 +7,10 @@ export type SourceFileTransaction = {
   stock_number: string | null;
   vin: string | null;
   source_row_number: number | null;
-  vin_provenance: {
+  dealership_store_id: number;
+  vin_enrichment_revision: number;
+  assessment: { flags: string[]; operatorConfirmed: boolean };
+  vin_provenance?: {
     source: string;
     vin: string | null;
     vin6: string | null;
@@ -31,8 +34,10 @@ export type VinEnrichmentSource =
 
 export type VinEnrichmentRequest = {
   vin: string;
-  source: VinEnrichmentSource;
-  reason: string;
+  expected_revision: number;
+  confirmed: true;
+  source?: VinEnrichmentSource | null;
+  reason?: string | null;
   dms_reference?: string | null;
 };
 
@@ -45,7 +50,7 @@ export type VinEnrichmentResponse = {
   };
   enrichment_applied: boolean;
   vin6: string;
-  source: VinEnrichmentSource;
+  source: VinEnrichmentSource | null;
   audit_event_id: number | null;
   requires_rerun: boolean;
 };
@@ -58,4 +63,8 @@ export async function applyVinEnrichment(
     `/transactions/${transactionId}/vin-enrichment`,
     request,
   );
+}
+
+export async function getVinVerification(id: number): Promise<SourceFileTransaction> {
+  return apiGet<SourceFileTransaction>(`/transactions/${id}/vin-verification`);
 }

@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
@@ -94,6 +95,37 @@ describe("WorkflowDashboard rooftop workflow", () => {
   });
 
   afterEach(cleanup);
+
+  test.each(["fw", "acura"])("ignores an obsolete initial store response after selecting %s", async (key) => {
+    const obsolete = deferred<DealershipStoreWithRooftopSupport[]>();
+    const current = deferred<DealershipStoreWithRooftopSupport[]>();
+    const choices: DealershipStoreWithRooftopSupport[] = [
+      { ...stores[1], id: 1, name: "Hiley Mazda of Hurst" },
+      { ...stores[0], id: 2 },
+      { ...stores[0], id: 3, name: "Hiley Cars Fort Worth", rooftop_profile: { id: "fw-v1", version: "1", enabled: true } },
+    ];
+    vi.mocked(listDealershipStores)
+      .mockReturnValueOnce(obsolete.promise)
+      .mockReturnValueOnce(current.promise);
+    render(<StrictMode><WorkflowDashboard /></StrictMode>);
+    await act(async () => current.resolve(choices));
+    const selectedId = key === "fw" ? "3" : "2";
+    fireEvent.change(screen.getByLabelText("Store"), { target: { value: selectedId } });
+    fireEvent.change(screen.getByLabelText("Accounting month"), { target: { value: "2026-04" } });
+    expect(screen.getByLabelText("Store")).toHaveValue(selectedId);
+
+    // The discarded StrictMode effect completes after the operator's selection.
+    await act(async () => obsolete.resolve(choices));
+    expect(screen.getByLabelText("Store")).toHaveValue(selectedId);
+    expect(screen.getByText(`${key.toUpperCase()} profile enabled`)).toBeVisible();
+    fireEvent.change(screen.getByLabelText("BOA input file"), {
+      target: { files: [new File(["invented"], "invented.csv", { type: "text/csv" })] },
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Upload" })[0]);
+    await waitFor(() => expect(uploadSourceFile).toHaveBeenCalledWith(expect.objectContaining({
+      dealershipStoreId: Number(selectedId), accountingMonth: "2026-04",
+    })));
+  });
 
   test("distinguishes enabled Hurst and Acura rooftops from unsupported stores", async () => {
     render(<WorkflowDashboard />);

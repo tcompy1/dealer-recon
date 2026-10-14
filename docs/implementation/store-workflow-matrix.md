@@ -1,6 +1,6 @@
 # Store Workflow Matrix
 
-Status note: future-scope reference. Dealer-Recon v1 is Hurst Mazda only; use `docs/product/fp-rec-four-step-workflow.md` for the current product definition. This matrix preserves Hurst evidence and exploratory Acura/FW findings for later expansion planning.
+Status as of 2026-10-08: Hurst and Acura remain enabled with their existing formats. Fort Worth `fw-v1` is implementation-complete and eligible for initial release under the approved automated acceptance policy, but disabled pending separate enablement authorization. Historical evidence tables below describe clerk-completed outputs; they are not raw-input matching oracles. The approved specification and [onboarding release contract](../development/rooftop-onboarding.md#fort-worth-release-contract-2026-10-05) supersede earlier exploratory recommendations.
 
 ## Purpose
 
@@ -24,7 +24,7 @@ This document separates universal workflow behavior from store-specific configur
 | `docs/demo/BOA-workflow.md` | Captures the manual BOA cleaning workflow. |
 | `docs/demo/dealertrack-workflow.md` | Captures the manual Dealertrack cleaning workflow, including Hurst `2100` handling. |
 | Acura CSV evidence from Tara | Confirms Acura raw BOA shape, raw Dealertrack columns, merged workbook columns, account `324`, and totals rows. |
-| `docs/discovery/floorplan/FW/` | Confirms FW raw BOA shape, multi-column Dealertrack export, accepted merged workbook columns/totals, and FP REC workbook assumptions. |
+| `docs/discovery/hiley-artifacts/fw/` (protected, read-only; ordinary tests use `server/src/testFixtures/fw/`) | Confirms FW raw BOA shape, multi-column Dealertrack export, accepted merged workbook columns/totals, and FP REC workbook assumptions. |
 
 ## Store Workflow Comparison
 
@@ -102,7 +102,7 @@ FW monthly evidence:
 | March 2026 | `$43,134,465.98` | `$2,000,000.00` | `$41,134,465.98` | `(37,765,469.94)` | `(2,000,000.00)` from `2110` | 749 | 63 | 13 | 825 |
 | April 2026 | `$42,348,201.96` | `$2,000,000.00` | `$40,348,201.96` | `(35,997,028.41)` | `(2,000,000.00)` from `2110` | 687 | 107 | 38 | 832 |
 
-Concrete FW conclusion: FW cannot be supported correctly by the current single raw Dealertrack account-column assumption. The output can still display `2100`, but generation must aggregate configured floorplan columns and exclude configured non-reconciling columns.
+Current FW policy combines signed `2100 + 2101 + 2101S`, excludes `2110`, and labels the output `2100`. Nonzero components that offset to zero remain one review exception. Original April acceptance is 686 matches / 108 BOA-only / 39 DT-only / 833 merged rows; the table above describes conditional corrected/clerk-completed parity. Prefix and amount agreement cannot confirm identity.
 
 ## Universal Workflow
 
@@ -112,7 +112,7 @@ The universal workflow is the same across stores, but specific columns, labels, 
 2. Raw Dealertrack ingest: accept the store's Dealertrack export and preserve a raw-input artifact for audit.
 3. Store-specific cleaning: remove BOA title/header noise, straightline rows, zero rows, and non-working columns; select or aggregate the configured Dealertrack floorplan amount columns and remove non-reconciling account columns or rows.
 4. VIN6 extraction: compute BOA VIN6 from `Serial No/VIN` and Dealertrack VIN6 from the configured Dealertrack description/VIN rule.
-5. Amount confirmation: only merge a BOA row and Dealertrack row when VIN6 matches and absolute amounts match; leave mismatches visible as exceptions.
+5. Identity and amount: use the existing matching kernel with normalized identities; do not infer identity from amount/prefix agreement. Confirmed corrections become authoritative for new runs; same-VIN/different-amount exceptions and distinct duplicate transactions remain visible.
 6. Merged spreadsheet artifact: generate the clerk-style side-by-side merged working spreadsheet before FP REC.
 7. FP REC artifact: generate FP REC from the merged artifact and store config so the final workbook is downstream of the same reconciliation semantics.
 
@@ -120,15 +120,15 @@ The universal workflow is the same across stores, but specific columns, labels, 
 
 | Config field | Purpose | Hurst value | Acura value | FW value | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `store_key` | Stable internal identifier. | `hurst` | `acura` | `fw` or `fort_worth`; choose one canonical key before implementation. | Must not be inferred from filename alone. |
+| `store_key` | Stable internal identifier. | `hurst` | `acura` | `fw` (canonical). | Must not be inferred from filename alone. |
 | `display_name` | Human-readable store name in UI/history. | Hiley Mazda of Hurst, confirm exact display string | Acura / North Fort Worth Dealership Acquisition, confirm exact display string | Hiley Cars Fort Worth | Acura BOA title row uses `North Fort Worth Dealership Acquisition`; FW BOA title row uses `Hiley Cars Fort Worth, LP`. |
-| `merged_sheet_label` | Header for BOA description/store column in the merged artifact. | `HURST` | `ACURA` | `FW` or `FORT WORTH`; February/March evidence uses `FW`, April uses `FORT WORTH`. | This is not always the same as display name. FW needs a canonical label decision or aliases for accepted historical artifacts. |
+| `merged_sheet_label` | Header for BOA description/store column in the merged artifact. | `HURST` | `ACURA` | `FORT WORTH` for new exports; historical evidence may use `FW`. | This is not always the same as display name. FW needs a canonical label decision or aliases for accepted historical artifacts. |
 | `merged_sheet_label_aliases` | Accepted historical labels for fixture validation and import tolerance. | None known | None known | `FW`, `FORT WORTH` | New field recommended by FW evidence. Do not let aliases change the current export label without an explicit config decision. |
 | `dealertrack_account_column` | Raw Dealertrack account column to reconcile when the store has exactly one DT amount column. | `2100` | `324` | Not sufficient by itself for FW. | Keep for Hurst/Acura compatibility, but treat FW as multi-column. |
 | `dealertrack_amount_columns` | Raw Dealertrack amount column or columns whose values feed the logical floorplan amount. | `["2100"]` | `["324"]` | `["2100", "2101", "2101S"]` | New field required by FW. This is the matching/totals input, not necessarily the output label. |
 | `dealertrack_excluded_account_columns` | Raw Dealertrack account columns explicitly excluded from floorplan matching/totals. | `["2110"]`, based on Hurst workflow docs | `[]` | `["2110"]` | FW `2110` is the `$2,000,000.00` straightline amount and is excluded from accepted merged and FP REC totals. |
 | `dealertrack_account_label` | Output label for the Dealertrack amount column. | `2100` | `324` | `2100` | FW proves this can differ from the raw amount semantics: one displayed label may represent multiple raw columns. |
-| `output_filename_prefix` | Store-specific prefix for merged and FP REC artifact names. | TBD Hurst convention | TBD Acura convention | `FW` in current evidence paths; confirm desired downloaded filename prefix. | Should be explicit once historical exports are reviewed. |
+| `output_filename_prefix` | Store-specific prefix for merged and FP REC artifact names. | TBD Hurst convention | TBD Acura convention | `fw-merged-floorplan-YYYY-MM.xls` / `fw-fp-rec-YYYY-MM.xls`. | Should be explicit once historical exports are reviewed. |
 | `boa_description_column_behavior` | How the BOA `Description` column is carried into the merged workbook. | Use BOA Description values under `HURST` header. | Use BOA Description values under `ACURA` header. | Use BOA Description values under the configured `FW`/`FORT WORTH` header. | The merged header is a store label, not the literal source-column name. |
 | `totals_row_labels` | Labels and cells used for BOA/Dealertrack totals. | BOA total in `Ending Balance`, DT total in `2100`; verify exact label text in workbook exports. | BOA total in `Ending Balance`, DT total in `324`, `Final Totals:` on DT side. | BOA total in `Ending Balance`; aggregated DT total under `2100`; `Final Totals:` on DT side, with `otals:` appearing in the second VIN6 cell in CSV export. | Do not force zero variance. Preserve clerk-style total placement even when labels look odd in CSV. |
 | `dt_only_placement_rule` | Where DT-only exception rows appear in the merged artifact. | Default Hurst behavior: BOA-valued rows sort by BOA balance; blank-BOA DT-only rows may follow BOA-valued rows unless the workbook proves otherwise. | Acura evidence shows DT-only rows with blank BOA cells and populated DT cells; placement must follow the Acura merged artifact rather than Hurst assumptions. | FW evidence shows DT-only rows with blank BOA cells and populated aggregated DT amount/VIN6/Description/Control cells. | This may become a per-store sort/display strategy. |
@@ -193,3 +193,9 @@ Current unknowns and risks for remaining stores:
 | Store label may vary across accepted artifacts. | FW uses `FW` and `FORT WORTH` across accepted merged CSVs. Golden tests need to tolerate accepted history while export config chooses one deliberate label. |
 | Straightline amounts are store-specific. | Acura removes `$1,500,000.00`; FW removes `$2,000,000.00`. The rule should identify `Straight Line` rows, not hardcode an amount. |
 | FP REC workbook variants may differ by store. | FW has a long historical workbook with recent monthly tabs and a `Hiley Cars Fort Worth` title. The FP REC generator should use merged semantics plus store config rather than assuming one template string. |
+
+## Implemented Fort Worth boundary
+
+FW CSV validation requires Ending Balance and all three included Dealertrack account headers; malformed retained amounts block import. It preserves maturity warnings, source descriptions and raw input, retains offset rows for review, and orders merged detail deterministically by amount then full identities/control/classification/source ordinals. FP REC has populated A:D, blank editable notes and A:F fitted print span; formulas derive from physical section sizes, including empty reserved rows. Two shared HTML-XLS artifacts persist atomically. This supersedes the earlier native-XLSX approval; post-export clerk completion is shared across rooftops. Hurst/Acura output behavior stays unchanged. Shared confirmed VIN correction is available to authorized writers across both sources and all three profiles; source-list responses omit audit narratives.
+
+Original April A passed the protected independent oracle during implementation. Shared B is verified with synthetic tests. C remains `BLOCKED_EVIDENCE_MISSING`; Microsoft Excel operational smoke testing is nonblocking and recorded as `NOT PERFORMED — Microsoft Excel unavailable`. It is not passed or verified by another application. Any actual Excel defect discovered later must be investigated and resolved. Implementation completion and initial-release eligibility are satisfied on the retained required automated evidence; production enablement remains unauthorized. SQL teardown and dependency-advisory risks remain separately disclosed in the [final policy handoff](../superpowers/handoffs/2026-10-08-fort-worth-release-policy.md). Expected differences from the completed goal are blank clerk notes, unchanged original descriptions, unresolved unverified identity, and omitted historical tabs/legends. Zero variance alone is insufficient.

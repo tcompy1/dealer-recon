@@ -1,312 +1,81 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { applyVinEnrichment, getVinVerification, listSourceFileTransactions, type SourceFileTransaction } from "../../api/vinEnrichment";
+import { ApiError } from "../../api/errorMessage";
+import { matchDiagnosticToTransaction, UNSAFE_DIAGNOSTIC_MATCH_MESSAGE } from "./vinEnrichmentMatching";
 
-import {
-  applyVinEnrichment,
-  listSourceFileTransactions,
-  type SourceFileTransaction,
-  type VinEnrichmentSource,
-} from "../../api/vinEnrichment";
-import {
-  matchDiagnosticToTransaction,
-  UNSAFE_DIAGNOSTIC_MATCH_MESSAGE,
-} from "./vinEnrichmentMatching";
+type Props = ({transactionId: number} | {
+  sourceFileId: number; sourceRowNumber: number | null; stockNumber: string | null;
+  currentVin6?: string | null; currentVinStatus?: string;
+}) & {onSuccess?: () => void};
 
-const VIN_FULL_RE = /^[A-HJ-NPR-Z0-9]{17}$/;
-
-type Props = {
-  sourceFileId: number;
-  sourceRowNumber: number | null;
-  stockNumber: string | null;
-  currentVin6: string | null;
-  currentVinStatus: string;
-  onSuccess?: () => void;
-};
-
-export function VinEnrichmentModal({
-  sourceFileId,
-  sourceRowNumber,
-  stockNumber,
-  currentVin6,
-  currentVinStatus,
-  onSuccess,
-}: Props) {
+export function VinEnrichmentModal(props: Props) {
   const [isOpen, setIsOpen] = useState(false);
-  const [vin, setVin] = useState("");
-  const [source, setSource] = useState<VinEnrichmentSource>("manual_enrichment");
-  const [reason, setReason] = useState("");
-  const [dmsReference, setDmsReference] = useState("");
-  const [transactions, setTransactions] = useState<SourceFileTransaction[] | null>(null);
-  const [transactionsError, setTransactionsError] = useState<string | null>(null);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-    let cancelled = false;
-    setTransactionsError(null);
-    listSourceFileTransactions(sourceFileId)
-      .then((rows) => {
-        if (!cancelled) {
-          setTransactions(rows);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setTransactionsError(
-            error instanceof Error ? error.message : "Could not load transactions.",
-          );
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, sourceFileId]);
-
-  const matchResult = transactions
-    ? matchDiagnosticToTransaction(transactions, sourceRowNumber, stockNumber)
-    : null;
-  const matchedTransaction =
-    matchResult && matchResult.status === "matched" ? matchResult.transaction : null;
-  const isMatchUnsafe = matchResult !== null && matchResult.status !== "matched";
-  const trimmedVin = vin.trim().toUpperCase();
-  const isVinValid = VIN_FULL_RE.test(trimmedVin);
-  const isReasonProvided = reason.trim().length > 0;
-
-  function close() {
-    setIsOpen(false);
-    setSubmitError(null);
-    setSuccessMessage(null);
-  }
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSubmitError(null);
-    if (!matchedTransaction) {
-      setSubmitError(UNSAFE_DIAGNOSTIC_MATCH_MESSAGE);
-      return;
-    }
-    if (!isVinValid) {
-      setSubmitError("VIN must be 17 alphanumeric characters (no I, O, or Q).");
-      return;
-    }
-    if (!isReasonProvided) {
-      setSubmitError("A reason is required.");
-      return;
-    }
-    setIsSubmitting(true);
-    try {
-      await applyVinEnrichment(matchedTransaction.id, {
-        vin: trimmedVin,
-        source,
-        reason: reason.trim(),
-        dms_reference: dmsReference.trim() || null,
-      });
-      setSuccessMessage(
-        "VIN repaired. Re-run reconciliation to apply the corrected VIN.",
-      );
-      onSuccess?.();
-    } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : "Failed to apply VIN repair.");
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  if (!isOpen) {
-    return (
-      <div className="mt-2">
-        <button
-          type="button"
-          className="forge-button-secondary min-h-8 px-3 text-xs"
-          onClick={() => {
-            setIsOpen(true);
-            setSuccessMessage(null);
-          }}
-        >
-          Repair VIN
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Repair VIN"
-    >
-      <div className="forge-panel forge-panel-pad w-full max-w-lg">
-        <header className="flex items-start justify-between gap-4">
-          <div>
-            <h3 className="text-sm font-semibold text-slate-950">Repair VIN</h3>
-            <p className="forge-copy text-xs">
-              Manual VIN enrichment for a Dealertrack row. Reconciliation will not auto-rerun.
-            </p>
-          </div>
-          <button
-            type="button"
-            className="text-sm font-semibold text-slate-500 hover:text-slate-900"
-            onClick={close}
-          >
-            ✕
-          </button>
-        </header>
-
-        <dl className="forge-panel forge-panel-muted mt-4 grid gap-2 p-3 text-xs text-slate-700">
-          <div className="flex justify-between gap-2">
-            <dt className="font-semibold">Source row</dt>
-            <dd>{sourceRowNumber ?? "n/a"}</dd>
-          </div>
-          <div className="flex justify-between gap-2">
-            <dt className="font-semibold">Stock / control</dt>
-            <dd>{stockNumber ?? "n/a"}</dd>
-          </div>
-          <div className="flex justify-between gap-2">
-            <dt className="font-semibold">Current VIN6</dt>
-            <dd>{currentVin6 ?? "—"}</dd>
-          </div>
-          <div className="flex justify-between gap-2">
-            <dt className="font-semibold">Current status</dt>
-            <dd>{currentVinStatus}</dd>
-          </div>
-          <div className="flex justify-between gap-2">
-            <dt className="font-semibold">Matched transaction id</dt>
-            <dd>
-              {matchedTransaction
-                ? matchedTransaction.id
-                : transactions === null
-                  ? "loading…"
-                  : "not safely identified"}
-            </dd>
-          </div>
-        </dl>
-
-        {transactionsError ? (
-          <p className="forge-notice forge-notice-danger mt-3 text-xs">
-            {transactionsError}
-          </p>
-        ) : null}
-
-        {isMatchUnsafe ? (
-          <p
-            className="forge-notice forge-notice-danger mt-3 text-xs"
-            data-testid="unsafe-match-notice"
-          >
-            {UNSAFE_DIAGNOSTIC_MATCH_MESSAGE}
-          </p>
-        ) : null}
-
-        {successMessage ? (
-          <div className="forge-notice forge-notice-success mt-4">
-            {successMessage}
-          </div>
-        ) : null}
-
-        {!successMessage ? (
-          <form className="mt-4 grid gap-3" onSubmit={handleSubmit}>
-            <label className="forge-field">
-              <span className="font-semibold text-slate-800">Corrected VIN (17 chars)</span>
-              <input
-                type="text"
-                value={vin}
-                maxLength={17}
-                onChange={(event) => setVin(event.target.value.toUpperCase())}
-                className="forge-control font-mono uppercase"
-                aria-invalid={vin.length > 0 && !isVinValid}
-                data-testid="vin-input"
-              />
-              {vin.length > 0 && !isVinValid ? (
-                <span className="text-xs text-red-700" data-testid="vin-error">
-                  VIN must be 17 alphanumeric characters (no I, O, or Q).
-                </span>
-              ) : null}
-            </label>
-
-            <label className="forge-field">
-              <span className="font-semibold text-slate-800">Source</span>
-              <select
-                value={source}
-                onChange={(event) => setSource(event.target.value as VinEnrichmentSource)}
-                className="forge-control"
-                data-testid="source-select"
-              >
-                <option value="manual_enrichment">Manual entry (clerk)</option>
-                <option value="dms_assisted_reconstruction">DMS-assisted</option>
-                <option value="stock_number_lookup">Stock number lookup</option>
-              </select>
-            </label>
-
-            <label className="forge-field">
-              <span className="font-semibold text-slate-800">Reason / note</span>
-              <textarea
-                value={reason}
-                rows={3}
-                onChange={(event) => setReason(event.target.value)}
-                className="forge-control min-h-20 py-2"
-                data-testid="reason-input"
-                placeholder="What did you verify, and where?"
-              />
-            </label>
-
-            <label className="forge-field">
-              <span className="font-semibold text-slate-800">DMS reference (optional)</span>
-              <input
-                type="text"
-                value={dmsReference}
-                onChange={(event) => setDmsReference(event.target.value)}
-                className="forge-control"
-                placeholder="e.g. Reynolds deal #123"
-              />
-            </label>
-
-            {submitError ? (
-              <p
-                className="forge-notice forge-notice-danger text-xs"
-                data-testid="submit-error"
-              >
-                {submitError}
-              </p>
-            ) : null}
-
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={close}
-                className="forge-button-secondary"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={
-                  isSubmitting ||
-                  !isVinValid ||
-                  !isReasonProvided ||
-                  matchedTransaction === null
-                }
-                className="forge-button-accent"
-              >
-                {isSubmitting ? "Applying…" : "Apply VIN repair"}
-              </button>
-            </div>
-          </form>
-        ) : (
-          <div className="mt-4 flex justify-end">
-            <button
-              type="button"
-              onClick={close}
-              className="forge-button-primary"
-            >
-              Close
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+  const key = "transactionId" in props ? `id:${props.transactionId}` : `${props.sourceFileId}:${props.sourceRowNumber}:${props.stockNumber}`;
+  return <>{isOpen ? <CorrectionForm key={key} {...props} close={()=>setIsOpen(false)}/> :
+    <button type="button" className="forge-button-secondary" onClick={()=>setIsOpen(true)}>Verify or correct VIN</button>}</>;
 }
 
+function CorrectionForm(props: Props & {close:()=>void}) {
+  const [current,setCurrent]=useState<SourceFileTransaction|null>(null);
+  const [vin,setVin]=useState("");
+  const [confirmed,setConfirmed]=useState(false);
+  const [error,setError]=useState<string|null>(null);
+  const [refresh,setRefresh]=useState(0);
+  const [stale,setStale]=useState(false);
+  const [busy,setBusy]=useState(false);
+  const [success,setSuccess]=useState(false);
+  const alive=useRef(true);
+  const inputId=useId();
+  const exactId="transactionId" in props ? props.transactionId : null;
+  const fileId="sourceFileId" in props ? props.sourceFileId : null;
+  const row="sourceRowNumber" in props ? props.sourceRowNumber : null;
+  const stock="stockNumber" in props ? props.stockNumber : null;
+  useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
+  useEffect(()=>{
+    let cancelled=false;
+    setCurrent(null);setVin("");setConfirmed(false);setError(null);setStale(false);
+    async function load() {
+      let id=exactId;
+      if(id===null && fileId!==null) {
+        const match=matchDiagnosticToTransaction(await listSourceFileTransactions(fileId),row,stock);
+        if(match.status!=="matched") throw new Error(UNSAFE_DIAGNOSTIC_MATCH_MESSAGE);
+        id=match.transaction.id;
+      }
+      if(id===null) throw new Error(UNSAFE_DIAGNOSTIC_MATCH_MESSAGE);
+      const value=await getVinVerification(id);
+      if(!cancelled) setCurrent(value);
+    }
+    void load().catch((err:unknown)=>{if(!cancelled)setError(err instanceof Error?err.message:"Could not load current VIN.");});
+    return()=>{cancelled=true;};
+  },[exactId,fileId,row,stock,refresh]);
+  const proposed=vin.trim().toUpperCase();
+  const valid=/^[A-HJ-NPR-Z0-9]{17}$/.test(proposed);
+  const ready=current && Number.isInteger(current.vin_enrichment_revision) && valid && proposed!==current.vin && confirmed && !stale && !busy;
+  async function submit(event:FormEvent) {
+    event.preventDefault();
+    if(!ready || !current) return;
+    setBusy(true);setError(null);
+    try {
+      await applyVinEnrichment(current.id,{vin:proposed,expected_revision:current.vin_enrichment_revision,confirmed:true});
+      if(alive.current){setSuccess(true);props.onSuccess?.();}
+    } catch(err) {
+      if(alive.current){setError(err instanceof Error?err.message:"Correction failed.");if(err instanceof ApiError && (err.status===409 || err.code==="VIN_ENRICHMENT_REVISION_REQUIRED")){setStale(true);setConfirmed(false);}}
+    } finally {if(alive.current)setBusy(false);}
+  }
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" role="dialog" aria-modal="true" aria-label="Verify or correct VIN">
+    <div className="forge-panel forge-panel-pad w-full max-w-lg">
+      <h3>Verify or correct VIN</h3>
+      <p>Verify identity independently. Keep supporting research and notes in the exported spreadsheet.</p>
+      {current ? <dl className="my-4 grid gap-1"><dt>Source / row</dt><dd>{current.source_type} / {current.source_row_number??"unknown"}</dd><dt>Stock / control</dt><dd>{current.stock_number??"—"}</dd><dt>Existing VIN</dt><dd>{current.vin??"Missing"}</dd><dt>Revision being reviewed</dt><dd>{current.vin_enrichment_revision}</dd><dt>Assessment</dt><dd>{current.assessment.flags.join(", ")||"Valid format"}{current.assessment.operatorConfirmed?"; operator confirmed":""}</dd></dl> : <p>Loading current identity…</p>}
+      {error && <p role="alert" className="forge-notice forge-notice-danger">{error}</p>}
+      {success ? <><p role="status">VIN corrected. Re-run reconciliation to apply the corrected VIN. Previous runs remain unchanged.</p><button type="button" onClick={props.close}>Close</button></> :
+      <form onSubmit={submit} className="grid gap-3">
+        <label htmlFor={inputId}>Proposed VIN</label><input id={inputId} className="forge-control" value={vin} maxLength={17} disabled={busy||stale||!current} onChange={e=>{setVin(e.target.value.toUpperCase());setConfirmed(false);}}/>
+        <p>Proposed identity: {proposed||"—"}</p>
+        <label><input type="checkbox" checked={confirmed} disabled={busy||stale||!valid||!current} onChange={e=>setConfirmed(e.target.checked)}/> I independently verified this change from the existing VIN to the proposed VIN.</label>
+        {stale && <button type="button" onClick={()=>setRefresh(n=>n+1)}>Refresh and review</button>}
+        <div className="flex gap-2"><button type="button" className="forge-button-secondary" disabled={busy} onClick={props.close}>Cancel</button><button type="submit" className="forge-button-accent" disabled={!ready}>Confirm VIN correction</button></div>
+      </form>}
+    </div>
+  </div>;
+}

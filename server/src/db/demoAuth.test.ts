@@ -1,3 +1,5 @@
+import { createTestPool as createPool } from "../testUtils/testPostgresPool.js";
+import { withDisposablePostgresDatabase } from "../testUtils/disposablePostgresDatabase.js";
 import request from "supertest";
 import { describe, expect, test } from "vitest";
 
@@ -6,10 +8,8 @@ import { PostgresAuthRepository } from "../auth.js";
 import { migrate } from "./migrate.js";
 import { seedDemoAuthUser } from "./seedDemoAuth.js";
 import {
-  createPool,
   PostgresTransactionRepository,
 } from "../repositories/postgresTransactionRepository.js";
-import { withDatabaseTestLock } from "../testUtils/databaseTestLock.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeIfDatabase = databaseUrl ? describe : describe.skip;
@@ -29,7 +29,7 @@ describeIfDatabase("explicit local demo auth seed", () => {
       throw new Error("DATABASE_URL is required for demo auth tests.");
     }
 
-    await withDatabaseTestLock(databaseUrl, async () => {
+    await withDisposablePostgresDatabase(databaseUrl, async (databaseUrl) => {
       await migrate(databaseUrl);
 
       const pool = createPool(databaseUrl);
@@ -95,7 +95,7 @@ describeIfDatabase("explicit local demo auth seed", () => {
       throw new Error("DATABASE_URL is required for demo auth tests.");
     }
 
-    await withDatabaseTestLock(databaseUrl, async () => {
+    await withDisposablePostgresDatabase(databaseUrl, async (databaseUrl) => {
       await migrate(databaseUrl);
 
       const pool = createPool(databaseUrl);
@@ -132,7 +132,7 @@ describeIfDatabase("explicit local demo auth seed", () => {
       throw new Error("DATABASE_URL is required for demo auth tests.");
     }
 
-    await withDatabaseTestLock(databaseUrl, async () => {
+    await withDisposablePostgresDatabase(databaseUrl, async (databaseUrl) => {
       await migrate(databaseUrl);
 
       const pool = createPool(databaseUrl);

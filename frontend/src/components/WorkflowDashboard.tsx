@@ -13,6 +13,7 @@ import { ApiError } from "../api/errorMessage";
 import { createDealershipStore, listDealerGroups, listDealershipStores } from "../api/stores";
 import { UploadError, uploadSourceFile } from "../api/uploads";
 import { PreprocessingDiagnosticsPanel } from "./preprocessing/PreprocessingDiagnosticsPanel";
+import { VinVerificationPanel } from "./preprocessing/VinVerificationPanel";
 import { VinPresenceDiagnosticsPanel } from "./VinPresenceDiagnosticsPanel";
 import type {
   ReconciledTransaction,
@@ -109,21 +110,19 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
     selectedStore?.name ?? activeRun?.store_name ?? null;
 
   useEffect(() => {
-    void refreshLists();
-    return invalidateWorkflowRequests;
-    // Initial load only; store changes are handled explicitly in handleStoreChange.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    let cancelled = false;
+    void Promise.all([listDealerGroups(), listDealershipStores()]).then(([groups, storeList]) => {
+      // A discarded mount must not overwrite the current operator's store selection.
+      if (cancelled) return;
+      setDealerGroups(groups);
+      setStores(storeList);
+      setSelectedStoreId((current) => current ?? storeList[0]?.id ?? null);
+    });
+    return () => {
+      cancelled = true;
+      invalidateWorkflowRequests();
+    };
   }, []);
-
-  async function refreshLists() {
-    const [groups, storeList] = await Promise.all([listDealerGroups(), listDealershipStores()]);
-    const activeStoreId = selectedStoreId ?? storeList[0]?.id ?? null;
-    if (selectedStoreId === null && activeStoreId !== null) {
-      setSelectedStoreId(activeStoreId);
-    }
-    setDealerGroups(groups);
-    setStores(storeList);
-  }
 
   async function handleUpload(kind: SourceKind) {
     const slot = kind === "boa" ? boaUpload : dealertrackUpload;
@@ -449,6 +448,7 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
             slot={boaUpload}
             onFileChange={(file) => handleUploadFileChange("boa", file)}
             onUpload={() => void handleUpload("boa")}
+            onVinEnriched={() => setIsReconciliationStale(true)}
             canModify={canModify && canUseRooftop}
           />
           <UploadPanel
@@ -463,6 +463,10 @@ export function WorkflowDashboard({ currentUser }: { currentUser?: CurrentUser }
           />
         </div>
 
+        {activeRun && <div className="grid gap-3 lg:grid-cols-2">
+          <VinVerificationPanel sourceFileId={activeRun.boa_source_file_id} canModify={canModify} onCorrected={()=>setIsReconciliationStale(true)}/>
+          <VinVerificationPanel sourceFileId={activeRun.dealertrack_source_file_id} canModify={canModify} onCorrected={()=>setIsReconciliationStale(true)}/>
+        </div>}
         {isReconciliationStale && activeRun ? (
           <div
             className="forge-notice forge-notice-warning"
@@ -831,6 +835,7 @@ function UploadPanel({
         <UploadReceipt
           sourceLabel={label}
           upload={slot.upload}
+          canModify={canModify}
           sourceType={kind}
           onVinEnriched={onVinEnriched}
         />
@@ -849,6 +854,7 @@ function UploadPanel({
 }
 
 function UploadReceipt({
+  canModify,
   sourceLabel,
   upload,
   sourceType,
@@ -856,6 +862,7 @@ function UploadReceipt({
 }: {
   sourceLabel: string;
   upload: UploadResponse;
+  canModify: boolean;
   sourceType?: SourceKind;
   onVinEnriched?: () => void;
 }) {
@@ -884,7 +891,9 @@ function UploadReceipt({
           <ValidationErrors errors={upload.validation_errors} />
         ) : null}
       </div>
+      <VinVerificationPanel sourceFileId={upload.source_file_id} canModify={canModify} onCorrected={()=>onVinEnriched?.()}/>
       <PreprocessingDiagnosticsPanel
+        canModify={canModify}
         preprocessing={upload.preprocessing ?? null}
         sourceLabel={sourceLabel}
         sourceFileId={upload.source_file_id}

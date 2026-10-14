@@ -84,14 +84,14 @@ describe("engine v2 tier behavior", () => {
       // Build a Dealertrack row whose description carries a different full
       // 17-char VIN whose last 6 happen to match BOA's last 6 - real Hiley
       // case for vehicles whose VIN was retyped in the DMS.
-      const left = boa({ id: 1, amount_cents: 31051, vin: STORE_VIN_A, stock_number: "M21055" });
+      const left = boa({ id: 1, amount_cents: 31051, vin: STORE_VIN_A, stock_number: "M70035" });
       const collidingVin = `2T3WFREV8AA${STORE_VIN_A.slice(-6)}`;
       expect(collidingVin).toHaveLength(17);
       const right = dealertrack({
         id: 2,
         amount_cents: -31051,
         description: `MAZDA CX-30 ${collidingVin}`,
-        stock_number: "M21055",
+        stock_number: "M70035",
       });
       const result = reconcileTransactionSets([left], [right]);
       // Two different 17-char VINs share the same last-6 - we still allow
@@ -119,12 +119,12 @@ describe("engine v2 tier behavior", () => {
 
   describe("Tier 2: full VIN + exact amount", () => {
     test("auto-matches when both sides store the same full VIN and exact amount", () => {
-      const left = boa({ id: 1, amount_cents: 18450, vin: STORE_VIN_B, stock_number: "M20657" });
+      const left = boa({ id: 1, amount_cents: 18450, vin: STORE_VIN_B, stock_number: "M70053" });
       const right = dealertrack({
         id: 2,
         amount_cents: -18450,
         vin: STORE_VIN_B,
-        stock_number: "M20657",
+        stock_number: "M70053",
       });
       const result = reconcileTransactionSets([left], [right]);
       expect(result.matched_count).toBe(1);
@@ -133,12 +133,12 @@ describe("engine v2 tier behavior", () => {
     });
 
     test("auto-matches by derived full VIN from the Dealertrack description", () => {
-      const left = boa({ id: 1, amount_cents: 21100, vin: STORE_VIN_C, stock_number: "M20450" });
+      const left = boa({ id: 1, amount_cents: 21100, vin: STORE_VIN_C, stock_number: "M70080" });
       const right = dealertrack({
         id: 2,
         amount_cents: -21100,
         description: `BOA FLOORPLAN ${STORE_VIN_C}`,
-        stock_number: "M20450",
+        stock_number: "M70080",
       });
       const result = reconcileTransactionSets([left], [right]);
       expect(result.match_groups[0].match_reason).toBe("derived_vin_abs_amount");
@@ -201,8 +201,8 @@ describe("engine v2 tier behavior", () => {
 
   describe("Tier 4: unmatched placement", () => {
     test("routes same-stock + same-amount rows to placement when there is no VIN6 agreement", () => {
-      const left = boa({ id: 1, amount_cents: 17750, stock_number: "M20999", vin: null });
-      const right = dealertrack({ id: 2, amount_cents: -17750, stock_number: "M20999", vin: null });
+      const left = boa({ id: 1, amount_cents: 17750, stock_number: "M70074", vin: null });
+      const right = dealertrack({ id: 2, amount_cents: -17750, stock_number: "M70074", vin: null });
       const result = reconcileTransactionSets([left], [right]);
       expect(result.matched_count).toBe(0);
       expect(result.exceptions.map((exception) => exception.exception_type).sort()).toEqual([

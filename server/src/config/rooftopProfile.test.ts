@@ -60,11 +60,11 @@ describe("rooftop profiles", () => {
 
   test("Fort Worth keeps parsing configuration but remains disabled", () => {
     expect(getRooftopProfile("fw")).toMatchObject({
-      profileId: "fw-v0",
+      profileId: "fw-v1",
       enabled: false,
       supportedSourceFormats: {
-        boa: ["csv", "html_table_xls"],
-        dealertrack: ["csv", "xml_spreadsheet"],
+        boa: ["csv"],
+        dealertrack: ["csv"],
       },
     });
   });

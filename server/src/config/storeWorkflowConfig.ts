@@ -27,7 +27,7 @@ export type StoreWorkflowConfig = {
   dtOnlyPlacementRule: DtOnlyPlacementRule;
 };
 
-export type RooftopProfileId = "hurst-v1" | "acura-v1" | "fw-v0";
+export type RooftopProfileId = "hurst-v1" | "acura-v1" | "fw-v0" | "fw-v1";
 
 export type ParserIdentity = {
   name: "boa-csv" | "boa-html-xls" | "dealertrack-csv" | "dealertrack-spreadsheetml";
@@ -48,7 +48,7 @@ export type RooftopProfile = StoreWorkflowConfig & {
   parserIdentities: Record<"boa" | "dealertrack", readonly ParserIdentity[]>;
   preprocessorIdentities: Record<"boa" | "dealertrack", PreprocessorIdentity>;
   requiredArtifactTypes: readonly ReconciliationArtifactType[];
-  presenterId: "hurst-fp-rec-v1" | "acura-fp-rec-v1";
+  presenterId: "hurst-fp-rec-v1" | "acura-fp-rec-v1" | "fw-fp-rec-v1";
   goldenFixtureIds: readonly string[];
 };
 
@@ -143,13 +143,13 @@ export const ROOFTOP_PROFILES: Record<StoreKey, RooftopProfile> = {
     goldenFixtureIds: ["acura-april-2026-sanitized"],
   },
   fw: {
-    profileId: "fw-v0",
-    profileVersion: "0",
+    profileId: "fw-v1",
+    profileVersion: "1",
     enabled: false,
     storeKey: "fw",
     displayName: "Hiley Cars Fort Worth",
     dealershipStoreNameAliases: ["hiley cars fort worth", "fort worth", "fw"],
-    mergedSheetLabel: "FW",
+    mergedSheetLabel: "FORT WORTH",
     mergedSheetLabelAliases: ["FW", "FORT WORTH"],
     dealertrackAccountColumn: "2100",
     dealertrackAmountColumns: ["2100", "2101", "2101S"],
@@ -162,19 +162,17 @@ export const ROOFTOP_PROFILES: Record<StoreKey, RooftopProfile> = {
       dealertrackTotalLabel: "2100 total",
       varianceLabel: "Variance",
     },
-    dtOnlyPlacementRule: "after_boa_rows",
+    dtOnlyPlacementRule: "interleave_by_amount",
     supportedSourceFormats: {
-      boa: ["csv", "html_table_xls"],
-      dealertrack: ["csv", "xml_spreadsheet"],
+      boa: ["csv"],
+      dealertrack: ["csv"],
     },
     parserIdentities: {
       boa: [
         { name: "boa-csv", version: "1", format: "csv" },
-        { name: "boa-html-xls", version: "1", format: "html_table_xls" },
       ],
       dealertrack: [
         { name: "dealertrack-csv", version: "1", format: "csv" },
-        { name: "dealertrack-spreadsheetml", version: "1", format: "xml_spreadsheet" },
       ],
     },
     preprocessorIdentities: {
@@ -182,7 +180,7 @@ export const ROOFTOP_PROFILES: Record<StoreKey, RooftopProfile> = {
       dealertrack: { name: "dealertrack-floorplan", version: "preprocessing-v1" },
     },
     requiredArtifactTypes: REQUIRED_RECONCILIATION_ARTIFACT_TYPES,
-    presenterId: "hurst-fp-rec-v1",
+    presenterId: "fw-fp-rec-v1",
     goldenFixtureIds: [],
   },
 };

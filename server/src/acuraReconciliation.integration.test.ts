@@ -1,3 +1,4 @@
+import { createTestPool as createPool } from "./testUtils/testPostgresPool.js";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 
@@ -11,7 +12,7 @@ import {
 import {
   compareFpRecSemantics,
   type ExpectedFpRecSemantics,
-} from "./acceptance/acuraEvidence.js";
+} from "./testUtils/acuraSemantics.js";
 import { createApp } from "./app.js";
 import {
   REQUIRED_RECONCILIATION_ARTIFACT_TYPES,
@@ -25,7 +26,6 @@ import type {
 import type { FpRecWorkbook } from "./presenters/fpRec.js";
 import type { MergedFloorplanWorkbook } from "./presenters/mergedFloorplan.js";
 import {
-  createPool,
   PostgresTransactionRepository,
 } from "./repositories/postgresTransactionRepository.js";
 import {
@@ -384,7 +384,7 @@ async function runAcuraVerticalSlice(
         expect(profileRejectedRun.status).toBe(422);
         expect(profileRejectedRun.body.error).toMatchObject({
           code: "ROOFTOP_PROFILE_UNSUPPORTED",
-          details: { rooftop_profile_id: "fw-v0" },
+          details: { rooftop_profile_id: "fw-v1" },
         });
         expect(await countRuns(pool, acuraStore.id)).toBe(noRunCount);
         expect(await countRuns(pool, disabledStore.id)).toBe(0);

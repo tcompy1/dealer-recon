@@ -43,11 +43,12 @@ export function matchDiagnosticToTransaction(
   stockNumber: string | null,
 ): DiagnosticMatchResult {
   if (sourceRowNumber !== null) {
-    const byRow = transactions.find(
+    const byRow = transactions.filter(
       (transaction) => transaction.source_row_number === sourceRowNumber,
     );
-    if (byRow) {
-      return { status: "matched", transaction: byRow };
+    if (byRow.length > 1) return { status: "ambiguous" };
+    if (byRow.length === 1) {
+      return { status: "matched", transaction: byRow[0] };
     }
   }
   if (stockNumber) {

@@ -1,3 +1,4 @@
+import {ROOFTOP_PROFILES} from "../config/storeWorkflowConfig.js";
 import type { Server } from "node:http";
 
 import { afterEach, describe, expect, test } from "vitest";
@@ -25,6 +26,7 @@ describe("startE2eServer", () => {
       });
     });
     server = null;
+    expect(ROOFTOP_PROFILES.fw.enabled).toBe(false);
   });
 
   test("uses memory state and permits only the browser test origin", async () => {
@@ -41,7 +43,7 @@ describe("startE2eServer", () => {
       expect(allowedResponse.headers.get("access-control-allow-origin")).toBe(ALLOWED_ORIGIN);
       expect(allowedResponse.headers.get("access-control-allow-credentials")).toBe("true");
       await expect(allowedResponse.json()).resolves.toEqual(
-        expect.arrayContaining([expect.objectContaining({ name: "Hiley Acura" })]),
+        expect.arrayContaining([expect.objectContaining({ name: "Hiley Acura" }),expect.objectContaining({name:"Hiley Cars Fort Worth"})]),
       );
 
       const disallowedResponse = await fetch(`${E2E_SERVER_URL}/stores`, {
