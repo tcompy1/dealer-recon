@@ -41,12 +41,12 @@ function transaction(overrides: Partial<TransactionSummary> = {}): TransactionSu
     amount: "29855.00",
     amount_cents: 2_985_500,
     reference_number: null,
-    description: "2025 Mazda CX5",
+    description: "Invented matched unit 1TESTCARXXA910021",
     account: null,
     account_type: "floorplan",
     account_identifier: "floorplan",
     stock_number: null,
-    vin: "JM3KFBAL0S0764873",
+    vin: "1TESTCARXXA910021",
     ...overrides,
   };
 }

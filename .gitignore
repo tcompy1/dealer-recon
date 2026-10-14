@@ -44,3 +44,11 @@ docs/discovery/floorplan/**/recordings/*.webm
 
 # Local Hiley rooftop evidence contains client data and recordings.
 docs/discovery/hiley-artifacts/
+
+# Legacy client evidence must not return as ordinary fixtures.
+docs/discovery/floorplan/**/*.csv
+docs/discovery/floorplan/**/*.xls
+docs/discovery/floorplan/**/*.xlsx
+server/src/services/__fixtures__/DT HURST APRIL (1).csv
+server/src/services/__fixtures__/golden_dataset.csv
+sample-data/golden_dataset.csv

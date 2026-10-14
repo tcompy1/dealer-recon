@@ -119,12 +119,12 @@ function transaction(overrides: Partial<TransactionSummary> = {}): TransactionSu
     amount: "29855.00",
     amount_cents: 2_985_500,
     reference_number: null,
-    description: "2025 Mazda CX5",
+    description: "Invented matched unit 1TESTCARXXA910021",
     account: null,
     account_type: "floorplan",
     account_identifier: "floorplan",
     stock_number: null,
-    vin: "JM3KFBAL0S0764873",
+    vin: "1TESTCARXXA910021",
     ...overrides,
   };
 }
@@ -179,33 +179,33 @@ function contractWorkbook(
     storeName: storeConfig.displayName,
     periodDate: "04-30-26",
     boaRecords: [
-      boa(101, 2_985_500, "JM3KFBAL0S0764873", "MATCHED BOA CX5"),
-      boa(102, 3_599_900, "JM3KMCHA6T0126368", "BOA ONLY CX5"),
-      boa(103, 3_228_300, "JM1BPBLL0T1870612", "AMOUNT MISMATCH BOA"),
+      boa(101, 2_985_500, "1TESTCARXXA910021", "MATCHED BOA CX5"),
+      boa(102, 3_599_900, "1TESTCARXXA910142", "BOA ONLY CX5"),
+      boa(103, 3_228_300, "1TESTCARXXA910269", "Invented exception 1TESTCARXXA910269"),
     ],
     dealertrackRecords: [
       dealertrack(
         201,
         2_985_500,
-        "JM3KFBAL0S0764873",
+        "1TESTCARXXA910021",
         "MATCHED DT CX5",
-        "M21276",
+        "M70020",
         storeConfig.dealertrackAccountColumn,
       ),
       dealertrack(
         202,
         2_625_100,
-        "JM1BPABL0T1867950",
+        "1TESTCARXXA910260",
         "DT ONLY TRANSFER",
-        "M21317",
+        "M70007",
         storeConfig.dealertrackAccountColumn,
       ),
       dealertrack(
         203,
         3_177_100,
-        "JM1BPBLL0T1870612",
+        "1TESTCARXXA910269",
         "AMOUNT MISMATCH DT",
-        "M21472",
+        "M70492",
         storeConfig.dealertrackAccountColumn,
       ),
     ],
@@ -256,12 +256,12 @@ describe("merged floorplan presenter", () => {
       storeConfig: STORE_WORKFLOW_CONFIGS.hurst,
       storeName: "Hiley Mazda of Hurst",
       periodDate: "04-30-26",
-      boaRecords: [boa(101, 10_000, "JM3KFBAL0S0764873", "=SUM(1+1)")],
+      boaRecords: [boa(101, 10_000, "1TESTCARXXA910021", "=SUM(1+1)")],
       dealertrackRecords: [
         dealertrack(
           201,
           10_000,
-          "JM3KFBAL0S0764873",
+          "1TESTCARXXA910021",
           "@DT DESCRIPTION",
           "+CTRL",
           STORE_WORKFLOW_CONFIGS.hurst.dealertrackAccountColumn,
@@ -315,12 +315,12 @@ describe("merged floorplan presenter", () => {
     const matched = findRow(workbook, (row) => row.classification === "matched");
     expect(matched).toMatchObject({
       store_description: "MATCHED BOA CX5",
-      serial_no_vin: "JM3KFBAL0S0764873",
-      boa_vin6: "764873",
+      serial_no_vin: "1TESTCARXXA910021",
+      boa_vin6: "910021",
       ending_balance_cents: 2_985_500,
       dealertrack_account_amount_cents: -2_985_500,
-      dealertrack_vin6: "764873",
-      dealertrack_control: "M21276",
+      dealertrack_vin6: "910021",
+      dealertrack_control: "M70020",
     });
 
     const boaOnly = findRow(workbook, (row) => row.store_description === "BOA ONLY CX5");
@@ -342,21 +342,21 @@ describe("merged floorplan presenter", () => {
       boa_vin6: "",
       ending_balance_cents: null,
       dealertrack_account_amount_cents: -2_625_100,
-      dealertrack_vin6: "867950",
-      dealertrack_control: "M21317",
+      dealertrack_vin6: "910260",
+      dealertrack_control: "M70007",
     });
 
     const boaMismatch = findRow(
       workbook,
-      (row) => row.store_description === "AMOUNT MISMATCH BOA",
+      (row) => row.store_description === "Invented exception 1TESTCARXXA910269",
     );
     const dealertrackMismatch = findRow(workbook, (row) =>
       row.dealertrack_description.startsWith("AMOUNT MISMATCH DT"),
     );
     const mergedMismatchRows = workbook.rows.filter(
       (row) =>
-        row.boa_vin6 === "870612" &&
-        row.dealertrack_vin6 === "870612" &&
+        row.boa_vin6 === "910269" &&
+        row.dealertrack_vin6 === "910269" &&
         row.ending_balance_cents !== null &&
         row.dealertrack_account_amount_cents !== null,
     );
@@ -370,7 +370,7 @@ describe("merged floorplan presenter", () => {
       classification: "dealertrack_only",
       ending_balance_cents: null,
       dealertrack_account_amount_cents: -3_177_100,
-      dealertrack_vin6: "870612",
+      dealertrack_vin6: "910269",
     });
     expect(mergedMismatchRows).toHaveLength(0);
   });
@@ -391,17 +391,17 @@ describe("merged floorplan presenter", () => {
       storeConfig: STORE_WORKFLOW_CONFIGS.acura,
       storeName: "Acura",
       periodDate: "04-30-26",
-      boaRecords: [boa(101, 2_985_500, "JM3KFBAL0S0764873", "ACURA MATCH")],
+      boaRecords: [boa(101, 2_985_500, "1TESTCARXXA910021", "ACURA MATCH")],
       dealertrackRecords: [
-        dealertrack(201, 2_985_500, "JM3KFBAL0S0764873", "WRONG ACCOUNT", "A1000", "2100"),
-        dealertrack(202, 2_985_500, "JM3KFBAL0S0764873", "RIGHT ACCOUNT", "A1001", "324"),
+        dealertrack(201, 2_985_500, "1TESTCARXXA910021", "WRONG ACCOUNT", "A1000", "2100"),
+        dealertrack(202, 2_985_500, "1TESTCARXXA910021", "RIGHT ACCOUNT", "A1001", "324"),
       ],
     });
 
     expect(workbook.rows).toHaveLength(1);
     expect(workbook.rows[0]).toMatchObject({
       classification: "matched",
-      dealertrack_description: "RIGHT ACCOUNT   4/30/26  JM3KFBAL0S0764873",
+      dealertrack_description: "RIGHT ACCOUNT   4/30/26  1TESTCARXXA910021",
       dealertrack_control: "A1001",
     });
   });

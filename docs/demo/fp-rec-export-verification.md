@@ -1,5 +1,7 @@
 # Hurst FP Rec Export Verification
 
+> Evidence cleanup (2026-10-14): ordinary CLI exports now use the independently invented `sample-data/hurst-synthetic.csv`. Historical counts/totals recorded below remain historical results and are verified separately by protected Hurst acceptance; they are not expected demo output. No client dataset is an ordinary CLI default. See `docs/development/client-evidence-policy.md`.
+
 Status note: Hurst fixture/CLI verification reference. It supports FP REC fidelity checks, but the canonical v1 product source of truth is `docs/product/fp-rec-four-step-workflow.md`. The primary application export route is `GET /reconciliation-runs/:id/fp-rec`; `GET /reconciliation-runs/:id/hurst-fp-rec` remains a legacy compatibility alias.
 
 Use this workflow to generate FEB/MAR/APR Hurst FP Rec exports from the accepted golden fixture and visually compare them with the clerk workbook shape.
@@ -38,26 +40,26 @@ docker compose exec backend npm run export:hurst-fp-rec -- --month APRIL26 --out
 To use a different fixture file:
 
 ```bash
-docker compose exec backend npm run export:hurst-fp-rec -- --golden-csv ../sample-data/golden_dataset.csv --month all --out-dir tmp/hurst-fp-rec-exports --format xls,html
+docker compose exec backend npm run export:hurst-fp-rec -- --golden-csv ../sample-data/hurst-synthetic.csv --month all --out-dir tmp/hurst-fp-rec-exports --format xls,html
 ```
 
 ## What The Command Uses
 
-The generator reads `sample-data/golden_dataset.csv`, which is already classified according to the accepted clerk workbooks. It does not rerun matching and does not change reconciliation rules. It builds the same `ReconciliationRunDetail` shape consumed by `buildHurstFpRecWorkbook`, then writes Excel-compatible HTML as both `.xls` and `.html`.
+The generator reads `sample-data/hurst-synthetic.csv`, which contains independently invented, preclassified demo scenarios. It does not rerun matching and does not change reconciliation rules. It builds the same `ReconciliationRunDetail` shape consumed by `buildHurstFpRecWorkbook`, then writes Excel-compatible HTML as both `.xls` and `.html`.
 
 ## Expected Console Summary
 
 The command prints one summary per generated month:
 
 ```text
-FEB26: matched=238 boa_only=0 dealertrack_only=16 boa_total=9088877.00 dt_2100_total=-9662045.00 variance=-573168.00
-MAR26: matched=217 boa_only=10 dealertrack_only=6 boa_total=8606561.00 dt_2100_total=-8470803.00 variance=135758.00
-APRIL26: matched=199 boa_only=4 dealertrack_only=2 boa_total=7949383.00 dt_2100_total=-7877160.00 variance=72223.00
+FEB26: matched=2 boa_only=0 dealertrack_only=1 boa_total=3000.00 dt_2100_total=-3300.00 variance=0.00
+MAR26: matched=1 boa_only=1 dealertrack_only=1 boa_total=1900.00 dt_2100_total=-1600.00 variance=0.00
+APRIL26: matched=1 boa_only=2 dealertrack_only=2 boa_total=1900.00 dt_2100_total=-1950.00 variance=0.00
 ```
 
 ## Visual Checklist
 
-Open each `.xls` in Excel or LibreOffice, and keep the matching accepted clerk workbook beside it.
+For an optional operational smoke test, open each invented `.xls` in Microsoft Excel and compare it with the synthetic scenario expectations. Historical client workpapers belong only in separately authorized protected acceptance. Another application is not proof of Microsoft Excel usability.
 
 Confirm:
 

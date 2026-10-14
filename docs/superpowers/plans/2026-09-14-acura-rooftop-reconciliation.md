@@ -1,5 +1,7 @@
 # Acura Rooftop Reconciliation Implementation Plan
 
+> Evidence-location update (2026-10-14): discovery/fixture filenames below are historical references, not current test inputs. Client copies have moved outside Git to the ignored protected Hiley evidence root. Acura February BOA remains **unverified provenance**. Ordinary tests use invented fixtures; historical Hurst/Acura acceptance is explicitly opt-in. See `docs/development/client-evidence-policy.md`. Historical decisions and results below are unchanged.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Deliver an Acura month-end reconciliation vertical slice that validates an operator-selected accounting month, uses a versioned Acura rooftop profile, persists truthful parser/preprocessor provenance, produces the approved merged and FP REC outputs, and leaves Hurst behavior unchanged.

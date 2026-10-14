@@ -54,7 +54,7 @@ describe("preprocessDealertrack", () => {
 
   test("uses configured account column while preserving logical floorplan account identifier", () => {
     const parsed = table(["Control", "Description", "324"], [
-      ["A10001", "ACURA FLOORPLAN 19UDE4H21TA011251", "-34436.00"],
+      ["A10001", "ACURA FLOORPLAN 1TESTCARXXA910342", "-34436.00"],
     ]);
     const result = preprocessDealertrack(parsed, { accountColumn: "324", accountLabel: "324" });
 

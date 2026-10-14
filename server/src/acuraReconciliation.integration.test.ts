@@ -12,7 +12,7 @@ import {
 import {
   compareFpRecSemantics,
   type ExpectedFpRecSemantics,
-} from "./acceptance/acuraEvidence.js";
+} from "./testUtils/acuraSemantics.js";
 import { createApp } from "./app.js";
 import {
   REQUIRED_RECONCILIATION_ARTIFACT_TYPES,

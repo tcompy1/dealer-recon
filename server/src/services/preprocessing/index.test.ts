@@ -176,9 +176,9 @@ describe("preprocessUpload orchestrator", () => {
     const lines = [
       "Control,Description,2100,2110",
       "BOA,BANK OF AMERICA,0,-500000",
-      "M20148,BOA FLOORPLAN,-25746,0",
-      "M20577,HILEY SERVICE LOANER 8/18/25  JM3KFBBL3S0720171,-31664,0",
-      "M20657,BOA FLOORPLAN,-31525,0",
+      "M70001,BOA FLOORPLAN,-25746,0",
+      "M70059,HILEY SERVICE LOANER 8/18/25  1TESTCARXXA910010,-31664,0",
+      "M70053,BOA FLOORPLAN,-31525,0",
       ",Final Totals:,-9662045,-500000",
     ];
     const buffer = Buffer.from(lines.join("\n") + "\n");
@@ -214,7 +214,7 @@ describe("preprocessUpload orchestrator", () => {
   test("passes configured Dealertrack account column through preprocessing", () => {
     const lines = [
       "Control,Description,324",
-      "M20148,BOA FLOORPLAN 1HGCM82633A004352,-25746",
+      "M70001,BOA FLOORPLAN 1HGCM82633A004352,-25746",
     ];
     const buffer = Buffer.from(lines.join("\n") + "\n");
     const decision = preprocessUpload(
@@ -245,19 +245,20 @@ describe("preprocessUpload orchestrator", () => {
     );
   });
 
-  test("parses the April Hurst Dealertrack CSV account amount column", async () => {
-    const buffer = await loadFixture("server/src/services/__fixtures__/DT HURST APRIL (1).csv");
-    const decision = preprocessUpload(buffer, "dealertrack", "DT HURST APRIL (1).csv");
+  test("parses the invented BOM/comma-formatted Hurst account header", async () => {
+    const buffer = await loadFixture("server/src/testFixtures/hurst/dealertrack-reprocessing-synthetic.csv");
+    expect(buffer.subarray(0, 3)).toEqual(Buffer.from([0xef, 0xbb, 0xbf]));
+    expect(buffer.toString("utf8").split(/\r?\n/)[0]).toBe('\uFEFF" 2,100.00 ",VIN6,Control    ,Description');
+    const decision = preprocessUpload(buffer, "dealertrack", "dealertrack-reprocessing-synthetic.csv");
     expect(decision.kind).toBe("preprocessed");
     if (decision.kind !== "preprocessed") return;
 
     expect(decision.output.route.kind).toBe("dealertrack_csv");
-    expect(decision.output.summary.rows_scanned).toBeGreaterThan(0);
-    expect(decision.output.summary.rows_accepted).toBeGreaterThan(0);
-    expect(decision.output.transactions.length).toBeGreaterThan(0);
-    expect(decision.output.validationErrors.length).toBeLessThan(
-      decision.output.summary.rows_scanned,
-    );
+    expect(decision.output.summary.rows_scanned).toBe(2);
+    expect(decision.output.summary.rows_accepted).toBe(2);
+    expect(decision.output.transactions.length).toBe(2);
+    expect(decision.output.validationErrors).toEqual([]);
+    expect(decision.output.transactions.map(t => t.amount_cents).sort((a,b) => a-b)).toEqual([-123456, -20000]);
   });
 
   test("source-specific CSV routes emit preprocessing diagnostics rather than falling back", () => {

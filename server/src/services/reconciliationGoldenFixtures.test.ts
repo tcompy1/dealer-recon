@@ -8,15 +8,8 @@ import type { ReconciliationResult, Transaction } from "../domain/types.js";
 import { parseAmountToCents } from "../domain/money.js";
 import { reconcileTransactionSets } from "./reconciliationEngine.js";
 
-// Golden acceptance fixtures derived from the Hiley Mazda of Hurst clerk's three
-// final reconciled workbooks (FEB26, MAR26, APRIL26). The CSV pre-classifies
-// each row the way the clerk resolved it; these tests prove the engine
-// reproduces the clerk's counts, totals, variance, and amount-mismatch handling.
-//
-// See dealer_recon_ground_truth_reverse_engineering.md, Section 7.
-
 const fixtureDir = dirname(fileURLToPath(import.meta.url));
-const goldenCsv = readFileSync(join(fixtureDir, "__fixtures__", "golden_dataset.csv"), "utf8");
+const goldenCsv = readFileSync(join(fixtureDir, "../../../sample-data/hurst-synthetic.csv"), "utf8");
 
 type GoldenRow = {
   month: string;
@@ -31,7 +24,7 @@ type GoldenRow = {
 };
 
 // Quote-aware CSV line splitter. DT descriptions carry customer names with
-// embedded commas (e.g. "DUNCAN, WILLIAM RAYMO   3/11/26  VIN17") inside quoted
+// embedded commas inside quoted fields.
 // fields, so a naive split on "," corrupts the trailing-VIN token.
 function splitCsvLine(line: string): string[] {
   const cols: string[] = [];
@@ -101,7 +94,7 @@ function buildTransaction(
   };
 }
 
-// Translate the clerk's pre-classified golden rows into the raw BOA and DT
+// Translate the invented pre-classified rows into the raw BOA and DT
 // transaction sets the engine consumes. A matched row contributes one BOA row
 // AND one DT row; a boa_only row contributes only a BOA row; a dealertrack_only
 // row contributes only a DT row. This reconstructs the two source files the
@@ -136,7 +129,7 @@ function buildSourcesForMonth(month: string): {
           // token when present) plus the VIN column that the real Dealertrack
           // export provides. Some DT rows have a generic description ("BOA
           // FLOORPLAN") with no embedded VIN; the VIN column is what lets the
-          // engine derive VIN6 for those, matching the clerk's behavior.
+          // engine derive VIN6 for those, matching the invented fixture's behavior.
           description: row.dtDescription || `DT ${row.vin}`,
           vin: row.vin || null,
           reference_number: row.controlNumber || null,
@@ -148,7 +141,7 @@ function buildSourcesForMonth(month: string): {
   return { boa, dealertrack };
 }
 
-// Map engine output into the clerk's spec buckets. The engine routes a VIN6
+// Map engine output into the invented fixture's spec buckets. The engine routes a VIN6
 // match with a differing amount to manual review (needs_review_vin6_only) rather
 // than auto-confirming - that is the "amount mismatch pair" treatment: both
 // sides survive as independent exceptions and are never merged onto one row.
@@ -202,37 +195,37 @@ function grandTotals(
   };
 }
 
-describe("golden fixture acceptance - Hurst FP Rec", () => {
-  test("FEB26 reproduces the clerk's matched/exception counts, totals, and variance", () => {
+describe("synthetic fixture reconciliation - Hurst FP Rec", () => {
+  test("FEB26 reproduces the invented fixture's matched/exception counts, totals, and variance", () => {
     const { boa, dealertrack } = buildSourcesForMonth("FEB26");
     const result = reconcileTransactionSets(boa, dealertrack, "boa", "dealertrack");
     const summary = summarize(result);
     const totals = grandTotals(boa, dealertrack);
 
-    expect(summary.matchedCount).toBe(238);
+    expect(summary.matchedCount).toBe(2);
     expect(summary.boaOnlyCount).toBe(0);
-    expect(summary.dealertrackOnlyCount).toBe(16);
+    expect(summary.dealertrackOnlyCount).toBe(1);
     expect(summary.amountMismatchPairs).toBe(0);
 
-    expect(totals.boaGrandTotal).toBe(9088877);
-    expect(totals.dtGrandTotal).toBe(-9662045);
-    expect(totals.variance).toBe(-573168);
+    expect(totals.boaGrandTotal).toBe(3000);
+    expect(totals.dtGrandTotal).toBe(-3300);
+    expect(totals.variance).toBe(-300);
   });
 
-  test("MAR26 reproduces the clerk's matched/exception counts, totals, and variance", () => {
+  test("MAR26 reproduces the invented fixture's matched/exception counts, totals, and variance", () => {
     const { boa, dealertrack } = buildSourcesForMonth("MAR26");
     const result = reconcileTransactionSets(boa, dealertrack, "boa", "dealertrack");
     const summary = summarize(result);
     const totals = grandTotals(boa, dealertrack);
 
-    expect(summary.matchedCount).toBe(217);
-    expect(summary.boaOnlyCount).toBe(10);
-    expect(summary.dealertrackOnlyCount).toBe(6);
+    expect(summary.matchedCount).toBe(1);
+    expect(summary.boaOnlyCount).toBe(1);
+    expect(summary.dealertrackOnlyCount).toBe(1);
     expect(summary.amountMismatchPairs).toBe(0);
 
-    expect(totals.boaGrandTotal).toBe(8606561);
-    expect(totals.dtGrandTotal).toBe(-8470803);
-    expect(totals.variance).toBe(135758);
+    expect(totals.boaGrandTotal).toBe(1900);
+    expect(totals.dtGrandTotal).toBe(-1600);
+    expect(totals.variance).toBe(300);
   });
 
   test("APR26 reproduces counts, totals, variance, and the amount-mismatch pair", () => {
@@ -241,16 +234,16 @@ describe("golden fixture acceptance - Hurst FP Rec", () => {
     const summary = summarize(result);
     const totals = grandTotals(boa, dealertrack);
 
-    expect(summary.matchedCount).toBe(199);
-    expect(summary.boaOnlyCount).toBe(4);
+    expect(summary.matchedCount).toBe(1);
+    expect(summary.boaOnlyCount).toBe(2);
     expect(summary.dealertrackOnlyCount).toBe(2);
-    // Both mismatch VINs (JM1BPBLL0T1870612, JM1BPBLL1T1871235) are detected as
+    // The invented mismatch pair is detected as
     // VIN6 matches with differing amounts and are NOT merged into matches.
-    expect(summary.amountMismatchPairs).toBe(2);
+    expect(summary.amountMismatchPairs).toBe(1);
 
-    expect(totals.boaGrandTotal).toBe(7949383);
-    expect(totals.dtGrandTotal).toBe(-7877160);
-    expect(totals.variance).toBe(72223);
+    expect(totals.boaGrandTotal).toBe(1900);
+    expect(totals.dtGrandTotal).toBe(-1950);
+    expect(totals.variance).toBe(-50);
   });
 
   test("variance is never forced to zero - it equals the net exception delta", () => {

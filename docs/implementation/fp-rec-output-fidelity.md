@@ -1,5 +1,7 @@
 # Hurst FP Rec Output Fidelity Implementation Spec
 
+> Evidence cleanup (2026-10-14): ordinary CLI exports now use the independently invented `sample-data/hurst-synthetic.csv`. Historical counts/totals recorded below remain historical results and are verified separately by protected Hurst acceptance; they are not expected demo output. No client dataset is an ordinary CLI default. See `docs/development/client-evidence-policy.md`.
+
 Status note: Hurst-focused fidelity reference for the v1 FP REC output. Use `docs/product/fp-rec-four-step-workflow.md`, `docs/implementation/exception-taxonomy.md`, and `docs/implementation/reconciliation-artifacts.md` first for current product and review framing. The current primary FP REC export path is `GET /reconciliation-runs/:id/fp-rec`; the legacy Hurst route remains a compatibility alias.
 
 Parent issue: #10 - Hurst FP Rec Output Fidelity
@@ -13,7 +15,7 @@ The Hurst FP Rec workbook must match the accepted clerk workbook closely enough 
 ## Source Of Truth
 
 - `docs/dealer_recon_ground_truth_reverse_engineering.md`
-- `sample-data/golden_dataset.csv`
+- Protected `hurst/golden_dataset.csv` (formerly tracked as `sample-data/golden_dataset.csv`; authentic historical acceptance only)
 - `server/src/presenters/hurstFpRec.ts`
 - `server/src/presenters/hurstFpRec.test.ts`
 - `server/src/services/reconciliationEngine.ts`
@@ -146,7 +148,7 @@ Golden total targets from the accepted fixtures:
 
 ## Golden Validation Targets
 
-The implementation must reproduce these detail-row classifications from `sample-data/golden_dataset.csv`:
+Protected historical acceptance must reproduce these detail-row classifications from the preserved `hurst/golden_dataset.csv`; the invented demo dataset has separate expectations:
 
 | Month | Matched | BOA-only | Dealertrack-only | Amount-mismatch treatment |
 |---|---:|---:|---:|---|
@@ -341,4 +343,4 @@ The work is accepted only when generated workbook output satisfies all criteria 
 - The target detail worksheet is a single visible A-H grid. Any summary/totals rows are allowed only if they do not alter the detail column contract.
 - Dealertrack-only rows have no BOA Ending Balance, so this spec places them after all BOA-valued rows. This is an explicit implementation decision for blank column D sorting.
 - Currency precision is cents. Display can omit cents only if it matches the accepted workbook format, but matching and totals must use cents.
-- The prompt names `sample-data/golden_dataset.csv`; historical test context also references `server/src/services/__fixtures__/golden_dataset.csv`. The implementation should keep one canonical fixture or ensure both copies remain identical.
+- Historical input was duplicated at `sample-data/golden_dataset.csv` and `server/src/services/__fixtures__/golden_dataset.csv`. Both copies were preserved outside Git and removed in the 2026-10-14 cleanup. Ordinary tests and CLI now share the independently invented `sample-data/hurst-synthetic.csv`; historical expectations above remain protected acceptance assertions.

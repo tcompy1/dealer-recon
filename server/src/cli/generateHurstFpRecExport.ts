@@ -49,7 +49,7 @@ type CliArgs = {
   formats: ExportFormat[];
 };
 
-const DEFAULT_GOLDEN_CSV_PATH = "../sample-data/golden_dataset.csv";
+const DEFAULT_GOLDEN_CSV_PATH = "../sample-data/hurst-synthetic.csv";
 const DEFAULT_OUT_DIR = "tmp/hurst-fp-rec-exports";
 
 export function parseGoldenFpRecRows(csvText: string): GoldenFpRecRow[] {

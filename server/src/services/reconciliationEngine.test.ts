@@ -24,16 +24,16 @@ const ACURA_SANITIZED_CONTRACT = loadAcuraSanitizedContract();
 const boaFloorplanCsv = [
   "transaction_date,post_date,amount,reference_number,description,account,stock_number,vin",
   '2026-04-28,2026-04-28,"$25,000.00",551240,BOA floorplan advance 551240/M20500 VIN 1FTFW1E80PFA11111,Floorplan Payable,M20500,1FTFW1E80PFA11111',
-  '2026-04-29,2026-04-29,"$18,450.00",382882,BOA floorplan advance 382882/M20657 VIN 5NPE24AF7KH700001,Floorplan Payable,M20657,5NPE24AF7KH700001',
-  '2026-04-29,2026-04-29,"$21,100.00",708021,BOA floorplan advance 708021/M20450 VIN 3FA6P0H75HR200002,Floorplan Payable,M20450,3FA6P0H75HR200002',
-  '2026-04-30,2026-04-30,"$17,750.00",999111,BOA floorplan advance 999111/M20999 VIN 2T3WFREV8HW300003,Floorplan Payable,M20999,2T3WFREV8HW300003',
+  '2026-04-29,2026-04-29,"$18,450.00",910091,BOA floorplan advance 910091/M70053 VIN 5NPE24AF7KH700001,Floorplan Payable,M70053,5NPE24AF7KH700001',
+  '2026-04-29,2026-04-29,"$21,100.00",910004,BOA floorplan advance 910004/M70080 VIN 3FA6P0H75HR200002,Floorplan Payable,M70080,3FA6P0H75HR200002',
+  '2026-04-30,2026-04-30,"$17,750.00",999111,BOA floorplan advance 999111/M70074 VIN 2T3WFREV8HW300003,Floorplan Payable,M70074,2T3WFREV8HW300003',
 ].join("\n");
 
 const dealertrackFloorplanCsv = [
   'M20500,"BOA FLOORPLAN",-25000,0',
-  'M20657,"BOA FLOORPLAN",-18450,0',
-  'M20450,"BOA FLOORPLAN",-21100,0',
-  'M20450,"BOA FLOORPLAN DUPLICATE",-21100,0',
+  'M70053,"BOA FLOORPLAN",-18450,0',
+  'M70080,"BOA FLOORPLAN",-21100,0',
+  'M70080,"BOA FLOORPLAN DUPLICATE",-21100,0',
   'M20888,"BOA FLOORPLAN",-22600,0',
 ].join("\n");
 
@@ -196,7 +196,7 @@ describe("reconcileTransactions", () => {
       normalizeTransactionsFromCsv(
         [
           "transaction_date,post_date,amount,reference_number,description,account,stock_number,vin",
-          '2026-03-23,2026-03-23,"$30,493.00",112612,BOA floorplan,Floorplan Payable,M20945,3MVDMBCL9TM112612',
+          '2026-03-23,2026-03-23,"$30,493.00",910630,BOA floorplan,Floorplan Payable,M70027,1TESTCARXXA910630',
         ].join("\n"),
         "boa",
       ).transactions,
@@ -209,9 +209,9 @@ describe("reconcileTransactions", () => {
         post_date: null,
         amount_cents: -3049300,
         reference_number: null,
-        description: "2026 MAZDA CX-30 10/27/25 3MVDMBCL9TM112612",
+        description: "2026 MAZDA CX-30 10/27/25 1TESTCARXXA910630",
         account: "Floorplan Payable",
-        stock_number: "M21473",
+        stock_number: "M70291",
         vin: null,
         raw_data: {},
       },
@@ -230,7 +230,7 @@ describe("reconcileTransactions", () => {
     });
     expect(result.vin_presence_diagnostics.extracted_vin_sets.dealertrack).toEqual([
       {
-        vin: "3MVDMBCL9TM112612",
+        vin: "1TESTCARXXA910630",
         stored_vin_count: 0,
         extracted_vin_count: 1,
         transaction_ids: [2],
@@ -244,13 +244,13 @@ describe("reconcileTransactions", () => {
       normalizeTransactionsFromCsv(
         [
           "transaction_date,post_date,amount,reference_number,description,account,stock_number,vin",
-          '2026-03-23,2026-03-23,"$31,051.00",116411,BOA floorplan,Floorplan Payable,M21055,',
+          '2026-03-23,2026-03-23,"$31,051.00",910632,BOA floorplan,Floorplan Payable,M70035,',
         ].join("\n"),
         "boa",
       ).transactions,
     );
     await repository.insertMany(
-      normalizeTransactionsFromCsv('M21055,"BOA FLOORPLAN",-31051,0', "dealertrack")
+      normalizeTransactionsFromCsv('M70035,"BOA FLOORPLAN",-31051,0', "dealertrack")
         .transactions,
     );
 
@@ -275,8 +275,8 @@ describe("reconcileTransactions", () => {
       normalizeTransactionsFromCsv(
         [
           "transaction_date,post_date,amount,reference_number,description,account,stock_number,vin",
-          '2026-03-01,2026-03-01,"$31,020.00",WEAK-1,BOA FLOORPLAN CX30 shared context,Floorplan Payable,M21000,3MVDMBCL1TM000001',
-          '2026-03-03,2026-03-03,"$31,020.00",STRONG-1,BOA floorplan exact unit,Floorplan Payable,M21408,3MVDMBCL5TM139404',
+          '2026-03-01,2026-03-01,"$31,020.00",WEAK-1,BOA FLOORPLAN CX30 shared context,Floorplan Payable,M70048,3MVDMBCL1TM000001',
+          '2026-03-03,2026-03-03,"$31,020.00",STRONG-1,BOA floorplan exact unit,Floorplan Payable,M70033,1TESTCARXXA910646',
         ].join("\n"),
         "boa",
       ).transactions,
@@ -289,9 +289,9 @@ describe("reconcileTransactions", () => {
         post_date: null,
         amount_cents: -3102000,
         reference_number: null,
-        description: "BOA FLOORPLAN CX30 3/02/26 3MVDMBCL5TM139404",
+        description: "BOA FLOORPLAN CX30 3/02/26 1TESTCARXXA910646",
         account: "Floorplan Payable",
-        stock_number: "M21408",
+        stock_number: "M70033",
         vin: null,
         raw_data: {},
       },
@@ -309,7 +309,7 @@ describe("reconcileTransactions", () => {
     });
     expect(result.match_groups[0].transactions[0]).toMatchObject({
       reference_number: "STRONG-1",
-      vin: "3MVDMBCL5TM139404",
+      vin: "1TESTCARXXA910646",
     });
     expect(result.exceptions).toEqual([
       expect.objectContaining({
@@ -376,13 +376,13 @@ describe("reconcileTransactions", () => {
   test("reports manual Hiley DT-only VIN universe before transaction matching", async () => {
     const repository = new MemoryTransactionRepository();
     const manualDealertrackOnlyVins = [
-      "7MMVABCYXTN476280",
-      "JM1NDAM72T0702171",
-      "JM1NDAM76T0700438",
-      "JM1NDAM71T0700847",
-      "JM1NDAD70T0700998",
-      "7MMVABDL6TN486632",
-      "7MMVABALXTN487349",
+      "1TESTCARXXA910815",
+      "1TESTCARXXA910160",
+      "1TESTCARXXA910153",
+      "1TESTCARXXA910154",
+      "1TESTCARXXA910155",
+      "1TESTCARXXA910837",
+      "1TESTCARXXA910838",
     ];
 
     await repository.insertMany(
@@ -431,7 +431,7 @@ describe("reconcileTransactions", () => {
       normalizeTransactionsFromCsv(
         [
           "transaction_date,post_date,amount,reference_number,description,account,stock_number,vin",
-          '2026-03-23,2026-03-23,"$31,051.00",116411,BOA floorplan CX-30,Floorplan Payable,M21055,3MVDMBCL8TM116411',
+          '2026-03-23,2026-03-23,"$31,051.00",910632,BOA floorplan CX-30,Floorplan Payable,M70035,1TESTCARXXA910632',
         ].join("\n"),
         "boa",
       ).transactions,
@@ -444,9 +444,9 @@ describe("reconcileTransactions", () => {
         post_date: null,
         amount_cents: -3105100,
         reference_number: null,
-        description: "BOA FLOORPLAN CX-30 FIRST DIFFERENT VIN 3MVDMBCL8TM116411",
+        description: "BOA FLOORPLAN CX-30 FIRST DIFFERENT VIN 1TESTCARXXA910632",
         account: "Floorplan Payable",
-        stock_number: "M21055",
+        stock_number: "M70035",
         vin: null,
         raw_data: {},
       },
@@ -457,9 +457,9 @@ describe("reconcileTransactions", () => {
         post_date: null,
         amount_cents: -3105100,
         reference_number: null,
-        description: "BOA FLOORPLAN CX-30 SECOND DIFFERENT VIN 3MVDMBXL6TM128759",
+        description: "BOA FLOORPLAN CX-30 SECOND DIFFERENT VIN 1TESTCARXXA910637",
         account: "Floorplan Payable",
-        stock_number: "M21286",
+        stock_number: "M70037",
         vin: null,
         raw_data: {},
       },
@@ -564,7 +564,7 @@ describe("reconcileTransactions", () => {
   });
 
   test("amount-mismatch pair: VIN6 matches but amounts differ -> two exceptions, never merged", async () => {
-    // April ground-truth case: BOA shows $32,283 for JM1BPBLL0T1870612, but the
+    // April ground-truth case: BOA shows $32,283 for 1TESTCARXXA910269, but the
     // Dealertrack 2100 entry for the same VIN is -$31,771 (a $512 curtailment
     // delta). The clerk does NOT merge these onto one matched row - each side is
     // surfaced as its own exception.
@@ -573,7 +573,7 @@ describe("reconcileTransactions", () => {
       normalizeTransactionsFromCsv(
         [
           "transaction_date,post_date,amount,reference_number,description,account,stock_number,vin",
-          '2026-04-30,2026-04-30,"$32,283.00",,2026 Mazda M3H CE XA,Floorplan Payable,,JM1BPBLL0T1870612',
+          '2026-04-30,2026-04-30,"$32,283.00",,2026 Mazda M3H CE XA,Floorplan Payable,,1TESTCARXXA910269',
         ].join("\n"),
         "boa",
       ).transactions,
@@ -585,8 +585,8 @@ describe("reconcileTransactions", () => {
         transaction_date: "2026-03-11",
         post_date: null,
         amount_cents: -3177100,
-        reference_number: "M21326",
-        description: "2026 MAZDA MAZDA3 HAT   3/11/26  JM1BPBLL0T1870612",
+        reference_number: "M70322",
+        description: "2026 MAZDA MAZDA3 HAT   3/11/26  1TESTCARXXA910269",
         account: "Floorplan Payable",
         stock_number: null,
         vin: null,

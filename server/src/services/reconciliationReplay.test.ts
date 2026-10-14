@@ -27,7 +27,7 @@ describe("replaySnapshot", () => {
     expect(replay.matched_count_delta).toBe(1);
     expect(replay.exception_count_delta).toBe(-1);
     expect(replay.newly_matched).toEqual([
-      "boa|101|JM1NDAM72T0702171|REF101|M30101|120000",
+      "boa|101|1TESTCARXXA910160|REF101|M30101|120000",
     ]);
     expect(replay.newly_unmatched).toEqual([]);
   });
@@ -208,7 +208,7 @@ function boaTransaction(): Transaction {
     reference_number: "REF101",
     description: "Floorplan advance",
     stock_number: "M30101",
-    vin: "JM1NDAM72T0702171",
+    vin: "1TESTCARXXA910160",
   });
 }
 
@@ -218,7 +218,7 @@ function dealertrackTransaction(): Transaction {
     source_file_id: 12,
     source_type: "dealertrack",
     reference_number: "REF201",
-    description: "BOA FLOORPLAN JM1NDAM72T0702171",
+    description: "BOA FLOORPLAN 1TESTCARXXA910160",
     stock_number: "M30101",
     vin: null,
   });
