@@ -25,7 +25,7 @@ services:
       DEFAULT_DEALERSHIP_ID: ${DEFAULT_DEALERSHIP_ID:?DEFAULT_DEALERSHIP_ID is required}
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       db:
         condition: service_healthy
@@ -43,7 +43,7 @@ services:
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:?VITE_API_BASE_URL is required}
     ports:
-      - "5173:8080"
+      - "127.0.0.1:5173:8080"
     depends_on:
       backend:
         condition: service_healthy
