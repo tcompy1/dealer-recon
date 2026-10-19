@@ -1,3 +1,4 @@
+import { attachPoolErrorReporting } from "./databasePoolLifecycle.js";
 import { loadConfig } from "./config.js";
 import { createApp } from "./app.js";
 import { PostgresAuthRepository } from "./auth.js";
@@ -10,6 +11,7 @@ import {
 async function main() {
   const config = loadConfig();
   const pool = createPool(config.databaseUrl);
+  attachPoolErrorReporting(pool);
   await assertDatabaseReady(pool);
 
   const repository = new PostgresTransactionRepository(pool);
