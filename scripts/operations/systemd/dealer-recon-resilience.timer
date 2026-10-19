@@ -1,0 +1,11 @@
+[Unit]
+Description=Evaluate Dealer-Recon health once per minute
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=60s
+AccuracySec=1s
+Unit=dealer-recon-resilience.service
+
+[Install]
+WantedBy=timers.target

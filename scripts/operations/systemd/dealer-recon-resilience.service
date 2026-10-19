@@ -1,0 +1,21 @@
+[Unit]
+Description=Dealer-Recon passive service and backup checks
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=trent
+Group=trent
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/dealer-recon-monitor/resilience-check.py --send
+TimeoutStartSec=55
+KillMode=control-group
+StateDirectory=dealer-recon-monitor
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/backups/managed /etc/dealer-recon-monitor
+ReadWritePaths=/var/lib/dealer-recon-monitor
