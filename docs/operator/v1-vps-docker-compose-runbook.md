@@ -263,15 +263,11 @@ Do not upload real Hurst files until this smoke test passes.
 
 ## Backup
 
-Create a backup directory outside the repo and run the helper.
+For the existing production VPS, use the independently repaired installed `/usr/local/sbin/dealer-recon-backup` only under the approved maintenance procedure. Its private runs are in `/opt/backups/managed`; verify the installed wrapper/Compose identity first. The generic repository helper is not equivalent and must not replace the installed job.
 
-```bash
-mkdir -p /opt/dealer-recon-backups
-./scripts/backup-postgres.sh .env.production /opt/dealer-recon-backups
-ls -lh /opt/dealer-recon-backups
-```
+See [operational resilience](../operations/operational-resilience.md) for backup validity, outcome monitoring, daily review and deployment authorization boundaries. No new cron/timer or notification destination is activated by merging that code. Copy archives only to separately approved durable storage; same-host validation does not establish off-host recovery.
 
-Copy the resulting `.dump` to approved durable storage.
+The restore example below is a generic isolated-environment illustration, not authorization or the exact production recovery procedure. Set `BACKUP_FILE` to an explicitly verified approved archive; never restore over production or presume a new archive has passed an isolated restore.
 
 ## Restore Verification
 

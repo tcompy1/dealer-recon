@@ -111,21 +111,9 @@ run --rm backend npm run migrate:prod
 
 # Backups
 
-Manual
+The original relative-path helper and output-discarding cron example are obsolete for the existing VPS. Do not reinstall them. The October 15 repair uses `/usr/local/sbin/dealer-recon-backup`, explicit production Compose paths, private `/opt/backups/managed` run records, and `/opt/backups/managed/scheduler.log`. Daily scheduling remains 02:00 America/Chicago; revalidate the actual installed command before any change.
 
-./scripts/backup-postgres.sh .env.production /opt/backups
-
-Automatic
-
-02:00 America/Chicago every day
-
-Cron
-
-0 2 * * * /opt/dealer-recon/scripts/backup-postgres.sh /opt/dealer-recon/.env.production /opt/backups >/dev/null 2>&1
-
-Backup Location
-
-/opt/backups
+Follow [operational resilience](operational-resilience.md) for the repaired wrapper contract, scheduled-outcome adapter, prospective human review and separate activation gates. Repository monitoring code is not evidence of an installed timer or functioning notifications. Never discard backup errors or treat archive validation as restore verification. Preserve historical files and the separately restore-verified recovery checkpoint.
 
 ---
 
