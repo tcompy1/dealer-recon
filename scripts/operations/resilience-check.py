@@ -17,7 +17,7 @@ import urllib.request
 from zoneinfo import ZoneInfo
 from monitor_common import BASE, CONFIG, STATE, NoRedirect, backup_freshness, event, private_dir, private_read, send, timestamp
 
-INSPECT = '{"id":{{json .Id}},"image":{{json .Image}},"running":{{.State.Running}},"health":"{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}","project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"ports":{{json .HostConfig.PortBindings}}}'
+INSPECT = '{"id":{{json .Id}},"image":{{json .Image}},"running":{{.State.Running}},"health":"{{with index .State "Health"}}{{.Status}}{{else}}none{{end}}","project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"ports":{{json .HostConfig.PortBindings}}}'
 
 
 def command(args):
