@@ -133,8 +133,10 @@ def main(deliver=False):
                 signals.append(('backup-freshness', 'success' if backup['status'] == 'ok' else 'fail'))
                 state['backup_checked_at'] = time.time()
                 event('backup_freshness', **backup)
-            date = now.astimezone(ZoneInfo('America/Chicago')).date().isoformat()
-            if review_completed(STATE / 'reviews', now) and state.get('review_sent_date') != date:
+            review_time = now.astimezone(ZoneInfo('America/Chicago'))
+            date = review_time.date().isoformat()
+            # An early review must not satisfy the previous Healthchecks cron window.
+            if review_time.hour >= 10 and review_completed(STATE / 'reviews', now) and state.get('review_sent_date') != date:
                 signals.append(('daily-review', 'success'))
             # No sends until complete evaluation; a killed/hung evaluator cannot claim success.
             if deliver:
